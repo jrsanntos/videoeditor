@@ -3,6 +3,8 @@ import {
   addAssetToProject,
   applyOperations,
   buildAgentContext,
+  findRepetitions,
+  shiftTimedParams,
   createProject,
   creditCost,
   getTrack,
@@ -195,5 +197,59 @@ describe("agente e créditos", () => {
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
     expect(creditCost({ type: "browser_export" })).toBe(0);
+  });
+});
+
+describe("precisão por palavra para o agente", () => {
+  function withWords(texts: string[]): Project {
+    const words = texts.map((text, i) => ({ id: `w${i}`, text, start: 1 + i * 0.5, end: 1.4 + i * 0.5 }));
+    return addAssetToProject(createProject({ name: "rep" }), {
+      id: "a1",
+      kind: "video",
+      name: "bruto.mp4",
+      duration: 1 + texts.length * 0.5 + 1,
+      hasAudio: true,
+      transcript: { words },
+    });
+  }
+
+  it("detecta retomadas e ignora artigos repetidos", () => {
+    const p = withWords(["O", "segredo,", "o", "segredo", "foi", "é", "é", "mudar", "mudar", "a", "oferta"]);
+    const reps = findRepetitions(timelineWords(p));
+    expect(reps.map((r) => r.phrase)).toEqual(["O segredo", "mudar"]);
+    expect(reps[0]).toMatchObject({ firstIndex: 0, secondIndex: 2, length: 2 });
+  });
+
+  it("o contexto do vídeo inteiro traz as repetições com tempo por palavra", () => {
+    const ctx = buildAgentContext(withWords(["Olá.", "O", "segredo,", "o", "segredo", "foi", "mudar."]));
+    expect(ctx).toContain("read_words");
+    expect(ctx).toContain('"O segredo" repetido — corte: {"start": 1.5, "end": 2.5}');
+    // a primeira ocorrência começa em 1.5s; a segunda, em 2.5s
+    expect(ctx).toMatch(/w1 \| 1\.5–1\.9 \| O/);
+    expect(ctx).toMatch(/w3 \| 2\.5–2\.9 \| o/);
+  });
+});
+
+describe("instantes internos de componentes (at)", () => {
+  it("um corte dentro do componente recua os instantes posteriores", () => {
+    const { project } = applyOperations(fixture(), [
+      {
+        op: "add_component",
+        component: "bar_chart",
+        start: 1,
+        duration: 6,
+        params: { bars: [{ label: "a", value: 1, at: 0.5 }, { label: "b", value: 2, at: 2.5 }, { label: "c", value: 3, at: 4 }] },
+      },
+      { op: "remove_ranges", ranges: [{ start: 2, end: 3 }] },
+    ]);
+    const comp = getTrack(project, "overlay")!.clips[0]!;
+    expect(comp.duration).toBe(5);
+    if (comp.type !== "component") throw new Error("esperado componente");
+    // corte em 1s–2s relativo ao componente: 0.5 fica, 2.5 → 1.5, 4 → 3
+    expect((comp.params.bars as { at: number }[]).map((b) => b.at)).toEqual([0.5, 1.5, 3]);
+  });
+
+  it("instante dentro do trecho cortado vai para o ponto do corte", () => {
+    expect(shiftTimedParams({ bars: [{ at: 1.2 }] }, 1, 0.5)).toEqual({ bars: [{ at: 1 }] });
   });
 });

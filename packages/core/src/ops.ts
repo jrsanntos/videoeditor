@@ -384,6 +384,8 @@ function removeRanges(p: Project, ranges: TimeRange[]) {
               duration: r3(ce - re),
               sourceStart: r3(c.sourceStart + (re - cs)),
             });
+          } else if (c.type === "component") {
+            next.push({ ...c, duration: r3(c.duration - len), params: shiftTimedParams(c.params, rs - cs, len) });
           } else {
             next.push({ ...c, duration: r3(c.duration - len) });
           }
@@ -393,10 +395,29 @@ function removeRanges(p: Project, ranges: TimeRange[]) {
           const cut = r3(re - cs);
           const trimmed = { ...c, start: rs, duration: r3(ce - re) };
           if (trimmed.type === "media") trimmed.sourceStart = r3(trimmed.sourceStart + cut);
+          if (trimmed.type === "component") trimmed.params = shiftTimedParams(trimmed.params, 0, cut);
           next.push(trimmed);
         }
       }
       track.clips = next.filter((c) => c.duration >= MIN_CLIP);
     }
   }
+}
+
+/**
+ * Componentes podem marcar instantes internos com `at` (segundos desde o
+ * início do clip — ex.: quando cada barra entra). Um corte dentro do clip
+ * desloca esses instantes junto com a fala: depois do corte, `at` recua
+ * `len`; dentro do corte, vai para o ponto do corte.
+ */
+export function shiftTimedParams<T>(value: T, cutAt: number, len: number): T {
+  if (Array.isArray(value)) return value.map((v) => shiftTimedParams(v, cutAt, len)) as T;
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (k === "at" && typeof v === "number")
+      out[k] = v >= cutAt + len ? r3(v - len) : v > cutAt ? r3(cutAt) : v;
+    else out[k] = shiftTimedParams(v, cutAt, len);
+  }
+  return out as T;
 }

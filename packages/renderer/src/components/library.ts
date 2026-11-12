@@ -144,12 +144,22 @@ const barChart = define({
   id: "bar_chart",
   name: "Gráfico de barras",
   description:
-    "Gráfico de barras animado sobre o vídeo escurecido. Use quando a fala citar números comparáveis (faturamento, crescimento, antes/depois).",
+    "Gráfico de barras animado sobre o vídeo escurecido. Use quando a fala citar números comparáveis (faturamento, crescimento, antes/depois). Preencha `at` de cada barra com o instante (segundos desde o início do componente) em que aquele número é dito, para a barra subir junto com a fala.",
   defaultDuration: 6,
   schema: z.object({
     title: z.string().max(60).optional(),
     bars: z
-      .array(z.object({ label: z.string().max(16), value: z.number().min(0) }))
+      .array(
+        z.object({
+          label: z.string().max(16),
+          value: z.number().min(0),
+          at: z
+            .number()
+            .min(0)
+            .optional()
+            .describe("segundos desde o início do componente em que a barra sobe (quando o número é dito)"),
+        }),
+      )
       .min(2)
       .max(6),
     prefix: z.string().max(4).default("").describe('ex.: "R$ "'),
@@ -159,9 +169,9 @@ const barChart = define({
   example: {
     title: "Faturamento por trimestre",
     bars: [
-      { label: "T1", value: 120 },
-      { label: "T2", value: 180 },
-      { label: "T3", value: 310 },
+      { label: "T1", value: 120, at: 0.3 },
+      { label: "T2", value: 180, at: 2.6 },
+      { label: "T3", value: 310, at: 4.4 },
     ],
     prefix: "R$ ",
     suffix: "k",
@@ -191,7 +201,10 @@ const barChart = define({
     ctx.fillStyle = "rgba(255,255,255,0.25)";
     ctx.fillRect(padX, bottom, width - padX * 2, 2 * u);
     params.bars.forEach((bar, i) => {
-      const g = easeOutCubic(stage(t, 0.25 + i * 0.14, 0.7));
+      const enter = bar.at ?? 0.25 + i * 0.14;
+      const g = easeOutCubic(stage(t, enter, 0.7));
+      // Antes de subir a barra não aparece: nada de "R$ 0k" esperando a fala.
+      ctx.globalAlpha = p * stage(t, enter, 0.2);
       const h = chartH * (bar.value / max) * g;
       const x = padX + slot * i + (slot - bw) / 2;
       const isMax = bar.value === max;
@@ -212,6 +225,7 @@ const barChart = define({
       ctx.font = font(500, 30 * u);
       ctx.fillText(bar.label, x + bw / 2, bottom + 18 * u);
     });
+    ctx.globalAlpha = p;
     ctx.restore();
   },
 });

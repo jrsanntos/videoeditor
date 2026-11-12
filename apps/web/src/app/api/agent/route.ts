@@ -7,6 +7,8 @@ import {
   OperationSchema,
   ProjectSchema,
   projectDuration,
+  timelineWords,
+  wordLines,
   type OperationInput,
 } from "@videoeditor/core";
 import { catalogForAgent, validateComponent } from "@videoeditor/renderer";
@@ -15,7 +17,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const MODEL = process.env.AGENT_MODEL || "claude-sonnet-5-5";
-const MAX_TURNS = 5;
+const MAX_TURNS = 6;
+/** Janela máxima de uma leitura de palavras: mantém o contexto enxuto em vídeos longos. */
+const MAX_WORDS_WINDOW = 90;
 /** Modelos que aceitam fallback de recusa no servidor. */
 const SUPPORTS_FALLBACK = /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(MODEL);
 
@@ -38,6 +42,18 @@ const EDIT_TOOL: Anthropic.Beta.BetaTool = {
   input_schema: z.toJSONSchema(ToolInputSchema, { io: "input" }) as Anthropic.Beta.BetaTool["input_schema"],
 };
 
+const ReadWordsSchema = z.object({
+  start: z.number().min(0).describe("início em segundos (tempo de timeline atual)"),
+  end: z.number().min(0).describe(`fim em segundos; janela de até ${MAX_WORDS_WINDOW}s`),
+});
+
+const READ_WORDS_TOOL: Anthropic.Beta.BetaTool = {
+  name: "read_words",
+  description:
+    "Lê a transcrição com tempo por palavra (id | início–fim | palavra) num trecho da timeline ATUAL, já considerando cortes feitos nesta conversa. Use antes de remove_ranges e para sincronizar componentes com a palavra exata. Não altera nada.",
+  input_schema: z.toJSONSchema(ReadWordsSchema, { io: "input" }) as Anthropic.Beta.BetaTool["input_schema"],
+};
+
 // Prefixo estável (instruções + catálogo) → fica em cache entre requisições.
 const SYSTEM = `Você é o diretor de edição de um editor de vídeo web voltado a vídeo falado (VSLs, aulas, conteúdo de especialistas). O usuário descreve o que quer em português e você edita a timeline dele.
 
@@ -46,9 +62,9 @@ Você nunca toca em pixels nem escreve código de animação: você altera o est
 ## Como trabalhar
 - Você recebe o estado atual da timeline e a transcrição com tempos em segundos (tempo de timeline). Baseie cada decisão nesses tempos; não invente trechos que não estão na transcrição.
 - Faça tudo em UMA chamada de edit_timeline sempre que possível. As operações rodam em ordem e cada uma enxerga o resultado da anterior, então coloque primeiro o que usa os tempos que você leu (add_zoom, add_component) e deixe os cortes (remove_ranges, remove_silences) por ÚLTIMO: o ripple desloca zooms e componentes junto com a fala.
-- Para tirar pausas, use remove_silences (determinístico). Para tirar erros, repetições ou trechos específicos, use remove_ranges com os tempos da transcrição, cortando no intervalo entre palavras para não comer sílabas.
+- Para tirar pausas, use remove_silences (determinístico). Para tirar erros, repetições ou trechos específicos, use remove_ranges com tempos POR PALAVRA, cortando no intervalo entre palavras para não comer sílabas. As repetições detectadas já vêm com o intervalo de corte exato: use-o sem alterar; para qualquer outro corte preciso, chame read_words no trecho antes. Os tempos de frase são aproximados: não corte com eles.
 - Zooms: use nos momentos de ênfase, 2 a 5 segundos, escala entre 1.15 e 1.4. Em vídeo de pessoa falando, o foco costuma ser o rosto (y≈0.35–0.4). Não empilhe zooms no mesmo instante.
-- Motion design: escolha componentes do catálogo abaixo e preencha params com dados que a pessoa realmente disse. Sincronize o início com a fala correspondente. Se o pedido não couber em nenhum componente, diga isso em vez de improvisar.
+- Motion design: escolha componentes do catálogo abaixo e preencha params com dados que a pessoa realmente disse. Sincronize o início com a fala correspondente. Quando um componente tiver instantes internos (\`at\`, em segundos desde o início dele), calcule-os a partir do tempo por palavra de cada citação (use read_words), para cada elemento entrar quando é dito; os cortes feitos depois ajustam esses instantes sozinhos. Se o pedido não couber em nenhum componente, diga isso em vez de improvisar.
 - Se houver SELEÇÃO ATIVA, o pedido vale só para aquele trecho: não altere nada fora dele.
 - Se o pedido depender de transcrição e ela não existir, explique que é preciso transcrever o vídeo primeiro (botão "Transcrever") em vez de chutar tempos.
 - Se o pedido for ambíguo a ponto de arriscar estragar a edição, pergunte antes. Para ajustes de gosto, decida você e conte o que fez.
@@ -96,7 +112,7 @@ export async function POST(req: Request) {
         system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
         thinking: { type: "adaptive" },
         output_config: { effort: "medium" },
-        tools: [EDIT_TOOL],
+        tools: [READ_WORDS_TOOL, EDIT_TOOL],
         messages,
         ...(SUPPORTS_FALLBACK
           ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
@@ -126,6 +142,10 @@ export async function POST(req: Request) {
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
       for (const block of response.content) {
         if (block.type !== "tool_use") continue;
+        if (block.name === "read_words") {
+          results.push(readWords(working, block.id, block.input));
+          continue;
+        }
         const input = ToolInputSchema.safeParse(block.input);
         if (!input.success) {
           results.push({
@@ -180,6 +200,26 @@ export async function POST(req: Request) {
     console.error("agent error", e);
     return Response.json({ error: "Erro inesperado no agente." }, { status: 500 });
   }
+}
+
+function readWords(
+  project: z.infer<typeof ProjectSchema>,
+  toolUseId: string,
+  raw: unknown,
+): Anthropic.Beta.BetaToolResultBlockParam {
+  const input = ReadWordsSchema.safeParse(raw);
+  if (!input.success)
+    return { type: "tool_result", tool_use_id: toolUseId, is_error: true, content: z.prettifyError(input.error) };
+  const start = input.data.start;
+  const end = Math.min(input.data.end, start + MAX_WORDS_WINDOW);
+  const words = timelineWords(project, { start, end });
+  return {
+    type: "tool_result",
+    tool_use_id: toolUseId,
+    content: words.length
+      ? `Palavras em ${start}s–${end}s:\n${wordLines(words).join("\n")}`
+      : `Nenhuma palavra em ${start}s–${end}s.`,
+  };
 }
 
 function noCredentials() {
