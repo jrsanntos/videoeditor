@@ -47,7 +47,7 @@ Propriedades que importam:
 - **Curvas** (`draw.ts`): `cubicBezier` e as curvas da casa (`EASE.snap`, `swift`, `glide`). `enter()` aplica deslocamento, opacidade e desfoque proporcional à velocidade na entrada de elementos.
 - **Tipografia** (`text.ts`): `layoutRich`/`drawRich` medem palavra a palavra e misturam a sem serifa com a serifada itálica nas palavras marcadas com `*asteriscos*`; `typewriter` dá o texto digitado com cursor. As fontes vêm do par do Brand Kit, carregadas pela FontFace API a partir de `public/fonts`.
 - **Texto atrás da pessoa**: o compositor monta o recorte do apresentador (vídeo × máscara) numa tela auxiliar e o componente o redesenha por cima do texto. A máscara vem de `options.getPersonMask`, pedida só enquanto um componente com `needsPerson` está na tela. No navegador ela é do MediaPipe Selfie Segmentation (modelo e WASM servidos pela aplicação), com cache por quadro de origem. Sem máscara, o título vai para cima da cabeça.
-- **Som** (`sounds.ts`): `soundEvents(project)` deriva do estado os efeitos (whoosh em movimento rápido de câmera e giro de texto, teclas na digitação, pop em itens de lista, golpe grave nas cenas de tela cheia) e `synthSfx` sintetiza cada um em código, de forma determinística. O preview dispara os eventos pelo relógio da timeline; a exportação agenda os mesmos eventos na mixagem.
+- **Som** (`sounds.ts`): `soundEvents(project)` deriva do estado os efeitos, usando o catálogo de `apps/web/public/sfx` (`SFX_CATALOG`: arquivo, nível relativo à voz, onde o pico cai em relação ao evento visual e intervalo mínimo entre usos). Whoosh em movimento rápido de câmera, punch no punch-in seco, digitação enquanto um texto é escrito, pop e clique nos itens de lista, impacto grave na entrada de cenas de tela cheia, caixa registradora em valores em dinheiro. As regras de densidade do catálogo são aplicadas em código: o mais forte ganha quando dois picos caem a menos de 0,15 s. O preview dispara os eventos pelo relógio da timeline; a exportação agenda os mesmos eventos na mixagem. Se um arquivo não carrega, entra um timbre sintetizado equivalente.
 
 O mesmo código serve:
 
@@ -75,7 +75,7 @@ Os seis da v1.0 (`v1.ts`) são o catálogo do agente: `depth_hook_title`, `kinet
 - **Skills** (`packages/core/src/skills.ts`): Viral, Autoridade, VSL e Limpeza. Cada uma tem uma parte determinística aplicada no navegador sem custo (takes ruins de alta confiança, silêncios, estilo de legenda) e uma direção em texto enviada ao agente.
 - **Instantes internos**: componentes podem ter `at` (segundos desde o início do clip, ex.: quando cada barra do gráfico sobe). O agente manda `atWord`; cortes posteriores dentro do componente deslocam esses instantes junto com a fala (`shiftTimedParams`).
 - Prompt de sistema (instruções + catálogo) é estável e marcado para cache.
-- Modelo padrão `claude-sonnet-5-5`, configurável por `AGENT_MODEL` (ex.: `claude-haiku-5-5` para baratear comandos simples). Roteamento automático barato/caro por tipo de pedido está no roadmap.
+- **Dois modelos**: edição completa usa `AGENT_MODEL` (padrão `claude-sonnet-5-5`, com raciocínio estendido); ajuste pontual usa `AGENT_MODEL_FAST` (padrão `claude-haiku-5-5`), cerca de 30 vezes mais barato por comando nas medições.
 
 ## 7. Ingestão e transcrição
 
@@ -88,7 +88,17 @@ Limitações conhecidas desta abordagem, tratadas no roadmap: `decodeAudioData` 
 
 ## 8. Créditos (`packages/core/src/credits.ts`)
 
-Moeda interna única. Tudo que roda no navegador custa 0 — inclusive desenhar componentes, zooms e tarjas; cobram inteligência, mídia generativa e render em nuvem. O consumo de IA segue a duração do vídeo: 1 crédito por minuto (arredondado para cima) na transcrição, mais 0,5 crédito por comando no chat que altere a timeline. Saldos aceitam uma casa decimal. A tabela de preços e os planos vivem em código, junto de `creditCost(action)`, para que servidor e UI usem a mesma fonte. O agente só cobra quando a timeline realmente mudou.
+Moeda interna única. Tudo que roda no navegador custa 0 — inclusive desenhar componentes, zooms e tarjas; cobram inteligência, mídia generativa e render em nuvem. A tabela segue o custo real medido por chamada:
+
+| Ação | Créditos | Custo real medido (vídeo de 37 s) |
+| --- | --- | --- |
+| Transcrição | 1 por minuto | R$ 0,002 |
+| Edição completa (skill, modelo ou direção do vídeo inteiro) — modelo principal | 12 + 3 por minuto | R$ 0,19 a 0,31 |
+| Ajuste pontual no chat — modelo rápido | 1 | R$ 0,004 a 0,009 |
+
+`agentTier(mensagem, temSeleção)` classifica o pedido de forma determinística e roda igual no navegador e no servidor: o chat mostra o preço antes de enviar e é esse o valor cobrado. Só há cobrança quando a timeline muda. Um Reel de até 1 minuto, do bruto ao pronto, sai por 20 a 28 créditos; `videosEstimate` transforma um saldo em "quantos vídeos" para a tela de planos.
+
+Planos: o Free recebe 60 créditos uma única vez, no cadastro (saldo extra, não renova), aceita vídeos de até 3 minutos e exporta em 720p com marca d'água. Creator e Pro recebem créditos mensais que não acumulam. Brand Kits salvos: 1 no Free e no Creator, 10 no Pro. Saldos aceitam uma casa decimal.
 
 O saldo vive no servidor, num ledger (`credit_ledger`): cada cadastro, concessão, renovação e cobrança é uma linha que nunca é sobrescrita. O saldo é materializado em `users` (lido em O(1), alterado sempre na mesma transação do ledger, com bloqueio de linha) e dividido em dois: créditos **do plano**, que não acumulam e voltam ao valor mensal a cada renovação, e créditos **extras** (pacotes avulsos e concessões), que sobrevivem às renovações. O consumo sai primeiro do plano. As rotas pagas conferem o saldo antes de chamar o provedor (`assertCredits`) e cobram depois do resultado (`charge`); o agente confere de novo antes de cada cena de motion, para nunca passar do saldo. Cada chamada de IA grava o custo real (tokens, segundos de áudio) em `usage_events`, que alimenta o financeiro.
 

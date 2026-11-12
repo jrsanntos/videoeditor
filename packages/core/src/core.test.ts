@@ -15,7 +15,13 @@ import {
   shiftTimedParams,
   clipEnd,
   createProject,
+  agentTier,
   creditCost,
+  PLANS,
+  SIGNUP_CREDITS,
+  SKILLS,
+  skillPrompt,
+  videosEstimate,
   nextRenewal,
   renewedPlanCredits,
   splitDebit,
@@ -203,13 +209,39 @@ describe("agente e créditos", () => {
     expect(scoped).toContain("SELEÇÃO ATIVA");
   });
 
-  it("precificação segue a tabela de unit economics", () => {
+  it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
     expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(10);
     expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(2);
-    expect(creditCost({ type: "agent" })).toBe(0.5);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(15);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(42);
+    expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
     expect(creditCost({ type: "browser_export" })).toBe(0);
+  });
+
+  it("classifica o pedido: skills e direção do vídeo inteiro são edição completa; o resto é ajuste", () => {
+    for (const id of Object.keys(SKILLS) as (keyof typeof SKILLS)[]) expect(agentTier(skillPrompt(SKILLS[id]), false)).toBe("full");
+    expect(agentTier("Edite meu vídeo no estilo viral", false)).toBe("full");
+    expect(agentTier("deixa o vídeo inteiro mais dinâmico", false)).toBe("full");
+    expect(agentTier("Aplique o modelo de edição \"VSL dinâmica\" a este vídeo.", false)).toBe("full");
+    expect(agentTier("aumenta o zoom na parte do preço", false)).toBe("adjust");
+    expect(agentTier("troca a legenda para amarelo", false)).toBe("adjust");
+    // Com trecho selecionado é sempre pontual, mesmo que o texto pareça amplo.
+    expect(agentTier("edite o vídeo todo", true)).toBe("adjust");
+  });
+
+  it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
+    expect(PLANS.free.monthlyCredits).toBe(0);
+    expect(SIGNUP_CREDITS).toBe(60);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 35, max: 50 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 120, max: 170 });
+    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 2, max: 3 });
+    expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
+    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): edição completa de 1 min
+    // custa ~R$ 0,31 em IA e rende 15 créditos.
+    const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(0.31 * 3);
   });
 
   it("débito consome o saldo do plano antes do extra", () => {

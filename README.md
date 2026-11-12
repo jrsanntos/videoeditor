@@ -55,7 +55,8 @@ Abra http://localhost:3000. Variáveis em `apps/web/.env.local`:
 | Variável | Para quê | Sem ela |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` (ou `VIDEOEDITOR_ANTHROPIC_KEY`) | Agente de edição (chat) | Chat responde que não está configurado; todo o resto funciona |
-| `AGENT_MODEL` | Modelo do agente (padrão `claude-sonnet-5-5`) | — |
+| `AGENT_MODEL` | Modelo das edições completas (padrão `claude-sonnet-5-5`) | — |
+| `AGENT_MODEL_FAST` | Modelo dos ajustes pontuais (padrão `claude-haiku-5-5`) | — |
 | `GROQ_API_KEY` | Transcrição com timestamp por palavra (Whisper) | Sem legendas e sem cortes baseados na fala |
 
 Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenvolvimento, sem `ADMIN_EMAILS`, a primeira conta vira administradora e acessa `/admin`, onde as chaves de API também podem ser cadastradas (cifradas no banco, com prioridade sobre o `.env.local`). Em produção, defina `ADMIN_EMAILS` e `APP_SECRET`.

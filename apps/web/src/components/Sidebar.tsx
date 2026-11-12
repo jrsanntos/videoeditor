@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, findClip, FONT_PAIRS, FORMATS, mainClips, type AspectRatio, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
+import { creditCost, findClip, FONT_PAIRS, FORMATS, mainClips, PLANS, type AspectRatio, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
-import { applyTemplate, removeRetakesLocally, removeSilencesLocally, saveBrand, transcribe } from "@/lib/actions";
+import { applyTemplate, deleteBrand, removeRetakesLocally, removeSilencesLocally, saveBrand, transcribe } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 
 const section = "border-b border-zinc-800 p-3";
@@ -340,15 +340,36 @@ function Frame() {
   );
 }
 
-/** Brand Kit: definido uma vez, salvo na conta e herdado pelos próximos vídeos. */
+/**
+ * Brand Kit: definido uma vez, salvo na conta e herdado pelos próximos vídeos.
+ * No plano Pro a conta guarda vários (um por cliente) e o seletor troca o do projeto.
+ */
 function Brand() {
   const brand = useEditor((s) => s.project!.brand);
-  const saved = useEditor((s) => s.brand);
+  const brands = useEditor((s) => s.brands);
+  const limit = useEditor((s) => s.brandLimit);
+  const apply = useEditor((s) => s.apply);
+  // Kit em edição: um salvo, ou null quando é um novo ainda não salvo.
+  const [currentId, setCurrentId] = useState<string | null>(null);
+  const current = brands.find((b) => b.id === currentId) ?? null;
   const [draft, setDraft] = useState<BrandKit>(brand);
-  const [open, setOpen] = useState(!saved);
+  const [name, setName] = useState("Minha marca");
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Ao carregar a conta, o kit do projeto é o salvo que tem os mesmos valores (ou o primeiro).
+  useEffect(() => {
+    if (currentId && brands.some((b) => b.id === currentId)) return;
+    const match = brands.find((b) => JSON.stringify(b.brand) === JSON.stringify(brand)) ?? brands[0];
+    setCurrentId(match?.id ?? null);
+    if (match) setName(match.name);
+    else setOpen(true);
+  }, [brands, currentId, brand]);
   useEffect(() => setDraft(brand), [brand]);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(brand) || !saved;
+
+  const dirty = !current || name !== current.name || JSON.stringify(draft) !== JSON.stringify(current.brand);
+  const notice = (text: string) => useEditor.getState().setNotice(text);
+  const canAdd = brands.length < limit;
 
   return (
     <div className={section} data-testid="brand">
@@ -366,13 +387,49 @@ function Brand() {
           onSubmit={(e) => {
             e.preventDefault();
             setBusy(true);
-            void saveBrand(draft).then((error) => {
+            void saveBrand(current?.id ?? null, name.trim() || "Minha marca", draft).then((r) => {
               setBusy(false);
-              useEditor.getState().setNotice(error ?? "Marca salva. Os próximos vídeos já nascem com ela.");
+              if (r.id) setCurrentId(r.id);
+              notice(r.error ?? "Marca salva. Os próximos vídeos já nascem com ela.");
             });
           }}
         >
-          {!saved && <p className="text-[11px] leading-snug text-zinc-500">Defina uma vez: cores, fontes e sua credencial entram sozinhas em todo vídeo.</p>}
+          {!brands.length && <p className="text-[11px] leading-snug text-zinc-500">Defina uma vez: cores, fontes e sua credencial entram sozinhas em todo vídeo.</p>}
+          {(brands.length > 1 || limit > 1) && (
+            <label className="block text-xs text-zinc-400">
+              Brand Kit ({brands.length} de {limit})
+              <select
+                className={`${field} mt-1`}
+                value={currentId ?? "new"}
+                data-testid="brand-select"
+                onChange={(e) => {
+                  const next = brands.find((b) => b.id === e.target.value);
+                  if (next) {
+                    setCurrentId(next.id);
+                    setName(next.name);
+                    apply([{ op: "set_brand", brand: next.brand }]);
+                  } else {
+                    // Kit novo: parte do atual, com nome próprio; só conta no limite ao salvar.
+                    setCurrentId(null);
+                    setName("");
+                  }
+                }}
+              >
+                {brands.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+                {(canAdd || !current) && <option value="new">+ Novo Brand Kit…</option>}
+              </select>
+            </label>
+          )}
+          {limit > 1 && (
+            <label className="block text-xs text-zinc-400">
+              Nome do kit (cliente)
+              <input className={`${field} mt-1`} maxLength={40} required placeholder="Clínica Silva" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+          )}
           <label className="block text-xs text-zinc-400">
             Nome na tarja
             <input className={`${field} mt-1`} maxLength={40} placeholder="Dra. Ana Silva" value={draft.displayName} onChange={(e) => setDraft({ ...draft, displayName: e.target.value })} />
@@ -406,8 +463,32 @@ function Brand() {
             </select>
           </label>
           <button className={btn} disabled={busy || !dirty}>
-            {busy ? "Salvando…" : "Salvar marca"}
+            {busy ? "Salvando…" : current ? "Salvar marca" : "Salvar novo Brand Kit"}
           </button>
+          {current && brands.length > 1 && (
+            <button
+              type="button"
+              className="w-full rounded-md border border-rose-900/60 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-950"
+              disabled={busy}
+              onClick={() => {
+                if (!confirm(`Apagar o Brand Kit "${current.name}"? Os vídeos já editados não mudam.`)) return;
+                void deleteBrand(current.id).then((error) => {
+                  if (error) notice(error);
+                  else setCurrentId(null);
+                });
+              }}
+            >
+              Apagar este kit
+            </button>
+          )}
+          {limit === 1 && (
+            <p className="text-[11px] leading-snug text-zinc-500">
+              Edita para vários clientes?{" "}
+              <a href="/planos" className="text-zinc-300 underline-offset-2 hover:underline">
+                O plano {PLANS.pro.name} salva até {PLANS.pro.brandKits} Brand Kits.
+              </a>
+            </p>
+          )}
         </form>
       )}
     </div>

@@ -1,39 +1,76 @@
 "use client";
 
 import type { Project } from "@videoeditor/core";
-import { soundEvents, synthSfx, type SfxId, type SoundEvent } from "@videoeditor/renderer";
+import { SFX_CATALOG, soundEvents, SYNTH_FALLBACK, synthSfx, type SfxId, type SoundEvent } from "@videoeditor/renderer";
 
 /**
- * Efeitos sonoros no navegador. As amostras são sintetizadas uma vez por
- * contexto de áudio; o preview dispara cada evento quando o tempo passa por
- * ele e a exportação agenda todos na mixagem final.
+ * Efeitos sonoros no navegador. Os arquivos do catálogo (public/sfx) são
+ * baixados e decodificados uma vez; o preview dispara cada evento quando o
+ * tempo passa por ele e a exportação agenda todos na mixagem final. Se um
+ * arquivo não carregar, entra o timbre sintetizado equivalente, se houver.
  */
-const IDS: SfxId[] = ["whoosh", "tick", "pop", "riser"];
-const buffers = new WeakMap<BaseAudioContext, Map<SfxId, AudioBuffer>>();
+const encoded = new Map<SfxId, Promise<ArrayBuffer | null>>();
+const decoded = new WeakMap<BaseAudioContext, Map<SfxId, AudioBuffer | null>>();
 
-export function sfxBuffer(ctx: BaseAudioContext, id: SfxId): AudioBuffer {
-  let map = buffers.get(ctx);
-  if (!map) buffers.set(ctx, (map = new Map()));
-  let buffer = map.get(id);
-  if (!buffer) {
-    const samples = synthSfx(id, ctx.sampleRate);
-    buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
-    buffer.getChannelData(0).set(samples);
-    map.set(id, buffer);
+const fetchSfx = (id: SfxId) => {
+  let p = encoded.get(id);
+  if (!p) {
+    p = fetch(`/sfx/${SFX_CATALOG[id].file}`)
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .catch(() => null);
+    encoded.set(id, p);
   }
+  return p;
+};
+
+function synthBuffer(ctx: BaseAudioContext, id: SfxId): AudioBuffer | null {
+  const synth = SYNTH_FALLBACK[id];
+  if (!synth) return null;
+  const samples = synthSfx(synth, ctx.sampleRate);
+  const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buffer.getChannelData(0).set(samples);
   return buffer;
 }
 
-/** Agenda todos os efeitos do projeto num contexto (usado na exportação). */
-export function scheduleSfx(ctx: BaseAudioContext, project: Project, destination: AudioNode = ctx.destination) {
+/** Decodifica, para este contexto, os sons que o projeto usa. */
+export async function loadSfx(ctx: BaseAudioContext, ids: Iterable<SfxId>): Promise<Map<SfxId, AudioBuffer | null>> {
+  let map = decoded.get(ctx);
+  if (!map) decoded.set(ctx, (map = new Map()));
+  await Promise.all(
+    [...new Set(ids)].map(async (id) => {
+      if (map.has(id)) return;
+      const data = await fetchSfx(id);
+      // decodeAudioData consome o ArrayBuffer: cada contexto recebe uma cópia.
+      const buffer = data ? await ctx.decodeAudioData(data.slice(0)).catch(() => null) : null;
+      map.set(id, buffer ?? synthBuffer(ctx, id));
+    }),
+  );
+  return map;
+}
+
+function play(ctx: BaseAudioContext, buffer: AudioBuffer, e: SoundEvent, volume: number, when: number, destination: AudioNode) {
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
   const gain = ctx.createGain();
-  gain.gain.value = project.sfx.volume;
-  gain.connect(destination);
-  for (const e of soundEvents(project)) {
-    const src = ctx.createBufferSource();
-    src.buffer = sfxBuffer(ctx, e.sfx);
-    src.connect(gain);
-    src.start(e.t);
+  gain.gain.value = e.gain * volume;
+  src.connect(gain).connect(destination);
+  if (e.duration !== undefined) {
+    // Som contínuo (digitação): corta na duração do evento, com uma saída curta para não estalar.
+    const end = when + e.duration;
+    gain.gain.setValueAtTime(e.gain * volume, Math.max(when, end - 0.05));
+    gain.gain.linearRampToValueAtTime(0, end);
+    src.start(when, e.skip, e.duration);
+  } else src.start(when, e.skip);
+}
+
+/** Agenda todos os efeitos do projeto num contexto (usado na exportação). */
+export async function scheduleSfx(ctx: BaseAudioContext, project: Project) {
+  const events = soundEvents(project);
+  if (!events.length) return;
+  const buffers = await loadSfx(ctx, events.map((e) => e.sfx));
+  for (const e of events) {
+    const buffer = buffers.get(e.sfx);
+    if (buffer) play(ctx, buffer, e, project.sfx.volume, e.start, ctx.destination);
   }
 }
 
@@ -41,28 +78,30 @@ export function scheduleSfx(ctx: BaseAudioContext, project: Project, destination
 export function createSfxPlayer() {
   let ctx: AudioContext | null = null;
   let cached: { project: Project; events: SoundEvent[] } | null = null;
+  const eventsOf = (project: Project) => {
+    if (cached?.project !== project) {
+      cached = { project, events: soundEvents(project) };
+      // Baixa e decodifica em segundo plano os sons que este projeto usa.
+      if (cached.events.length) {
+        ctx ??= new AudioContext();
+        void loadSfx(ctx, cached.events.map((e) => e.sfx));
+      }
+    }
+    return cached.events;
+  };
   return {
     advance(project: Project, from: number, to: number) {
+      const events = eventsOf(project);
       // Só em reprodução contínua para a frente; saltos (clique na timeline) não disparam sons.
-      if (!(to > from) || to - from > 0.25) return;
-      if (cached?.project !== project) cached = { project, events: soundEvents(project) };
-      const due = cached.events.filter((e) => e.t > from && e.t <= to);
+      if (!ctx || !(to > from) || to - from > 0.25) return;
+      const due = events.filter((e) => e.start > from && e.start <= to);
       if (!due.length) return;
-      ctx ??= new AudioContext();
       if (ctx.state === "suspended") void ctx.resume();
+      const buffers = decoded.get(ctx);
       for (const e of due) {
-        const src = ctx.createBufferSource();
-        src.buffer = sfxBuffer(ctx, e.sfx);
-        const gain = ctx.createGain();
-        gain.gain.value = project.sfx.volume;
-        src.connect(gain).connect(ctx.destination);
-        src.start();
+        const buffer = buffers?.get(e.sfx);
+        if (buffer) play(ctx, buffer, e, project.sfx.volume, ctx.currentTime, ctx.destination);
       }
-    },
-    /** Sintetiza as amostras antes do primeiro uso, para o primeiro som não atrasar. */
-    warm() {
-      ctx ??= new AudioContext();
-      for (const id of IDS) sfxBuffer(ctx, id);
     },
     close() {
       void ctx?.close();

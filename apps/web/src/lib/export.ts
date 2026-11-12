@@ -16,7 +16,7 @@ import {
   WebMOutputFormat,
 } from "mediabunny";
 import { mainClips, projectDuration, type Project } from "@videoeditor/core";
-import { personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
+import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
 import { loadBrandFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
@@ -31,11 +31,18 @@ export async function exportInBrowser(
   project: Project,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
+  /** Travas do plano: lado menor máximo do arquivo e marca d'água. */
+  limits: { maxShortSide: number; watermark: boolean } = { maxShortSide: Infinity, watermark: false },
 ): Promise<{ blob: Blob; extension: string }> {
   if (typeof VideoEncoder === "undefined")
     throw new Error("Este navegador não suporta exportação local (WebCodecs). Use Chrome ou Edge recentes.");
 
-  const { width, height, fps } = project;
+  const { fps } = project;
+  // O quadro é sempre composto na resolução do projeto; o arquivo sai reduzido se o plano limitar.
+  const scale = Math.min(1, limits.maxShortSide / Math.min(project.width, project.height));
+  const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+  const width = even(project.width * scale);
+  const height = even(project.height * scale);
   const duration = projectDuration(project);
   const clips = mainClips(project);
   if (!clips.length || duration <= 0) throw new Error("A timeline está vazia.");
@@ -50,7 +57,10 @@ export async function exportInBrowser(
   if (!videoCodec) throw new Error("Nenhum codec de vídeo disponível para exportar neste navegador.");
 
   const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext("2d", { alpha: false })!;
+  const out = canvas.getContext("2d", { alpha: false })!;
+  const direct = scale === 1 && !limits.watermark;
+  const stage = direct ? canvas : new OffscreenCanvas(project.width, project.height);
+  const ctx = direct ? out : stage.getContext("2d", { alpha: false })!;
   const output = new Output({ format, target: new BufferTarget() });
   const videoSource = new CanvasSource(canvas, { codec: videoCodec, bitrate: QUALITY_HIGH });
   output.addVideoTrack(videoSource, { frameRate: fps });
@@ -108,6 +118,11 @@ export async function exportInBrowser(
             ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height)
             : undefined,
         });
+        if (!direct) {
+          out.imageSmoothingQuality = "high";
+          out.drawImage(stage, 0, 0, width, height);
+          if (limits.watermark) drawWatermark(out, width, height);
+        }
         await videoSource.add(t, 1 / fps);
         frame++;
         if (frame % 5 === 0) onProgress(frame / totalFrames);
@@ -168,7 +183,7 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
     src.start(clip.start, clip.sourceStart, clip.duration);
   }
   // Efeitos sonoros nos mesmos instantes do preview.
-  scheduleSfx(off, project);
+  await scheduleSfx(off, project);
   return off.startRendering();
 }
 

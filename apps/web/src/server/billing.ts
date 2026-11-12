@@ -121,7 +121,9 @@ export async function resetPlanCredits(
     const monthly = PLANS[plan].monthlyCredits;
     const next = renewedPlanCredits(u.credits_plan, monthly);
     const expired = Math.max(u.credits_plan, 0);
-    const reason = `renovação do plano ${PLANS[plan].name}: ${monthly} créditos${expired ? ` (${expired} não usados expiraram)` : ""}`;
+    const reason = monthly
+      ? `renovação do plano ${PLANS[plan].name}: ${monthly} créditos${expired ? ` (${expired} não usados expiraram)` : ""}`
+      : `plano ${PLANS[plan].name}: sem créditos mensais${expired ? ` (${expired} do plano anterior expiraram)` : ""}`;
     // delta 0 (saldo já cheio) ainda precisa da linha quando há ref, para marcar a fatura como processada.
     if (next !== u.credits_plan || opts.ref)
       await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason, actor_id, ref) VALUES ($1, $2, 'plan', $3, $4, $5)", [

@@ -2,10 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import {
   AgentOperationSchema,
+  agentTier,
   applyOperations,
   buildAgentContext,
   creditCost,
-  PRICING,
   ProjectSchema,
   projectDuration,
   wordLines,
@@ -14,7 +14,7 @@ import {
   type Project,
 } from "@videoeditor/core";
 import { catalogForAgent, validateComponent } from "@videoeditor/renderer";
-import { agentModel, anthropicClient, anthropicError } from "@/server/ai";
+import { agentModel, anthropicClient, anthropicError, fastAgentModel } from "@/server/ai";
 import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
@@ -117,9 +117,13 @@ export async function POST(req: Request) {
     const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
     const { project, selection, message, history } = parsed.data;
-    await assertCredits(user.id, PRICING.agentCommand);
+    // Pedido pontual vai para o modelo rápido; direção do vídeo inteiro, para o principal.
+    // A mesma classificação roda no navegador, então o preço mostrado é o cobrado.
+    const tier = agentTier(message, !!selection);
+    const price = creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
+    await assertCredits(user.id, price);
     const client = await anthropicClient();
-    const model = await agentModel();
+    const model = tier === "full" ? await agentModel() : await fastAgentModel();
     const available = await balance(user.id);
 
     let working = project;
@@ -136,7 +140,7 @@ export async function POST(req: Request) {
 
     /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
     const settle = async () => {
-      const credits = log.length ? creditCost({ type: "agent" }) : 0;
+      const credits = log.length ? price : 0;
       if (usage.input || usage.output)
         await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits });
       return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
@@ -149,8 +153,8 @@ export async function POST(req: Request) {
           model,
           max_tokens: 16000,
           system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-          thinking: { type: "adaptive" },
-          output_config: { effort: "medium" },
+          // Raciocínio estendido só na edição completa; o ajuste pontual responde direto.
+          ...(tier === "full" ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
           tools: [READ_WORDS_TOOL, EDIT_TOOL],
           messages,
           ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),

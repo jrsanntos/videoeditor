@@ -9,7 +9,8 @@ import {
   EASE,
   parseRich,
   plainText,
-  SFX_LEVEL_DB,
+  SFX_CATALOG,
+  SYNTH_LEVEL_DB,
   soundEvents,
   synthSfx,
   typewriter,
@@ -138,15 +139,58 @@ describe("design sonoro", () => {
     ).project;
   };
 
-  it("deriva os efeitos do estado: whoosh no pan, pop nos itens, golpe e teclas na cena de tela cheia", () => {
+  it("deriva os efeitos do estado, com os sons e as regras do catálogo", () => {
     const events = soundEvents(scene());
-    const at = (sfx: string) => events.filter((e) => e.sfx === sfx).map((e) => e.t);
-    // Pan lateral faz whoosh; punch-in seco e creep não. O giro do cartão (16 + 2) também.
-    expect(at("whoosh")).toEqual([1, 18]);
-    expect(at("pop")).toEqual([1.5, 3]);
-    expect(at("riser")).toEqual([16]);
-    expect(at("tick").length).toBeGreaterThan(5);
-    expect(events).toEqual([...events].sort((a, b) => a.t - b.t));
+    const starts = (sfx: string) => events.filter((e) => e.sfx === sfx).map((e) => e.start);
+    // Pan lateral faz whoosh, com o pico 0,1 s antes do movimento (1 − 0,10 − 0,16 de ataque do arquivo).
+    expect(starts("whoosh_rapido")).toEqual([0.74]);
+    // Punch-in seco tem o seu punch; creep zoom fica em silêncio.
+    expect(starts("zoom_punch")).toHaveLength(1);
+    // Lista: pop no primeiro item, clique discreto no segundo.
+    expect(starts("pop")).toEqual([1.47]);
+    expect(starts("click_suave")).toEqual([2.93]);
+    // Cena de tela cheia: impacto na entrada, digitação enquanto escreve, swoosh no giro.
+    expect(starts("impacto_grave")).toHaveLength(1);
+    expect(starts("swoosh_texto")).toHaveLength(1);
+    const typing = events.filter((e) => e.sfx === "digitacao");
+    expect(typing).toHaveLength(2);
+    expect(typing[0]!.duration).toBeCloseTo(22 / 24, 1);
+    expect(events).toEqual([...events].sort((a, b) => a.start - b.start));
+  });
+
+  it("o mais forte ganha quando dois sons caem juntos, e cada som respeita seu intervalo mínimo", () => {
+    const base = addAssetToProject(createProject({ name: "regras" }), { id: "a", kind: "video", name: "v.mp4", duration: 60, hasAudio: true });
+    const p = applyOperations(
+      base,
+      [
+        // Dois whooshes a 1 s um do outro: o catálogo pede no máximo 1 a cada 3 s.
+        { op: "add_zoom", start: 5, duration: 0.9, scale: 1.3, ease: 0.3, panX: 0.1 },
+        { op: "add_zoom", start: 6, duration: 2, scale: 1.3, ease: 0.3, panX: -0.1 },
+        // Número em dinheiro termina com a caixa registradora, não com pop.
+        { op: "add_component", component: "stat_counter", start: 20, duration: 4, params: { value: 310, prefix: "R$ ", suffix: " mil" } },
+      ],
+      { validateComponent },
+    ).project;
+    const events = soundEvents(p);
+    expect(events.filter((e) => e.sfx === "whoosh_rapido")).toHaveLength(1);
+    expect(events.filter((e) => e.sfx === "caixa_registradora")).toHaveLength(1);
+    expect(events.some((e) => e.sfx === "pop")).toBe(false);
+    expect(events.filter((e) => e.sfx === "tecla").length).toBeGreaterThan(3);
+  });
+
+  it("som que precisaria começar antes de zero pula o início do arquivo", () => {
+    const base = addAssetToProject(createProject({ name: "inicio" }), { id: "a", kind: "video", name: "v.mp4", duration: 10, hasAudio: true });
+    const p = applyOperations(base, [{ op: "add_component", component: "depth_hook_title", start: 0, duration: 3, params: { title: "3 erros" } }], { validateComponent }).project;
+    const [hit] = soundEvents(p);
+    // Pico do impacto em 0,1 s; o arquivo tem 0,35 s de ataque: toca desde 0, pulando 0,25 s.
+    expect(hit).toMatchObject({ sfx: "impacto_grave", start: 0, skip: 0.25 });
+  });
+
+  it("os níveis seguem o catálogo: impacto mais alto que pop, que é mais alto que tecla", () => {
+    const peak = (id: keyof typeof SFX_CATALOG) => SFX_CATALOG[id].level;
+    expect(peak("impacto_grave")).toBeGreaterThan(peak("pop"));
+    expect(peak("pop")).toBeGreaterThan(peak("tecla"));
+    for (const spec of Object.values(SFX_CATALOG)) expect(spec.file).toMatch(/^[a-z0-9_]+\.mp3$/);
   });
 
   it("desligar os efeitos silencia tudo", () => {
@@ -154,12 +198,12 @@ describe("design sonoro", () => {
     expect(soundEvents(off)).toEqual([]);
   });
 
-  it("cada efeito é sintetizado no nível de pico definido e termina em silêncio", () => {
+  it("os timbres de reserva são sintetizados no nível definido e terminam em silêncio", () => {
     for (const id of ["whoosh", "tick", "pop", "riser"] as const) {
       const samples = synthSfx(id, 48000);
       let peak = 0;
       for (const v of samples) peak = Math.max(peak, Math.abs(v));
-      expect(20 * Math.log10(peak)).toBeCloseTo(SFX_LEVEL_DB[id], 0);
+      expect(20 * Math.log10(peak)).toBeCloseTo(SYNTH_LEVEL_DB[id], 0);
       expect(Math.abs(samples[samples.length - 1]!)).toBe(0);
       expect(samples.length).toBeLessThan(48000);
       // Determinístico: preview e exportação tocam exatamente o mesmo som.

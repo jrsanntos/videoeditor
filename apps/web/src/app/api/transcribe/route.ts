@@ -1,4 +1,4 @@
-import { creditCost } from "@videoeditor/core";
+import { creditCost, PLANS } from "@videoeditor/core";
 import { transcribeAudio } from "@/server/ai";
 import { assertCredits, charge, groqCostUSD, recordUsage } from "@/server/billing";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
@@ -18,6 +18,9 @@ export async function POST(req: Request) {
     const duration = Number(form?.get("duration"));
     if (!(file instanceof Blob)) throw new HttpError(400, "Áudio ausente.");
     if (!Number.isFinite(duration) || duration <= 0) throw new HttpError(400, "Duração do vídeo ausente.");
+    const limit = PLANS[user.plan].maxUploadMinutes;
+    if (duration > limit * 60 + 1)
+      throw new HttpError(413, `Seu plano aceita vídeos de até ${limit} minutos. Envie um vídeo mais curto ou mude de plano.`);
     // A duração informada só serve para a checagem prévia; a cobrança usa a medida pelo provedor.
     await assertCredits(user.id, creditCost({ type: "ingest", durationSec: duration }));
 

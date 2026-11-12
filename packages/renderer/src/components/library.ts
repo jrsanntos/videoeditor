@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BrandKit, SafeArea } from "@videoeditor/core";
+import type { SFX_CATALOG } from "../sounds";
 import { V1_COMPONENTS } from "./v1";
 import {
   type Ctx2D,
@@ -45,9 +46,9 @@ export type DrawArgs<P> = {
   drawPerson: () => void;
 };
 
-export type SfxId = "whoosh" | "tick" | "pop" | "riser";
-/** Efeito sonoro em `at` segundos desde o início do componente. */
-export type SoundCue = { at: number; sfx: SfxId };
+export type SfxId = keyof typeof SFX_CATALOG;
+/** Efeito sonoro em `at` segundos desde o início do componente; `duration` só para sons contínuos (digitação). */
+export type SoundCue = { at: number; sfx: SfxId; duration?: number };
 
 export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   id: string;

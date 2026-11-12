@@ -12,6 +12,8 @@ import {
 } from "@videoeditor/core";
 import { validateComponent } from "@videoeditor/renderer";
 
+export type SavedBrand = { id: string; name: string; brand: BrandKit };
+
 export type SessionUser = { id: string; name: string; email: string; role: "user" | "admin"; plan: string; planName?: string };
 
 export type ChatMessage = {
@@ -24,8 +26,10 @@ export type ChatMessage = {
 };
 
 type State = {
-  /** Brand Kit salvo na conta: vira o padrão de cada projeto novo. */
-  brand: BrandKit | null;
+  /** Brand Kits salvos na conta; o primeiro é o padrão de cada projeto novo. */
+  brands: SavedBrand[];
+  /** Quantos Brand Kits o plano permite salvar. */
+  brandLimit: number;
   project: Project | null;
   past: Project[];
   future: Project[];
@@ -64,7 +68,8 @@ const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
 
 export const useEditor = create<State>((set, get) => ({
-  brand: null,
+  brands: [],
+  brandLimit: 1,
   project: null,
   past: [],
   future: [],

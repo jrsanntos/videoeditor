@@ -7,7 +7,10 @@ import { HttpError } from "./errors";
 /** Limite do endpoint de transcrição por arquivo. Em Opus 32 kbps (~0,24 MB/min) cabem ~100 min; em WAV, ~13 min. */
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
+/** Edição completa (skills, direção do vídeo inteiro): o modelo principal. */
 export const agentModel = async () => (await getSetting("AGENT_MODEL")) || "claude-sonnet-5-5";
+/** Ajustes pontuais: modelo rápido, uma fração do custo por comando. */
+export const fastAgentModel = async () => (await getSetting("AGENT_MODEL_FAST")) || "claude-haiku-5-5";
 
 /** Cliente Anthropic com a chave do painel (ou do ambiente). */
 export async function anthropicClient(): Promise<Anthropic> {

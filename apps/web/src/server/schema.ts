@@ -173,4 +173,22 @@ ALTER TABLE credit_ledger ALTER COLUMN delta TYPE numeric(12, 1);
 ALTER TABLE usage_events ALTER COLUMN credits TYPE numeric(12, 1);
 `,
   },
+  {
+    // Vários Brand Kits por conta (limite pelo plano). O kit único de antes vira o primeiro.
+    id: "004_brand_kits",
+    sql: `
+CREATE TABLE brand_kits (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX brand_kits_user_idx ON brand_kits (user_id, created_at);
+INSERT INTO brand_kits (id, user_id, name, data)
+  SELECT 'brd_' || md5(id), id, 'Minha marca', brand_kit FROM users WHERE brand_kit IS NOT NULL;
+ALTER TABLE users DROP COLUMN brand_kit;
+`,
+  },
 ];

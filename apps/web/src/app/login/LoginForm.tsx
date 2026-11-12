@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { SIGNUP_CREDITS } from "@videoeditor/core";
 import { AuthShell, ErrorNote, field, link, submitBtn, useSubmit } from "./AuthShell";
 
 export function LoginForm({ notice }: { notice?: string }) {
@@ -11,7 +12,7 @@ export function LoginForm({ notice }: { notice?: string }) {
 
   return (
     <AuthShell
-      subtitle={mode === "login" ? "Entre para editar seus vídeos." : "Crie sua conta e ganhe 30 créditos para começar."}
+      subtitle={mode === "login" ? "Entre para editar seus vídeos." : `Crie sua conta e ganhe ${SIGNUP_CREDITS} créditos para editar seus primeiros vídeos.`}
       footer={
         <>
           {mode === "login" ? "Ainda não tem conta? " : "Já tem conta? "}

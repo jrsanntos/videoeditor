@@ -1,7 +1,7 @@
 import "server-only";
 import crypto from "node:crypto";
 import { cookies } from "next/headers";
-import { PLANS, type PlanId } from "@videoeditor/core";
+import { SIGNUP_CREDITS, type PlanId } from "@videoeditor/core";
 import { renewIfDue } from "./billing";
 import { db, tx } from "./db";
 import { hashPassword, randomToken, sha256, verifyPassword } from "./crypto";
@@ -86,21 +86,23 @@ export async function createUser(input: { email: string; name: string; password:
       adminEmails().size === 0 &&
       !(await db.one("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1"));
     const role: Role = adminEmails().has(email) || bootstrap ? "admin" : "user";
-    const credits = PLANS.free.monthlyCredits;
+    // Créditos de boas-vindas: uma vez só, no saldo extra (não expiram nem renovam).
+    const credits = SIGNUP_CREDITS;
     // A unicidade é garantida pelo índice: sem corrida entre "existe?" e o insert.
     const user = await db.one<User>(
       `INSERT INTO users (id, email, name, password_hash, role, plan, credits_plan, credits_cycle_grant, credits_renew_at)
-       VALUES ($1, $2, $3, $4, $5, 'free', $6, $6, now() + interval '1 month')
+       VALUES ($1, $2, $3, $4, $5, 'free', 0, 0, now() + interval '1 month')
        ON CONFLICT (email) DO NOTHING RETURNING ${USER_COLS}`,
-      [`usr_${crypto.randomUUID()}`, email, input.name.trim(), passwordHash, role, credits],
+      [`usr_${crypto.randomUUID()}`, email, input.name.trim(), passwordHash, role],
     );
     if (!user) throw new HttpError(409, "Já existe uma conta com este e-mail.");
-    await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason) VALUES ($1, $2, 'plan', $3)", [
+    await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason) VALUES ($1, $2, 'extra', $3)", [
       user.id,
       credits,
-      "créditos do plano Free (cadastro)",
+      "créditos de boas-vindas (cadastro)",
     ]);
-    return user;
+    await db.run("UPDATE users SET credits_extra = $2 WHERE id = $1", [user.id, credits]);
+    return { ...user, credits_extra: credits };
   });
 }
 

@@ -14,6 +14,7 @@ type Setting = {
 
 const PLACEHOLDERS: Record<string, string> = {
   AGENT_MODEL: "claude-sonnet-5-5",
+  AGENT_MODEL_FAST: "claude-haiku-5-5",
   USD_BRL: "5.40",
   EMAIL_FROM: "videoeditor <nao-responda@seudominio.com>",
 };

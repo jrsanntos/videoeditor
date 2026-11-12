@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatCredits, PRICING, projectDuration } from "@videoeditor/core";
+import { formatCredits, PLANS, PRICING, projectDuration, type PlanId } from "@videoeditor/core";
 import { closeProject, importVideo, logout, refreshMe } from "@/lib/actions";
 import { downloadBlob, exportInBrowser } from "@/lib/export";
 import { loadMedia } from "@/lib/media";
@@ -202,6 +202,7 @@ function ExportMenu() {
   const abort = useRef<AbortController | null>(null);
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
   const cloudCost = Math.max(1, Math.ceil((duration / 60) * PRICING.cloudExportPerMinute));
+  const plan = useEditor((s) => PLANS[(s.user?.plan ?? "free") as PlanId] ?? PLANS.free);
 
   const run = async () => {
     const { project, setNotice, setPlaying } = useEditor.getState();
@@ -211,7 +212,10 @@ function ExportMenu() {
     setProgress(0);
     abort.current = new AbortController();
     try {
-      const { blob, extension } = await exportInBrowser(project, setProgress, abort.current.signal);
+      const { blob, extension } = await exportInBrowser(project, setProgress, abort.current.signal, {
+        maxShortSide: plan.maxExportHeight,
+        watermark: plan.watermark,
+      });
       downloadBlob(blob, `${project.name}${extension}`);
       setNotice(`Exportado no seu navegador (${(blob.size / 1e6).toFixed(1)} MB) — 0 créditos.`);
     } catch (e) {
@@ -246,6 +250,7 @@ function ExportMenu() {
           <button onClick={run} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-zinc-800" data-testid="export-browser">
             <span className="block text-sm text-zinc-100">Renderizar no navegador</span>
             <span className="block text-xs text-emerald-400">Grátis · usa o hardware do seu computador</span>
+            {plan.watermark && <span className="mt-0.5 block text-xs text-zinc-500">Plano Free: sai em {plan.maxExportHeight}p com marca d'água</span>}
           </button>
           <div className="rounded-lg px-3 py-2 opacity-50" aria-disabled>
             <span className="block text-sm text-zinc-100">Render turbo na nuvem</span>

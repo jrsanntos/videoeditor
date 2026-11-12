@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { formatCredits, PLANS, TOPUPS, type PlanId } from "@videoeditor/core";
+import { formatCredits, PLANS, SIGNUP_CREDITS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
 
 type Me = {
   user: { plan: PlanId; planName?: string };
@@ -24,6 +24,11 @@ const card = "rounded-2xl border border-zinc-800 bg-zinc-950 p-5";
 const primary = "w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200 disabled:opacity-40";
 const secondary = "rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40";
 const TOPUP = TOPUPS[0];
+/** "35 a 50": quantos vídeos curtos um saldo rende, pela tabela de créditos. */
+const videos = (credits: number) => {
+  const { min, max } = videosEstimate(credits);
+  return min === max ? String(max) : `${min} a ${max}`;
+};
 
 export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
   const [me, setMe] = useState<Me | null>(null);
@@ -92,11 +97,16 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
             </div>
             <div className="text-sm text-zinc-400">
               <div>
-                <b className="font-medium text-zinc-200">{formatCredits(b.creditsPlan)}</b> do plano {me.user.planName}
-                {b.cancelAtPeriodEnd ? ` · assinatura termina em ${day(b.renewsAt)}` : ` · renovam em ${day(b.renewsAt)}`}
+                rende cerca de <b className="font-medium text-zinc-200">{videos(me.credits)}</b> vídeos curtos
               </div>
+              {me.user.plan !== "free" && (
+                <div>
+                  <b className="font-medium text-zinc-200">{formatCredits(b.creditsPlan)}</b> do plano {me.user.planName}
+                  {b.cancelAtPeriodEnd ? ` · assinatura termina em ${day(b.renewsAt)}` : ` · renovam em ${day(b.renewsAt)}`}
+                </div>
+              )}
               <div>
-                <b className="font-medium text-zinc-200">{formatCredits(b.creditsExtra)}</b> extras, que não expiram na renovação
+                <b className="font-medium text-zinc-200">{formatCredits(b.creditsExtra)}</b> {me.user.plan === "free" ? "de boas-vindas e pacotes, que não expiram" : "extras, que não expiram na renovação"}
               </div>
             </div>
             {b.hasPurchases && (
@@ -126,10 +136,20 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
                     {plan.priceBRL > 0 && <span className="text-sm font-normal text-zinc-500">/mês</span>}
                   </div>
                   <ul className="mt-3 flex-1 space-y-1 text-sm text-zinc-400">
-                    <li>{plan.monthlyCredits} créditos por mês</li>
+                    <li>
+                      <b className="font-medium text-zinc-200">
+                        {id === "free" ? `${SIGNUP_CREDITS} créditos de boas-vindas` : `${plan.monthlyCredits.toLocaleString("pt-BR")} créditos por mês`}
+                      </b>
+                      <span className="block text-xs text-zinc-500">
+                        {id === "free"
+                          ? `${videos(SIGNUP_CREDITS)} vídeos curtos para testar · não renovam`
+                          : `cerca de ${videos(plan.monthlyCredits)} ${plan.monthlyCredits >= 2000 ? "vídeos" : "Reels"} por mês`}
+                      </span>
+                    </li>
                     <li>Vídeos de até {plan.maxUploadMinutes} min</li>
                     <li>Exportação em até {plan.maxExportHeight}p</li>
                     <li>{plan.watermark ? "Com marca d'água" : "Sem marca d'água"}</li>
+                    <li>{plan.brandKits === 1 ? "1 Brand Kit salvo" : `Até ${plan.brandKits} Brand Kits (ideal para agências)`}</li>
                   </ul>
                   <div className="mt-4">
                     {id === "free" || current ? null : b.subscribed ? (
@@ -153,7 +173,8 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
             <div className="min-w-0 flex-1">
               <h2 className="font-medium text-white">Pacote de {TOPUP.credits} créditos</h2>
               <p className="mt-1 text-sm text-zinc-400">
-                {brl(TOPUP.priceBRL)}, pagamento único. Entram como créditos extras e só são usados depois dos créditos do plano.
+                {brl(TOPUP.priceBRL)}, pagamento único: cerca de {videos(TOPUP.credits)} vídeos curtos a mais. Entram como créditos extras e só são usados
+                depois dos créditos do plano.
               </p>
             </div>
             {b.available.topup ? (

@@ -39,7 +39,10 @@ Etapa 3 — renderer (feito)
 - [x] Efeitos sonoros sintetizados (whoosh, tecla, pop, golpe) no preview e na exportação
 - [ ] Preview sem engasgo nos cortes (o export já é preciso por frame)
 - [ ] Testar com gravações reais: segmentação com pessoa em movimento, velocidade de exportação com GPU, mixagem dos efeitos por ouvido
-- [ ] Rever a tabela de créditos com o custo real medido por comando
+- [x] Tabela de créditos revista com o custo real medido; modelo rápido para ajustes pontuais
+- [x] Catálogo de efeitos sonoros (23 arquivos) no lugar dos sons sintetizados
+- [x] Free com 60 créditos únicos, limite de 3 min, 720p e marca d'água; estimativa de vídeos na tela de planos; Brand Kits por plano (1 / 1 / 10)
+- [ ] Confirmar a licença de uso comercial dos efeitos sonoros antes do lançamento
 
 ## Fase 1 — Agente de verdade
 
@@ -53,7 +56,7 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [ ] Operações determinísticas adicionais: `remove_fillers` (é, tipo, né)
 - [ ] Trilha de palavras na timeline: clicar na palavra para cortar/editar (edição por texto)
 - [ ] Forma de onda na trilha principal
-- [ ] Roteamento de modelo: Haiku para comandos simples, Sonnet para direção completa; medir custo real por pedido
+- [x] Roteamento de modelo: Haiku para comandos simples, Sonnet para direção completa; custo real medido por pedido
 
 ## Fase 2 — Ingestão robusta
 
@@ -76,7 +79,7 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [x] Limite de requisições no login, no cadastro e na recuperação de senha
 - [ ] Verificação de e-mail no cadastro
 - [ ] Estorno e contestação no Stripe (hoje não removem créditos); validade de 90 dias dos pacotes avulsos
-- [ ] Travas do plano Free: 3 min de upload, marca d'água, 720p
+- [x] Travas do plano Free: 3 min de upload, marca d'água, 720p (no navegador; a transcrição também recusa no servidor)
 - [ ] Storage lifecycle: exclusão automática dos brutos após 15/30 dias de inatividade, mantendo o JSON; armazenamento prolongado como add-on
 - [ ] Limite de requisições nas rotas de IA e teto de gasto de IA por usuário
 - [ ] Telemetria de custo real por operação para calibrar a tabela de créditos

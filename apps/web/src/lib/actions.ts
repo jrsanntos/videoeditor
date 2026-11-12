@@ -6,6 +6,7 @@ import {
   creditCost,
   mainClips,
   newId,
+  PLANS,
   silencesFromAudio,
   SKILLS,
   skillPrompt,
@@ -16,13 +17,14 @@ import {
   type Asset,
   type BrandKit,
   type OperationInput,
+  type PlanId,
   type SkillId,
   type EditTemplate,
   type Project,
   type Transcript,
 } from "@videoeditor/core";
 import { clearMedia, decodeMono, encodeSpeech, probeVideo, SPEECH_RATE, storeMedia } from "./media";
-import { useEditor, type SessionUser } from "./store";
+import { useEditor, type SavedBrand, type SessionUser } from "./store";
 
 /** Ingestão: lê metadados localmente e cria o projeto. Nada sobe para o servidor. */
 export async function importVideo(file: File) {
@@ -30,6 +32,9 @@ export async function importVideo(file: File) {
   setBusy("Lendo o vídeo…");
   try {
     const meta = await probeVideo(file);
+    const plan = PLANS[(useEditor.getState().user?.plan ?? "free") as PlanId] ?? PLANS.free;
+    if (meta.duration > plan.maxUploadMinutes * 60 + 1)
+      throw new Error(`Seu plano aceita vídeos de até ${plan.maxUploadMinutes} minutos (este tem ${Math.ceil(meta.duration / 60)}). Corte o vídeo ou veja os planos.`);
     const asset: Asset = {
       id: newId("asset"),
       kind: "video",
@@ -45,7 +50,7 @@ export async function importVideo(file: File) {
       name: file.name.replace(/\.[^.]+$/, ""),
       // Vertical 9:16 é o padrão; o vídeo de origem preenche o quadro e pode ser reenquadrado.
       aspectRatio: "9:16",
-      brand: useEditor.getState().brand ?? undefined,
+      brand: useEditor.getState().brands[0]?.brand,
     });
     useEditor.setState({ chat: [], time: 0, range: null });
     setProject(addAssetToProject(project, asset));
@@ -127,8 +132,8 @@ export async function refreshMe() {
     window.location.href = "/login";
     return;
   }
-  const data = (await res.json()) as { user?: SessionUser; credits?: number; brand?: BrandKit | null };
-  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, brand: data.brand ?? null });
+  const data = (await res.json()) as { user?: SessionUser; credits?: number; brands?: SavedBrand[]; brandLimit?: number };
+  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, brands: data.brands ?? [], brandLimit: data.brandLimit ?? 1 });
 }
 
 export async function logout() {
@@ -247,14 +252,29 @@ export async function runSkill(id: SkillId) {
   await askAgent(skillPrompt(skill), `Editar com a skill ${skill.name}`);
 }
 
-/** Salva o Brand Kit na conta (padrão dos próximos vídeos) e aplica ao projeto aberto. */
-export async function saveBrand(brand: BrandKit): Promise<string | null> {
-  const res = await fetch("/api/brand", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(brand) }).catch(() => null);
-  const data = (await res?.json().catch(() => null)) as { brand?: BrandKit; error?: string } | null;
-  if (!res?.ok || !data?.brand) return data?.error ?? "Não foi possível salvar. Tente de novo.";
-  useEditor.setState({ brand: data.brand });
+/**
+ * Salva um Brand Kit na conta (cria quando `id` é null, respeitando o limite
+ * do plano) e aplica ao projeto aberto. Devolve mensagem de erro ou null.
+ */
+export async function saveBrand(id: string | null, name: string, brand: BrandKit): Promise<{ error: string | null; id?: string }> {
+  const res = await fetch(id ? `/api/brand/${id}` : "/api/brand", {
+    method: id ? "PUT" : "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, brand }),
+  }).catch(() => null);
+  const data = (await res?.json().catch(() => null)) as { saved?: SavedBrand; error?: string } | null;
+  if (!res?.ok || !data?.saved) return { error: data?.error ?? "Não foi possível salvar. Tente de novo." };
+  const saved = data.saved;
+  useEditor.setState((s) => ({ brands: id ? s.brands.map((b) => (b.id === id ? saved : b)) : [...s.brands, saved] }));
   const { project, apply } = useEditor.getState();
-  return project ? apply([{ op: "set_brand", brand: data.brand }]) : null;
+  return { error: project ? apply([{ op: "set_brand", brand: saved.brand }]) : null, id: saved.id };
+}
+
+export async function deleteBrand(id: string): Promise<string | null> {
+  const res = await fetch(`/api/brand/${id}`, { method: "DELETE" }).catch(() => null);
+  if (!res?.ok) return "Não foi possível apagar. Tente de novo.";
+  useEditor.setState((s) => ({ brands: s.brands.filter((b) => b.id !== id) }));
+  return null;
 }
 
 export async function closeProject() {

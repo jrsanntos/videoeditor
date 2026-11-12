@@ -50,3 +50,27 @@ export function drawTopoBackground(ctx: Ctx2D, width: number, height: number, t:
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 }
+
+/**
+ * Marca d'água do plano Free, desenhada por cima do quadro exportado: discreta
+ * o bastante para o vídeo ser avaliado, visível o bastante para não ser publicado.
+ */
+export function drawWatermark(ctx: Ctx2D, width: number, height: number, text = "feito com videoeditor") {
+  const u = Math.min(width, height) / 1080;
+  ctx.save();
+  ctx.font = `700 ${Math.round(34 * u)}px "Inter", system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 44 * u;
+  const h = 62 * u;
+  // Dentro da área útil do vertical (longe da interface do app), no terço superior.
+  const cx = width / 2;
+  const cy = height * 0.19;
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.beginPath();
+  ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(text, cx, cy + 2 * u);
+  ctx.restore();
+}

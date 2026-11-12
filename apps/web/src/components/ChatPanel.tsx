@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatCredits, PRICING, SKILLS, type SkillId } from "@videoeditor/core";
+import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, type SkillId } from "@videoeditor/core";
 import { askAgent, runSkill } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime } from "./Player";
@@ -17,6 +17,11 @@ export function ChatPanel() {
   const busy = useEditor((s) => s.busy);
   const range = useEditor((s) => s.range);
   const [text, setText] = useState("");
+  const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
+  // O mesmo cálculo do servidor: o preço mostrado é o cobrado.
+  const fullCost = creditCost({ type: "agent", tier: "full", durationSec: duration });
+  const tier = agentTier(text, !!range);
+  const cost = tier === "full" ? fullCost : PRICING.adjust;
   const end = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,6 +57,7 @@ export function ChatPanel() {
                 >
                   <span className="block text-xs font-medium text-zinc-100">{SKILLS[id].name}</span>
                   <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">{SKILLS[id].tagline}</span>
+                  <span className="mt-1 block text-[10px] text-amber-400">{formatCredits(fullCost)} créditos</span>
                 </button>
               ))}
             </div>
@@ -67,8 +73,8 @@ export function ChatPanel() {
               </button>
             ))}
             <p className="pt-2 text-[11px] leading-relaxed text-zinc-600">
-              Cada pedido que altera a timeline custa {String(PRICING.agentCommand).replace(".", ",")} crédito, com quantos zooms e componentes ele criar.
-              Ajustes manuais são sempre gratuitos.
+              Edição completa: {formatCredits(fullCost)} créditos neste vídeo, com quantos zooms e componentes a IA criar. Ajuste pontual:{" "}
+              {PRICING.adjust} crédito. Só é cobrado quando a timeline muda; edição manual é sempre gratuita.
             </p>
           </div>
         )}
@@ -133,7 +139,7 @@ export function ChatPanel() {
           disabled={!text.trim() || !!busy}
           className="mt-2 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200 disabled:opacity-40"
         >
-          Enviar
+          {text.trim() ? `Enviar · ${tier === "full" ? "edição completa" : "ajuste"} · ${formatCredits(cost)} ${cost === 1 ? "crédito" : "créditos"}` : "Enviar"}
         </button>
       </form>
     </aside>

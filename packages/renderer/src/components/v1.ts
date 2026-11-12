@@ -16,11 +16,10 @@ const at = z.number().min(0).optional().describe("instante de entrada, em segund
 const CPS = 24;
 /** Sai nos últimos 0,3 s. */
 const fadeOut = (t: number, duration: number) => clamp01((duration - t) / 0.3);
-/** Tiques de teclado enquanto um texto é digitado. */
-const ticks = (start: number, text: string): SoundCue[] => {
-  const n = Math.min(24, Math.ceil(plainText(text).length / 3));
-  return Array.from({ length: n }, (_, i) => ({ at: start + (i * 3) / CPS, sfx: "tick" as const }));
-};
+/** Som de teclado enquanto um texto é digitado, cortado na duração da digitação. */
+const typing = (start: number, text: string): SoundCue[] => [{ at: start, sfx: "digitacao", duration: Math.max(0.3, plainText(text).length / CPS) }];
+/** Itens entrando em sequência: pop no primeiro, clique discreto nos seguintes. */
+const itemSound = (i: number) => (i === 0 ? ("pop" as const) : ("click_suave" as const));
 /** Instante padrão do item `i` quando o agente não sincronizou com a fala. */
 const spread = (i: number, n: number, duration: number, first = 0.5) => first + (i * Math.max(0.4, duration - first - 1.2)) / Math.max(1, n);
 
@@ -37,7 +36,7 @@ const depthHookTitle = define({
     right: rich(48, "texto curto à direita da cabeça").optional(),
   }),
   example: { title: "3 erros", left: "que fazem você", right: "*perder dinheiro*" },
-  sounds: () => [{ at: 0, sfx: "whoosh" }],
+  sounds: () => [{ at: 0.1, sfx: "impacto_grave" }],
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson }) {
     const p = EASE.snap(stage(t, 0, 0.6));
     const out = fadeOut(t, duration);
@@ -104,7 +103,7 @@ const kineticPivotCard = define({
   example: { setup: "Preço não é o problema", punchline: "A *oferta* é que não convence" },
   sounds: (params, duration) => {
     const pivotAt = params.pivot?.at ?? pivotDefault(duration);
-    return [{ at: 0, sfx: "riser" }, ...ticks(0.3, params.setup), { at: pivotAt, sfx: "whoosh" }, ...ticks(pivotAt + 0.45, params.punchline)];
+    return [{ at: 0.05, sfx: "impacto_grave" }, ...typing(0.3, params.setup), { at: pivotAt + 0.1, sfx: "swoosh_texto" }, ...typing(pivotAt + 0.45, params.punchline)];
   },
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe }) {
     const out = fadeOut(t, duration);
@@ -172,8 +171,9 @@ const stepProgress = define({
   }),
   example: { title: "Do *não* ao sim", steps: [{ label: "Não" }, { label: "Não" }, { label: "Talvez" }, { label: "Sim" }] },
   sounds: (params, duration) => [
-    ...(params.fullscreen ? [{ at: 0, sfx: "riser" as const }] : []),
-    ...params.steps.map((s, i) => ({ at: s.at ?? spread(i, params.steps.length, duration), sfx: "pop" as const })),
+    ...(params.fullscreen ? [{ at: 0.05, sfx: "impacto_grave" as const }] : []),
+    // O último degrau é a chegada: conclusão positiva.
+    ...params.steps.map((s, i) => ({ at: s.at ?? spread(i, params.steps.length, duration), sfx: i === params.steps.length - 1 ? ("ding" as const) : itemSound(i) })),
   ],
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
     const out = fadeOut(t, duration);
@@ -269,7 +269,7 @@ const acronymList = define({
     side: z.enum(["left", "right"]).default("right"),
   }),
   example: { title: "Os 3 erros", items: [{ text: "Tudo na *poupança*" }, { text: "Sem reserva de emergência" }, { text: "Investir sem *objetivo*" }] },
-  sounds: (params, duration) => params.items.map((it, i) => ({ at: it.at ?? spread(i, params.items.length, duration, 0.4), sfx: "pop" as const })),
+  sounds: (params, duration) => params.items.map((it, i) => ({ at: it.at ?? spread(i, params.items.length, duration, 0.4), sfx: itemSound(i) })),
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
     const out = fadeOut(t, duration);
     const right = params.side === "right";
@@ -348,6 +348,7 @@ const executiveLowerThird = define({
     credential: z.string().max(60).optional().describe("omita para usar a credencial do Brand Kit"),
   }),
   example: { name: "Dra. Ana Silva", credential: "Cardiologista • CRM 12345" },
+  sounds: () => [{ at: 0.2, sfx: "swoosh_texto" }],
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe }) {
     const name = params.name ?? brand.displayName;
     const credential = params.credential ?? (params.name ? "" : brand.credential);
@@ -421,7 +422,15 @@ const statCounter = define({
     fullscreen: z.boolean().default(false).describe("true: cena de tela cheia em fundo escuro, para o número mais importante do vídeo"),
   }),
   example: { value: 30, suffix: "%", prefix: "+", label: "de retorno para quem tem *objetivo*" },
-  sounds: (params, duration) => [...(params.fullscreen ? [{ at: 0, sfx: "riser" as const }] : [{ at: 0, sfx: "whoosh" as const }]), { at: 0.2 + countTime(duration), sfx: "pop" }],
+  sounds: (params, duration) => {
+    const end = 0.2 + countTime(duration);
+    const money = /\$/.test(params.prefix);
+    return [
+      // Teclas enquanto conta; no valor final: caixa registradora para dinheiro, impacto na tela cheia, pop no resto.
+      ...Array.from({ length: Math.min(8, Math.floor(countTime(duration) / 0.14)) }, (_, i) => ({ at: 0.25 + i * 0.14, sfx: "tecla" as const })),
+      { at: end, sfx: money ? ("caixa_registradora" as const) : params.fullscreen ? ("impacto_grave" as const) : ("pop" as const) },
+    ];
+  },
   draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
     const out = fadeOut(t, duration);
     if (params.fullscreen) drawTopoBackground(ctx, W, H, t, brand, Math.min(EASE.snap(t / 0.35), out));
