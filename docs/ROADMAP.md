@@ -12,14 +12,42 @@ Ordem pensada para validar o produto com usuários reais o mais cedo possível e
 - [x] Rota do agente (Claude + ferramenta `edit_timeline`) e rota de transcrição
 - [x] Tabela de créditos e planos em código
 
-## Fase 1 — Agente de verdade (próximo)
+## Versão 1.0 — ver [V1_SPEC.md](V1_SPEC.md)
+
+Etapa 1 — núcleo (feito)
+
+- [x] Operações do agente só por id de palavra/clip (`cut_words`, `atWord`/`untilWord`); o core traduz para a timeline, sem ripple shift e sem depender da ordem
+- [x] Detector determinístico de takes ruins (retomadas, gaguejos, avisos de erro) + `remove_retakes` gratuito no navegador
+- [x] Brand Kit no projeto e na conta; componentes herdam cores, nome e credencial
+- [x] Contexto do agente em ids de palavra e tempo do vídeo bruto
+
+Etapa 2 — agente (feito, exceto avaliação)
+
+- [x] Validado com Groq + Claude reais; prompt com erros de gravação como prioridade nº 1
+- [x] Resposta em streaming: cada etapa aplicada atualiza a timeline ao vivo
+- [x] Áudio da fala em Opus 32 kbps (10 min ≈ 2 MB)
+- [x] 4 skills (Viral, Autoridade, VSL, Limpeza): limpeza local grátis + direção para o agente
+- [ ] Conjunto de avaliação com 10–20 vídeos reais (gravações humanas, não voz sintética)
+
+Etapa 3 — renderer (próximo)
+
+- [ ] Formato vertical 9:16 com reenquadramento
+- [ ] Câmera com `panX`/`panY`, creep zoom, curvas bezier e motion blur nas transições
+- [ ] Tipografia mista (sem serifa + serifada itálica) com fontes do Brand Kit via `FontFace`; typewriter e split text
+- [ ] Os 6 componentes da v1.0 (`DepthHookTitle`, `KineticPivotCard`, `StepProgressGraphic`, `AcronymOrSplitList`, `ExecutiveLowerThird`, `StatHighlightCounter`); as skills passam a usá-los
+- [ ] Segmentação de pessoa para texto atrás do apresentador (só nos trechos com `DepthHookTitle`, com cache de máscaras)
+- [ ] Efeitos sonoros sincronizados (4 assets) na mixagem
+- [ ] Preview sem engasgo nos cortes (o export já é preciso por frame)
+
+## Fase 1 — Agente de verdade
 
 Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-alvo publicaria.
 
-- [ ] Validar agente e transcrição com chaves reais; ajustar prompt com 10–20 vídeos reais de VSL/aula
+- [x] Validar agente e transcrição com chaves reais
+- [ ] Ajustar prompt com 10–20 vídeos reais de VSL/aula
 - [ ] Conjunto de avaliação: pedidos típicos × vídeos, com checagens automáticas (duração removida, cortes não comem palavras, componentes válidos)
-- [ ] Streaming da resposta e das operações para a UI (progresso visível durante a edição)
-- [x] Detecção de retomadas/repetições com intervalo de corte exato; ferramenta `read_words` para tempo por palavra
+- [x] Streaming da resposta e das operações para a UI (progresso visível durante a edição)
+- [x] Detecção de retomadas/repetições com corte exato por palavra; ferramenta `read_words`
 - [ ] Operações determinísticas adicionais: `remove_fillers` (é, tipo, né)
 - [ ] Trilha de palavras na timeline: clicar na palavra para cortar/editar (edição por texto)
 - [ ] Forma de onda na trilha principal
@@ -27,7 +55,8 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 
 ## Fase 2 — Ingestão robusta
 
-- [ ] Extração de áudio em streaming (sem carregar o arquivo inteiro) e envio em Opus/chunks → vídeos longos
+- [x] Envio do áudio em Opus
+- [ ] Extração de áudio em streaming (sem carregar o arquivo inteiro) e envio em chunks → vídeos longos
 - [ ] Proxy 720p para preview fluido de fontes 4K/pesadas
 - [ ] Segundo `<video>` em pré-carregamento para cortes sem engasgo no preview
 - [ ] Formatos verticais (9:16) com reenquadramento; múltiplos assets; trilha de música/efeitos sonoros

@@ -7,15 +7,21 @@ import {
   mainClips,
   newId,
   silencesFromAudio,
+  SKILLS,
+  skillPrompt,
+  timelineWords,
   sourceRangesToTimeline,
   templateOperations,
   templatePrompt,
   type Asset,
+  type BrandKit,
+  type OperationInput,
+  type SkillId,
   type EditTemplate,
   type Project,
   type Transcript,
 } from "@videoeditor/core";
-import { clearMedia, decodeMono, encodeWav, probeVideo, SPEECH_RATE, storeMedia } from "./media";
+import { clearMedia, decodeMono, encodeSpeech, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { useEditor, type SessionUser } from "./store";
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
@@ -41,6 +47,7 @@ export async function importVideo(file: File) {
       name: file.name.replace(/\.[^.]+$/, ""),
       width: even(meta.width),
       height: even(meta.height),
+      brand: useEditor.getState().brand ?? undefined,
     });
     useEditor.setState({ chat: [], time: 0, range: null });
     setProject(addAssetToProject(project, asset));
@@ -92,10 +99,10 @@ export async function transcribe() {
   if (credits < cost) return setNotice(`Créditos insuficientes: a transcrição custa ${cost} créditos.`);
   setBusy("Extraindo o áudio…");
   try {
-    const wav = encodeWav(await decodeMono(assetId), SPEECH_RATE);
+    const audio = await encodeSpeech(await decodeMono(assetId), SPEECH_RATE);
     setBusy("Transcrevendo…");
     const body = new FormData();
-    body.append("file", wav, "audio.wav");
+    body.append("file", audio.blob, audio.filename);
     body.append("duration", String(asset.duration));
     const res = await fetch("/api/transcribe", { method: "POST", body });
     const data = (await res.json()) as { transcript?: Transcript; balance?: number; error?: string };
@@ -122,8 +129,8 @@ export async function refreshMe() {
     window.location.href = "/login";
     return;
   }
-  const data = (await res.json()) as { user?: SessionUser; credits?: number };
-  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0 });
+  const data = (await res.json()) as { user?: SessionUser; credits?: number; brand?: BrandKit | null };
+  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, brand: data.brand ?? null });
 }
 
 export async function logout() {
@@ -143,36 +150,113 @@ export async function applyTemplate(template: EditTemplate) {
   await askAgent(templatePrompt(template), `Aplicar o modelo "${template.name}"`);
 }
 
-/** Pedido ao agente. Com um trecho selecionado, só os metadados dele são enviados. */
+type AgentEvent =
+  | { type: "status"; text: string }
+  | { type: "ops"; project: Project; log: string[] }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number }
+  | { type: "error"; error: string };
+
+/**
+ * Pedido ao agente. A resposta chega em etapas (um JSON por linha): cada grupo
+ * de operações aplicado no servidor atualiza a timeline na hora. Com um trecho
+ * selecionado, só os metadados dele são enviados.
+ */
 export async function askAgent(message: string, label?: string) {
   const s = useEditor.getState();
   if (!s.project || !message.trim()) return;
   const history = s.chat.filter((m) => !m.error).slice(-8).map((m) => ({ role: m.role, text: m.text }));
   s.pushChat({ role: "user", text: label ?? message });
-  s.setBusy("O agente está editando…");
+  s.setBusy("O agente está lendo o vídeo…");
+  let applied = false;
+  const log: string[] = [];
   try {
     const res = await fetch("/api/agent", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ project: s.project, selection: s.range, message, history }),
     });
-    const data = (await res.json()) as {
-      message?: string;
-      project?: Project;
-      log?: string[];
-      credits?: number;
-      balance?: number;
-      error?: string;
+    if (!res.ok || !res.body) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? "O agente não respondeu.");
+    }
+    const onEvent = (e: AgentEvent) => {
+      if (e.type === "status") s.setBusy(e.text);
+      else if (e.type === "ops") {
+        // A primeira etapa cria o ponto de desfazer; as seguintes só atualizam: um Ctrl+Z desfaz o pedido inteiro.
+        s.setProject(e.project, { history: applied ? "keep" : true });
+        applied = true;
+        log.push(...e.log);
+        s.setBusy(`${e.log[e.log.length - 1] ?? "Edição aplicada"}. Continuando…`);
+      } else if (e.type === "done") {
+        s.setCredits(e.balance);
+        s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits });
+      } else {
+        void refreshMe();
+        s.pushChat({ role: "assistant", text: applied ? `${e.error} As etapas já aplicadas foram mantidas (Ctrl+Z desfaz).` : e.error, log: log.length ? log : undefined, error: true });
+      }
     };
-    if (typeof data.balance === "number") s.setCredits(data.balance);
-    if (!res.ok || !data.message) throw new Error(data.error ?? "O agente não respondeu.");
-    if (data.project && data.log?.length) s.setProject(data.project, { history: true });
-    s.pushChat({ role: "assistant", text: data.message, log: data.log, credits: data.credits });
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    let finished = false;
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffer += value ?? "";
+      const lines = buffer.split("\n");
+      buffer = done ? "" : lines.pop()!;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as AgentEvent;
+        if (event.type === "done" || event.type === "error") finished = true;
+        onEvent(event);
+      }
+      if (done) break;
+    }
+    if (!finished) throw new Error("A conexão com o agente caiu antes do fim.");
   } catch (e) {
     s.pushChat({ role: "assistant", text: (e as Error).message, error: true });
   } finally {
     s.setBusy(null);
   }
+}
+
+const hasTranscript = (project: Project) => timelineWords(project).length > 0;
+
+/** Tira os erros de gravação de alta confiança, no navegador: 0 créditos. */
+export function removeRetakesLocally() {
+  const { project, apply, setNotice } = useEditor.getState();
+  if (!project) return;
+  if (!hasTranscript(project)) return setNotice("Transcreva o vídeo primeiro: os erros de gravação são achados pela fala.");
+  const before = timelineWords(project).length;
+  const error = apply([{ op: "remove_retakes" }]);
+  if (error) return setNotice(error);
+  const removed = before - timelineWords(useEditor.getState().project!).length;
+  setNotice(removed ? `Erros de gravação removidos (${removed} palavras repetidas ou erradas). Ctrl+Z desfaz.` : "Nenhum erro de gravação evidente encontrado. Peça ao agente uma revisão mais fina.");
+}
+
+/**
+ * Skill: a limpeza determinística roda aqui, de graça; a direção de estilo
+ * (cortes finos, câmera, motion) vai para o agente.
+ */
+export async function runSkill(id: SkillId) {
+  const s = useEditor.getState();
+  if (!s.project) return;
+  if (!hasTranscript(s.project)) return s.setNotice("Transcreva o vídeo primeiro: as skills editam a partir da fala.");
+  const skill = SKILLS[id];
+  // Uma operação sem efeito (ex.: nenhum silêncio) não impede as demais.
+  const ops: OperationInput[] = skill.local;
+  const error = s.apply(ops);
+  if (error) return s.setNotice(error);
+  await askAgent(skillPrompt(skill), `Editar com a skill ${skill.name}`);
+}
+
+/** Salva o Brand Kit na conta (padrão dos próximos vídeos) e aplica ao projeto aberto. */
+export async function saveBrand(brand: BrandKit): Promise<string | null> {
+  const res = await fetch("/api/brand", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(brand) }).catch(() => null);
+  const data = (await res?.json().catch(() => null)) as { brand?: BrandKit; error?: string } | null;
+  if (!res?.ok || !data?.brand) return data?.error ?? "Não foi possível salvar. Tente de novo.";
+  useEditor.setState({ brand: data.brand });
+  const { project, apply } = useEditor.getState();
+  return project ? apply([{ op: "set_brand", brand: data.brand }]) : null;
 }
 
 export async function closeProject() {

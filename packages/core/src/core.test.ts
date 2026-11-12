@@ -7,8 +7,12 @@ import {
   templateOperations,
   templatePrompt,
   type EditTemplate,
-  findRepetitions,
+  type OperationInput,
+  findRetakes,
+  AgentOperationSchema,
+  ProjectSchema,
   shiftTimedParams,
+  clipEnd,
   createProject,
   creditCost,
   nextRenewal,
@@ -231,7 +235,8 @@ describe("agente e créditos", () => {
   });
 });
 
-describe("precisão por palavra para o agente", () => {
+describe("referências estáveis por palavra", () => {
+  /** Palavras de 0.4s a cada 0.5s a partir de 1s: w{i} começa em 1 + i*0.5. */
   function withWords(texts: string[]): Project {
     const words = texts.map((text, i) => ({ id: `w${i}`, text, start: 1 + i * 0.5, end: 1.4 + i * 0.5 }));
     return addAssetToProject(createProject({ name: "rep" }), {
@@ -243,21 +248,128 @@ describe("precisão por palavra para o agente", () => {
       transcript: { words },
     });
   }
+  const talk = () => withWords(["Olá", "pessoal.", "O", "segredo", "do", "o", "segredo", "do", "sucesso", "é", "constância", "todo", "dia."]);
+  const spoken = (p: Project) => timelineWords(p).map((w) => w.id).join(" ");
 
-  it("detecta retomadas e ignora artigos repetidos", () => {
-    const p = withWords(["O", "segredo,", "o", "segredo", "foi", "é", "é", "mudar", "mudar", "a", "oferta"]);
-    const reps = findRepetitions(timelineWords(p));
-    expect(reps.map((r) => r.phrase)).toEqual(["O segredo", "mudar"]);
-    expect(reps[0]).toMatchObject({ firstIndex: 0, secondIndex: 2, length: 2 });
+  it("cut_words corta do início da primeira palavra ao início da seguinte à última", () => {
+    const { project, log } = applyOperations(talk(), [{ op: "cut_words", cuts: [{ from: "w2", to: "w4" }] }]);
+    expect(spoken(project)).toBe("w0 w1 w5 w6 w7 w8 w9 w10 w11 w12");
+    // w2 começa em 2s e w5 em 3.5s: saem exatamente 1.5s, e w5 passa a começar onde w2 começava.
+    expect(timelineWords(project).find((w) => w.id === "w5")!.start).toBe(2);
+    expect(log[0]).toContain('"O segredo do"');
   });
 
-  it("o contexto do vídeo inteiro traz as repetições com tempo por palavra", () => {
-    const ctx = buildAgentContext(withWords(["Olá.", "O", "segredo,", "o", "segredo", "foi", "mudar."]));
-    expect(ctx).toContain("read_words");
-    expect(ctx).toContain('"O segredo" repetido — corte: {"start": 1.5, "end": 2.5}');
-    // a primeira ocorrência começa em 1.5s; a segunda, em 2.5s
-    expect(ctx).toMatch(/w1 \| 1\.5–1\.9 \| O/);
-    expect(ctx).toMatch(/w3 \| 2\.5–2\.9 \| o/);
+  it("zoom e componente ancorados em palavra não se deslocam, em qualquer ordem de operações", () => {
+    const cut: OperationInput = { op: "cut_words", cuts: [{ from: "w2", to: "w4" }] };
+    const zoom: OperationInput = { op: "add_zoom", atWord: "w8", untilWord: "w10" };
+    const comp: OperationInput = { op: "add_component", component: "x", atWord: "w9", duration: 2, params: { items: [{ atWord: "w10" }, { atWord: "w12" }] } };
+    const a = applyOperations(talk(), [zoom, comp, cut]).project;
+    const b = applyOperations(talk(), [cut, zoom, comp]).project;
+    for (const p of [a, b]) {
+      const words = timelineWords(p);
+      const at = (id: string) => words.find((w) => w.id === id)!;
+      const z = getTrack(p, "fx").clips[0]!;
+      expect(z.start).toBe(at("w8").start);
+      expect(clipEnd(z)).toBe(at("w10").end);
+      const c = p.tracks.flatMap((t) => t.clips).find((c) => c.type === "component")!;
+      expect(c.start).toBe(at("w9").start);
+      if (c.type !== "component") throw new Error("esperado componente");
+      // atWord vira `at` relativo ao início do componente: w10 está 0.5s depois de w9, w12 a 1.5s.
+      expect(c.params).toEqual({ items: [{ at: 0.5 }, { at: 1.5 }] });
+    }
+  });
+
+  it("cortar de novo o mesmo trecho não faz nada; ancorar em palavra cortada é erro claro", () => {
+    const cut: OperationInput = { op: "cut_words", cuts: [{ from: "w2", to: "w4" }] };
+    const { project, log } = applyOperations(talk(), [cut, cut]);
+    expect(log[1]).toContain("nada a cortar");
+    expect(() => applyOperations(project, [{ op: "add_zoom", atWord: "w3", duration: 2 }])).toThrow(/w3 não está na timeline/);
+  });
+
+  it("o vocabulário do agente não aceita tempo de timeline", () => {
+    expect(AgentOperationSchema.safeParse({ op: "remove_ranges", ranges: [{ start: 1, end: 2 }] }).success).toBe(false);
+    expect(AgentOperationSchema.safeParse({ op: "add_zoom", start: 3, duration: 2 }).success).toBe(false);
+    expect(AgentOperationSchema.safeParse({ op: "add_zoom", atWord: "w3", duration: 2 }).success).toBe(true);
+  });
+
+  it("o contexto do agente usa ids de palavra e tempo do vídeo bruto, mesmo depois de cortes", () => {
+    const before = buildAgentContext(talk());
+    expect(before).toContain("[w0–w1 | 1–1.9] Olá pessoal.");
+    const { project } = applyOperations(talk(), [{ op: "cut_words", cuts: [{ from: "w0", to: "w1" }] }]);
+    const after = buildAgentContext(project);
+    // "O" continua sendo w2 em 2s do bruto, embora agora esteja no início da timeline.
+    expect(after).toMatch(/\[w2–w\d+ \| 2–/);
+    expect(after).not.toContain("Olá");
+  });
+});
+
+describe("takes ruins", () => {
+  const takes = (texts: string[], gaps: Record<number, number> = {}) => {
+    let t = 1;
+    const words = texts.map((text, i) => {
+      t += gaps[i] ?? 0;
+      const w = { id: `w${i}`, text, start: Math.round(t * 100) / 100, end: Math.round((t + 0.4) * 100) / 100, clipId: "c", assetId: "a" };
+      t += 0.5;
+      return w;
+    });
+    return findRetakes(words);
+  };
+
+  it("frase abandonada e recomeçada: corta até o recomeço, com confiança alta", () => {
+    const r = takes(["Olá.", "O", "segredo", "do", "o", "segredo", "do", "sucesso", "é", "constância."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", from: "w1", to: "w3", cutText: "O segredo do" });
+    expect(r[0]!.keepText).toMatch(/^o segredo do sucesso/);
+  });
+
+  it("recomeço com palavras no meio também é encontrado", () => {
+    const r = takes(["Hoje", "eu", "vou", "mostrar", "como", "é", "hoje", "eu", "vou", "mostrar", "três", "passos."]);
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", from: "w0", to: "w5" });
+  });
+
+  it("gaguejo de uma palavra conta; artigo repetido não", () => {
+    const r = takes(["é", "é", "preciso", "mudar", "mudar", "a", "oferta."]);
+    expect(r.map((x) => [x.kind, x.cutText])).toEqual([["stutter", "mudar"]]);
+  });
+
+  it("paralelismo com frases completas fica como dúvida, não como erro certo", () => {
+    const r = takes(["Você", "precisa", "de", "foco.", "Você", "precisa", "de", "método."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]!.confidence).toBe("media");
+  });
+
+  it("aviso de erro corta a frase até o aviso", () => {
+    const r = takes(["Tudo", "certo.", "O", "preço", "é", "cem,", "errei.", "Custa", "duzentos", "reais."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "marker", confidence: "alta", from: "w2", to: "w6" });
+  });
+
+  it("'de novo' no meio de uma frase normal não é aviso de erro", () => {
+    expect(takes(["Faça", "de", "novo", "amanhã", "cedo."])).toEqual([]);
+  });
+
+  it("remove_retakes corta só os de confiança alta por padrão", () => {
+    const words = ["Olá.", "O", "segredo", "do", "o", "segredo", "do", "sucesso.", "Você", "precisa", "de", "foco.", "Você", "precisa", "de", "método."].map(
+      (text, i) => ({ id: `w${i}`, text, start: 1 + i * 0.5, end: 1.4 + i * 0.5 }),
+    );
+    const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 12, hasAudio: true, transcript: { words } });
+    const { project } = applyOperations(p, [{ op: "remove_retakes" }]);
+    expect(timelineWords(project).map((w) => w.text).join(" ")).toBe("Olá. o segredo do sucesso. Você precisa de foco. Você precisa de método.");
+  });
+});
+
+describe("brand kit", () => {
+  it("projeto novo nasce com o padrão; projeto antigo sem brand continua abrindo", () => {
+    const p = createProject({ name: "x" });
+    expect(p.brand).toMatchObject({ backgroundColor: "#0B0F19", textColor: "#F8FAFC" });
+    const { brand: _, ...old } = p;
+    expect(ProjectSchema.parse(old).brand.primaryColor).toBe("#FACC15");
+  });
+
+  it("set_brand mescla e valida as cores", () => {
+    const { project } = applyOperations(createProject({ name: "x" }), [{ op: "set_brand", brand: { primaryColor: "#FF0055", displayName: "Dra. Ana Silva", credential: "CRM 12345" } }]);
+    expect(project.brand).toMatchObject({ primaryColor: "#FF0055", secondaryColor: "#38BDF8", displayName: "Dra. Ana Silva" });
+    expect(() => applyOperations(project, [{ op: "set_brand", brand: { primaryColor: "vermelho" } }])).toThrow();
   });
 });
 

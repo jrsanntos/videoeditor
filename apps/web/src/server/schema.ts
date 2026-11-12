@@ -157,4 +157,8 @@ CREATE TABLE stripe_events (
 );
 `,
   },
+  {
+    id: "002_brand_kit",
+    sql: `ALTER TABLE users ADD COLUMN brand_kit jsonb;`,
+  },
 ];

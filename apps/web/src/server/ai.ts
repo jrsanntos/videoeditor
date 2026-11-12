@@ -4,7 +4,7 @@ import type { Transcript } from "@videoeditor/core";
 import { getSetting } from "./settings";
 import { HttpError } from "./errors";
 
-/** Limite do endpoint de transcrição por arquivo. 16 kHz mono WAV ≈ 1,9 MB/min → ~13 min. */
+/** Limite do endpoint de transcrição por arquivo. Em Opus 32 kbps (~0,24 MB/min) cabem ~100 min; em WAV, ~13 min. */
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 export const agentModel = async () => (await getSetting("AGENT_MODEL")) || "claude-sonnet-5-5";
@@ -50,10 +50,11 @@ export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcr
       "A transcrição não está configurada: cadastre a chave da Groq no painel de administração (ou defina GROQ_API_KEY). Sem ela, use a remoção local de silêncios e a edição manual.",
     );
   if (file.size > MAX_AUDIO_BYTES)
-    throw new HttpError(413, "Áudio acima de 25 MB (~13 min). Vídeos mais longos serão suportados com o proxy de ingestão.");
+    throw new HttpError(413, "Áudio acima de 25 MB. Divida o vídeo em partes menores.");
 
   const body = new FormData();
-  body.append("file", file, "audio.wav");
+  // O provedor identifica o formato pela extensão do nome.
+  body.append("file", file, file.type.includes("webm") ? "audio.webm" : "audio.wav");
   body.append("model", "whisper-large-v3-turbo");
   body.append("response_format", "verbose_json");
   body.append("timestamp_granularities[]", "word");

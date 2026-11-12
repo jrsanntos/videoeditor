@@ -1,16 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PRICING } from "@videoeditor/core";
-import { askAgent } from "@/lib/actions";
+import { PRICING, SKILLS, type SkillId } from "@videoeditor/core";
+import { askAgent, runSkill } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime } from "./Player";
 
 const SUGGESTIONS = [
-  "Remova silêncios e erros de fala",
+  "Revise os erros de gravação e corte os takes ruins",
   "Aplique zoom nos momentos de ênfase",
   "Crie um gráfico animado quando eu citar números",
-  "Adicione uma tarja com meu nome no começo",
 ];
 
 export function ChatPanel() {
@@ -41,6 +40,22 @@ export function ChatPanel() {
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         {chat.length === 0 && (
           <div className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Editar em 1 clique</p>
+            <div className="grid grid-cols-2 gap-2" data-testid="skills">
+              {(Object.keys(SKILLS) as SkillId[]).map((id) => (
+                <button
+                  key={id}
+                  onClick={() => void runSkill(id)}
+                  disabled={!!busy}
+                  title={SKILLS[id].audience}
+                  className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-left hover:border-indigo-500 disabled:opacity-40"
+                >
+                  <span className="block text-xs font-medium text-zinc-100">{SKILLS[id].name}</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">{SKILLS[id].tagline}</span>
+                </button>
+              ))}
+            </div>
+            <p className="pt-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Ou peça o que quiser</p>
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}

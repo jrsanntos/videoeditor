@@ -5,6 +5,7 @@ import {
   applyOperations,
   projectDuration,
   ProjectSchema,
+  type BrandKit,
   type OperationInput,
   type Project,
   type TimeRange,
@@ -23,6 +24,8 @@ export type ChatMessage = {
 };
 
 type State = {
+  /** Brand Kit salvo na conta: vira o padrão de cada projeto novo. */
+  brand: BrandKit | null;
   project: Project | null;
   past: Project[];
   future: Project[];
@@ -38,7 +41,8 @@ type State = {
   busy: string | null;
   notice: string | null;
 
-  setProject: (p: Project | null, opts?: { history?: boolean }) => void;
+  /** history: true empilha o estado atual para desfazer; "keep" troca o projeto sem mexer no histórico (atualizações ao vivo do agente). */
+  setProject: (p: Project | null, opts?: { history?: boolean | "keep" }) => void;
   /** Aplica operações (edição manual = 0 créditos). Retorna mensagem de erro ou null. */
   apply: (ops: OperationInput[]) => string | null;
   undo: () => void;
@@ -58,6 +62,7 @@ const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
 
 export const useEditor = create<State>((set, get) => ({
+  brand: null,
   project: null,
   past: [],
   future: [],
@@ -77,7 +82,7 @@ export const useEditor = create<State>((set, get) => ({
       const duration = project ? projectDuration(project) : 0;
       return {
         project,
-        past: opts?.history && s.project ? [...s.past.slice(-HISTORY_LIMIT), s.project] : opts?.history ? s.past : [],
+        past: opts?.history === true && s.project ? [...s.past.slice(-HISTORY_LIMIT), s.project] : opts?.history ? s.past : [],
         future: [],
         time: Math.min(s.time, duration),
         selectedClipId: null,

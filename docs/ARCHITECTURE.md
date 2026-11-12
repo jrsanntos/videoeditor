@@ -27,13 +27,15 @@ Tempos em segundos, arredondados a milissegundos.
 
 A única forma de mudar um projeto é `applyOperations(project, ops)`. A UI manual e o agente usam exatamente o mesmo vocabulário:
 
-`remove_ranges` · `remove_silences` · `split` · `delete_clip` · `trim_clip` · `add_zoom` · `add_component` · `update_clip` · `set_captions` · `edit_word`
+`remove_ranges` · `cut_words` · `remove_retakes` · `remove_silences` · `split` · `delete_clip` · `trim_clip` · `add_zoom` · `add_component` · `update_clip` · `set_captions` · `edit_word` · `set_brand`
 
 Propriedades que importam:
 
 - **Validadas** por zod antes de aplicar; params de componentes validados contra o catálogo.
 - **Puras e atômicas**: não mutam a entrada; se uma falha, nada é aplicado e o erro traz o índice. É o que permite devolver o erro ao agente para ele se corrigir, e o que dá undo/redo de graça (o histórico é uma pilha de projetos).
 - **Ripple em todas as trilhas**: um corte desloca e apara zooms e overlays junto com a fala.
+- **Âncoras por palavra**: cortes (`cut_words`), zooms e componentes (`atWord`/`untilWord`, e `atWord` dentro dos params) referenciam ids de palavra, que apontam para instantes do vídeo bruto e não mudam com cortes. O core traduz para tempo de timeline ao aplicar. A UI manual usa tempo de timeline (é o que o usuário arrasta); o agente recebe um subconjunto do vocabulário (`AgentOperationSchema`) em que tempo de timeline não existe. Consequências: a ordem das operações não importa, um corte nunca come sílaba (cai no intervalo entre palavras) e repetir um corte não faz nada.
+- **Takes ruins** (`retakes.ts`): `findRetakes` acha frase recomeçada, gaguejo, palavra truncada e aviso de erro ("errei", "vou falar de novo"), cada um com o corte exato e confiança alta ou media. `remove_retakes` corta os de confiança alta sem IA.
 - **Determinísticas quando possível**: `remove_silences` é calculado em código a partir das pausas da transcrição; o modelo só decide os parâmetros. Trabalho mecânico não gasta raciocínio do LLM.
 
 ## 4. Renderizador único (`packages/renderer`)
@@ -59,10 +61,12 @@ Hoje: `lower_third`, `title_card`, `bar_chart`, `counter`, `text_highlight`, `bu
 ## 6. Agente (`apps/web/src/app/api/agent/route.ts`)
 
 - **Entrada**: projeto, pedido do usuário, seleção opcional, histórico curto.
-- **Contexto** (`buildAgentContext`): lista de clips + transcrição em tempo de timeline. Vídeo inteiro vai como frases com tempo e pausas anotadas, mais as **repetições detectadas** (`findRepetitions`) com tempo por palavra e o intervalo de corte exato; com **seleção ativa** vão só os clips e palavras daquele trecho (com id e tempo por palavra) — é a "intervenção cirúrgica" que reduz tokens em ordens de grandeza.
-- **Ferramentas**: `edit_timeline({ operations })` altera; `read_words({ start, end })` só lê o tempo por palavra de um trecho da timeline atual (já com os cortes da conversa), para cortes e sincronizações precisos sem mandar a transcrição inteira por palavra. O servidor aplica em uma cópia do projeto; erro volta como `tool_result` com `is_error` para o modelo corrigir. Máximo de 6 voltas.
-- **Instantes internos**: componentes podem ter `at` (segundos desde o início do clip, ex.: quando cada barra do gráfico sobe). Cortes dentro do componente deslocam esses instantes junto com a fala (`shiftTimedParams`).
-- **Saída**: projeto resultante, log legível das operações, custo em créditos. O cliente troca o projeto como um único passo de undo.
+- **Contexto** (`buildAgentContext`): Brand Kit, zooms e componentes existentes (localizados pelas palavras que cobrem) e a transcrição em frases curtas no formato `[w10–w17 | início–fim no vídeo bruto] texto`, com pausas anotadas e a lista de **takes ruins detectados** já com o corte pronto. Com **seleção ativa** vão só as palavras daquele trecho, uma por linha — a "intervenção cirúrgica" que reduz tokens em ordens de grandeza.
+- **Ferramentas**: `edit_timeline({ operations })` altera, só com ids de palavra e de clip; `read_words({ fromWord, toWord })` lê palavra por palavra um trecho, já sem o que foi cortado. O servidor aplica em uma cópia do projeto; erro volta como `tool_result` com `is_error` para o modelo corrigir. Máximo de 8 voltas.
+- **Prioridade do prompt**: limpar a fala (takes ruins, frases refeitas, falas para a equipe) antes de qualquer efeito.
+- **Streaming**: a resposta é NDJSON. Cada chamada de `edit_timeline` aplicada vira um evento `ops` com o projeto atualizado, e o navegador troca a timeline na hora; `status` descreve o que o agente está fazendo; `done` traz a mensagem final e a cobrança. O pedido inteiro é um único passo de undo. Se o usuário fecha a aba, a chamada ao modelo é cancelada.
+- **Skills** (`packages/core/src/skills.ts`): Viral, Autoridade, VSL e Limpeza. Cada uma tem uma parte determinística aplicada no navegador sem custo (takes ruins de alta confiança, silêncios, estilo de legenda) e uma direção em texto enviada ao agente.
+- **Instantes internos**: componentes podem ter `at` (segundos desde o início do clip, ex.: quando cada barra do gráfico sobe). O agente manda `atWord`; cortes posteriores dentro do componente deslocam esses instantes junto com a fala (`shiftTimedParams`).
 - Prompt de sistema (instruções + catálogo) é estável e marcado para cache.
 - Modelo padrão `claude-sonnet-5-5`, configurável por `AGENT_MODEL` (ex.: `claude-haiku-5-5` para baratear comandos simples). Roteamento automático barato/caro por tipo de pedido está no roadmap.
 
@@ -71,9 +75,9 @@ Hoje: `lower_third`, `title_card`, `bar_chart`, `counter`, `text_highlight`, `bu
 No MVP o vídeo bruto **não sobe**: fica em IndexedDB e é lido por object URL. O navegador decodifica o áudio para mono 16 kHz, que serve a duas coisas:
 
 1. **Remoção local de silêncios** (`silencesFromAudio`, RMS por janela) — sem transcrição, sem nuvem, 0 créditos.
-2. **Transcrição**: o WAV leve vai para `/api/transcribe` → Groq Whisper com timestamp por palavra.
+2. **Transcrição**: o áudio é codificado em Opus mono a 32 kbps (WebM, ~0,2 MB por minuto; WAV como fallback) e vai para `/api/transcribe` → Groq Whisper com timestamp por palavra.
 
-Limitações conhecidas desta abordagem, tratadas no roadmap: `decodeAudioData` carrega o arquivo inteiro na memória (arquivos de vários GB falham) e o WAV passa de 25 MB perto de 13 minutos. A solução é o proxy de ingestão (extração de áudio em streaming + proxy 720p).
+Limitações conhecidas desta abordagem, tratadas no roadmap: `decodeAudioData` carrega o arquivo inteiro na memória (arquivos de vários GB falham). A solução é o proxy de ingestão (extração de áudio em streaming + proxy 720p).
 
 ## 8. Créditos (`packages/core/src/credits.ts`)
 

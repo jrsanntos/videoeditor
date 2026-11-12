@@ -1,5 +1,6 @@
 import type {
   Asset,
+  BrandKit,
   Clip,
   MediaClip,
   Project,
@@ -8,7 +9,7 @@ import type {
   TrackKind,
   Word,
 } from "./schema";
-import { CaptionStyleSchema } from "./schema";
+import { CaptionStyleSchema, defaultBrandKit } from "./schema";
 
 export const r3 = (n: number) => Math.round(n * 1000) / 1000;
 export const clipEnd = (c: { start: number; duration: number }) => r3(c.start + c.duration);
@@ -30,6 +31,7 @@ export function createProject(opts: {
   width?: number;
   height?: number;
   fps?: number;
+  brand?: BrandKit;
 }): Project {
   return {
     version: 1,
@@ -45,6 +47,7 @@ export function createProject(opts: {
       { id: newId("trk"), kind: "main", name: "Vídeo", clips: [] },
     ],
     captions: { enabled: false, style: CaptionStyleSchema.parse({}) },
+    brand: opts.brand ?? defaultBrandKit(),
   };
 }
 
@@ -170,4 +173,38 @@ export function sourceRangesToTimeline(
     }
   }
   return normalizeRanges(out);
+}
+
+/**
+ * Faixa de ORIGEM que remove as palavras `fromId`…`toId` (inclusive) de um
+ * asset: do início da primeira até o início da palavra seguinte à última, de
+ * modo que o corte caia sempre no intervalo entre palavras.
+ */
+export function wordCutRange(project: Project, fromId: string, toId: string): { assetId: string; range: TimeRange; text: string } {
+  for (const asset of Object.values(project.assets)) {
+    const words = asset.transcript?.words;
+    if (!words) continue;
+    const a = words.findIndex((w) => w.id === fromId);
+    if (a < 0) continue;
+    const b = words.findIndex((w) => w.id === toId);
+    if (b < 0) throw new Error(`palavra ${toId} não existe na transcrição`);
+    if (b < a) throw new Error(`o corte ${fromId}→${toId} está invertido`);
+    const next = words[b + 1];
+    return {
+      assetId: asset.id,
+      range: { start: words[a]!.start, end: next ? Math.max(next.start, words[b]!.end) : words[b]!.end },
+      text: words
+        .slice(a, b + 1)
+        .map((w) => w.text)
+        .join(" "),
+    };
+  }
+  throw new Error(`palavra ${fromId} não existe na transcrição`);
+}
+
+/** Posição atual de uma palavra na timeline. Lança se ela não existe ou já foi cortada. */
+export function timelineWord(project: Project, wordId: string, words = timelineWords(project)): TimelineWord {
+  const w = words.find((w) => w.id === wordId);
+  if (!w) throw new Error(`palavra ${wordId} não está na timeline (não existe ou já foi cortada)`);
+  return w;
 }

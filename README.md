@@ -19,13 +19,13 @@ vídeo bruto ──► navegador (IndexedDB)            áudio 16 kHz ──► 
                     preview (rAF)     export WebCodecs (MP4)     [futuro: render em nuvem]
 ```
 
-Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Plano de execução em [docs/ROADMAP.md](docs/ROADMAP.md).
+Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Plano de execução em [docs/ROADMAP.md](docs/ROADMAP.md). Especificação da versão 1.0 em [docs/V1_SPEC.md](docs/V1_SPEC.md).
 
 ## Estrutura
 
 | Caminho | O que é |
 | --- | --- |
-| `packages/core` | Schema do Timeline State (zod), operações de edição, mapeamento de tempo/transcrição, detecção de silêncio, tabela de créditos e planos, contexto compacto para o agente. Sem dependência de DOM. |
+| `packages/core` | Schema do Timeline State (zod) e do Brand Kit, operações de edição ancoradas por palavra, mapeamento de tempo/transcrição, detecção de silêncio e de takes ruins, skills (presets de nicho), tabela de créditos e planos, contexto compacto para o agente. Sem dependência de DOM. |
 | `packages/renderer` | `renderFrame` (compositor Canvas 2D), legendas e a biblioteca de componentes de motion design paramétricos. |
 | `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs, contas, painel de administração (`/admin`) e planos e créditos (`/planos`) e as rotas `/api/agent`, `/api/transcribe`, `/api/auth/*`, `/api/billing/*`, `/api/stripe/webhook` e `/api/admin/*`. |
 | `apps/web/src/server` | Camada de servidor: banco Postgres (migrações em `schema.ts`), sessões, recuperação de senha, limite de requisições, ledger de créditos, cobrança pelo Stripe, custo de IA, configurações cifradas e modelos de edição. |
@@ -93,8 +93,10 @@ pnpm typecheck
 
 Funciona e foi verificado de ponta a ponta em Chromium: upload → remoção local de silêncios → split/corte de trecho/undo → componentes e zoom → reprodução através dos cortes → persistência após recarregar → legendas → exportação H.264 no navegador.
 
+O fluxo com IA foi exercitado com as APIs reais (Groq e Claude) num vídeo com erros de gravação propositais: transcrição com áudio comprimido, limpeza local de takes ruins, skill "Autoridade" com resposta em streaming e cortes corretos de frase refeita, aviso de erro e fala para a equipe.
+
 Contas, limite de requisições, recuperação de senha, renovação mensal e os webhooks de cobrança foram verificados contra um Postgres 16 real, com a API do Stripe simulada (eventos assinados, repetidos e fora de ordem).
 
-Implementado mas **ainda não exercitado contra as APIs reais** (faltavam chaves no ambiente de desenvolvimento): o loop do agente em `/api/agent`, a transcrição em `/api/transcribe`, o Checkout/Portal do Stripe e o envio de e-mail pelo Resend.
+Implementado mas **ainda não exercitado contra as APIs reais** (faltavam chaves no ambiente de desenvolvimento): o Checkout/Portal do Stripe e o envio de e-mail pelo Resend.
 
 Ainda não existe: projetos e armazenamento em nuvem, render em nuvem. Ver o roadmap.

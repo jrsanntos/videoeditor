@@ -182,3 +182,32 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   }
   return new Blob([view], { type: "audio/wav" });
 }
+
+/**
+ * Áudio da fala comprimido para envio: Opus mono a 32 kbps em WebM
+ * (~0,24 MB por minuto; 10 min ≈ 2,4 MB, contra ~19 MB em WAV). Cabe com folga
+ * nos limites de corpo de requisição de hosts serverless. Se o navegador não
+ * codifica Opus, cai para WAV.
+ */
+export async function encodeSpeech(samples: Float32Array, sampleRate: number): Promise<{ blob: Blob; filename: string }> {
+  try {
+    const { AudioBufferSource, BufferTarget, getFirstEncodableAudioCodec, Output, WebMOutputFormat } = await import("mediabunny");
+    const codec = await getFirstEncodableAudioCodec(["opus"], { numberOfChannels: 1, sampleRate, bitrate: SPEECH_BITRATE });
+    if (!codec) throw new Error("opus indisponível");
+    const buffer = new AudioBuffer({ length: samples.length, sampleRate, numberOfChannels: 1 });
+    buffer.getChannelData(0).set(samples);
+    const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
+    const source = new AudioBufferSource({ codec, bitrate: SPEECH_BITRATE });
+    output.addAudioTrack(source);
+    await output.start();
+    await source.add(buffer);
+    source.close();
+    await output.finalize();
+    if (!output.target.buffer) throw new Error("codificação vazia");
+    return { blob: new Blob([output.target.buffer], { type: "audio/webm" }), filename: "audio.webm" };
+  } catch (e) {
+    console.warn("compressão de áudio indisponível; enviando WAV", e);
+    return { blob: encodeWav(samples, sampleRate), filename: "audio.wav" };
+  }
+}
+const SPEECH_BITRATE = 32_000;

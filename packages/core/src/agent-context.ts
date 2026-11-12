@@ -1,44 +1,58 @@
 import type { Project, TimeRange } from "./schema";
+import { findRetakes } from "./retakes";
 import { clipEnd, projectDuration, timelineWords, type TimelineWord } from "./timeline";
 
 /**
  * Serializa o estado da timeline em texto compacto para o agente.
+ *
+ * Tudo é referenciado por id de palavra e por tempo do vídeo BRUTO — valores
+ * que não mudam quando a timeline é cortada. O agente nunca recebe nem devolve
+ * tempo de timeline, então não há o que recalcular depois de um corte.
+ *
  * Com `selection`, só os metadados daquele trecho são enviados — é o que
  * torna a "intervenção cirúrgica" ~95% mais barata que reprocessar o vídeo.
  */
 export function buildAgentContext(project: Project, selection?: TimeRange | null): string {
-  const duration = projectDuration(project);
+  const all = timelineWords(project);
+  const words = selection ? all.filter((w) => w.end > selection.start && w.start < selection.end) : all;
+  const source = sourceIndex(project);
   const inScope = (c: { start: number; duration: number }) =>
     !selection || (clipEnd(c) > selection.start && c.start < selection.end);
   const lines: string[] = [];
 
   lines.push(
-    `Projeto: "${project.name}" — ${project.width}x${project.height} @ ${project.fps}fps — duração ${duration}s`,
+    `Projeto: "${project.name}" — ${project.width}x${project.height} (${project.height > project.width ? "vertical" : "horizontal"}) @ ${project.fps}fps — duração atual ${projectDuration(project)}s`,
   );
+  const b = project.brand;
   lines.push(
-    `Legendas: ${project.captions.enabled ? "ligadas" : "desligadas"} (${JSON.stringify(project.captions.style)})`,
+    `Brand Kit: destaque ${b.primaryColor}, apoio ${b.secondaryColor}, fundo ${b.backgroundColor}, texto ${b.textColor}` +
+      (b.displayName ? ` — apresentador: ${b.displayName}${b.credential ? ` • ${b.credential}` : ""}` : " — apresentador não informado"),
   );
+  lines.push(`Legendas: ${project.captions.enabled ? "ligadas" : "desligadas"} (${JSON.stringify(project.captions.style)})`);
   if (selection)
     lines.push(
-      `SELEÇÃO ATIVA: ${selection.start}s–${selection.end}s. O pedido do usuário se refere a este trecho; não altere nada fora dele.`,
+      words.length
+        ? `SELEÇÃO ATIVA: palavras ${words[0]!.id}–${words[words.length - 1]!.id}. O pedido do usuário se refere a este trecho; não altere nada fora dele.`
+        : "SELEÇÃO ATIVA num trecho sem fala. O pedido do usuário se refere só a esse trecho.",
     );
 
-  lines.push("", "## Clips");
+  // Zooms e componentes, localizados pelas palavras que cobrem.
+  const overlays: string[] = [];
   for (const track of project.tracks) {
-    const clips = track.clips.filter(inScope);
-    if (!clips.length) continue;
-    lines.push(`Trilha ${track.kind} "${track.name}":`);
-    for (const c of clips) {
-      const span = `[${c.start}–${clipEnd(c)}]`;
-      if (c.type === "media")
-        lines.push(`  ${c.id} ${span} vídeo, origem ${c.sourceStart}–${Math.round((c.sourceStart + c.duration) * 1000) / 1000}`);
-      else if (c.type === "zoom") lines.push(`  ${c.id} ${span} zoom ${c.scale}x foco(${c.x},${c.y}) ease ${c.ease}`);
-      else lines.push(`  ${c.id} ${span} componente ${c.component} ${JSON.stringify(c.params)}`);
+    for (const c of track.clips) {
+      if (c.type === "media" || !inScope(c)) continue;
+      const covered = all.filter((w) => w.start < clipEnd(c) && w.end > c.start);
+      const where = covered.length ? `${covered[0]!.id}–${covered[covered.length - 1]!.id}` : "sem fala";
+      overlays.push(
+        c.type === "zoom"
+          ? `  ${c.id} [${where}] ${c.duration}s zoom ${c.scale}x foco(${c.x},${c.y}) ease ${c.ease}`
+          : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
+      );
     }
   }
+  if (overlays.length) lines.push("", "## Zooms e componentes já na timeline", ...overlays);
 
-  const words = timelineWords(project, selection ?? undefined);
-  lines.push("", "## Transcrição (tempo de timeline)");
+  lines.push("", "## Transcrição");
   if (!words.length) {
     lines.push("(sem transcrição disponível neste trecho)");
     return lines.join("\n");
@@ -46,101 +60,78 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
 
   if (selection) {
     // Trecho curto: precisão por palavra.
-    lines.push(...wordLines(words));
-    return lines.join("\n");
+    lines.push(...wordLines(project, words));
+  } else {
+    // Vídeo inteiro: frases curtas; os ids dentro de uma frase são consecutivos.
+    lines.push(
+      "Formato: [primeira palavra–última palavra | início–fim no vídeo bruto, em s] texto.",
+      "Dentro de uma frase os ids são consecutivos (a 3ª palavra de [w10–w17] é w12). Na dúvida, confira com read_words. Pausas longas aparecem como (pausa Xs).",
+    );
+    let seg: TimelineWord[] = [];
+    const flush = () => {
+      if (!seg.length) return;
+      const a = seg[0]!;
+      const z = seg[seg.length - 1]!;
+      lines.push(`[${a.id}–${z.id} | ${source.get(a)!.start}–${source.get(z)!.end}] ${seg.map((w) => w.text).join(" ")}`);
+      seg = [];
+    };
+    let prev: TimelineWord | null = null;
+    for (const w of words) {
+      const gap = prev ? w.start - prev.end : w.start;
+      // Quebra também onde houve corte, para os ids de uma frase serem sempre consecutivos.
+      const contiguous = prev && prev.assetId === w.assetId && source.get(w)!.index === source.get(prev)!.index + 1;
+      if (seg.length && (gap > 0.35 || seg.length >= 8 || !contiguous || /[.!?]$/.test(prev!.text))) flush();
+      if (gap >= 0.5) lines.push(`(pausa ${Math.round(gap * 100) / 100}s)`);
+      seg.push(w);
+      prev = w;
+    }
+    flush();
   }
 
-  // Vídeo inteiro: frases curtas com tempo, pausas anotadas.
-  lines.push(
-    "Formato: [início–fim] texto. Pausas longas aparecem como (pausa Xs).",
-    "Os tempos de frase são só um agrupamento: existe tempo por palavra. Para cortar com precisão, peça os tempos com a ferramenta read_words.",
-  );
-  let seg: typeof words = [];
-  const flush = () => {
-    if (!seg.length) return;
-    lines.push(`[${seg[0]!.start}–${seg[seg.length - 1]!.end}] ${seg.map((w) => w.text).join(" ")}`);
-    seg = [];
-  };
-  let prevEnd = 0;
-  for (const w of words) {
-    const gap = w.start - prevEnd;
-    if (seg.length && (gap > 0.35 || seg.length >= 8 || /[.!?]$/.test(seg[seg.length - 1]!.text))) flush();
-    if (gap >= 0.5) lines.push(`(pausa ${Math.round(gap * 100) / 100}s)`);
-    seg.push(w);
-    prevEnd = w.end;
-  }
-  flush();
-
-  // Repetições/retomadas detectadas: já com tempo por palavra, para cortar sem comer sílabas.
-  const reps = findRepetitions(words);
-  if (reps.length) {
+  const takes = findRetakes(words);
+  if (takes.length) {
     lines.push(
       "",
-      "## Possíveis repetições (tempo por palavra)",
-      "Cada uma traz o corte exato que remove a primeira ocorrência (do início dela ao início da segunda). Use esse intervalo como está em remove_ranges; não recalcule. Se a repetição for ênfase intencional, mantenha.",
+      "## Takes ruins detectados",
+      "Erros de gravação prováveis, já com o corte exato (mantém o último take). confiança alta: corte. confiança media: leia o trecho e decida — repetição também pode ser ênfase intencional.",
     );
-    for (const r of reps) {
-      const cut = repetitionCut(words, r);
-      lines.push(`"${r.phrase}" repetido — corte: {"start": ${cut.start}, "end": ${cut.end}}`);
-      const from = Math.max(0, r.firstIndex - 1);
-      const to = Math.min(words.length, r.secondIndex + r.length + 1);
-      lines.push(...wordLines(words.slice(from, to)).slice(1));
-    }
+    for (const r of takes)
+      lines.push(`${r.confidence} | ${r.kind} | cortar {"from":"${r.from}","to":"${r.to}"} "${r.cutText}" → fica "${r.keepText}"`);
   }
   return lines.join("\n");
 }
 
-/** Linhas "id | início–fim | palavra", com cabeçalho de formato. */
-export function wordLines(words: TimelineWord[]): string[] {
-  return ["Formato: id | início–fim | palavra", ...words.map((w) => `${w.id} | ${w.start}–${w.end} | ${w.text}`)];
-}
+type SourceWord = { index: number; start: number; end: number };
 
-/** Intervalo que remove a primeira ocorrência de uma repetição, mantendo a segunda inteira. */
-export function repetitionCut(words: TimelineWord[], r: Repetition): TimeRange {
-  return { start: words[r.firstIndex]!.start, end: words[r.secondIndex]!.start };
-}
-
-export type Repetition = {
-  phrase: string;
-  /** Índices em `words` do início da 1ª e da 2ª ocorrência. */
-  firstIndex: number;
-  secondIndex: number;
-  length: number;
-};
-
-const norm = (t: string) => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\p{L}\p{N}]/gu, "");
-
-/**
- * Detecta retomadas: a mesma sequência de 1 a 4 palavras dita duas vezes em
- * seguida ("o segredo, o segredo"). Uma palavra sozinha só conta com 4+
- * letras, para não marcar artigos e interjeições ("é é", "o o").
- */
-export function findRepetitions(words: TimelineWord[], maxLen = 4): Repetition[] {
-  const n = words.map((w) => norm(w.text));
-  const out: Repetition[] = [];
-  let i = 0;
-  while (i < n.length) {
-    let found: Repetition | null = null;
-    for (let len = maxLen; len >= 1; len--) {
-      if (i + 2 * len > n.length) continue;
-      const a = n.slice(i, i + len);
-      const b = n.slice(i + len, i + 2 * len);
-      if (a.some((x) => !x) || a.join(" ") !== b.join(" ")) continue;
-      if (len === 1 && a[0]!.length < 4) continue;
-      // retomada é imediata: pausa longa entre as ocorrências indica outra coisa
-      if (words[i + len]!.start - words[i + len - 1]!.end > 1.5) continue;
-      found = {
-        phrase: words.slice(i, i + len).map((w) => w.text.replace(/[.,!?;:]+$/, "")).join(" "),
-        firstIndex: i,
-        secondIndex: i + len,
-        length: len,
-      };
-      break;
-    }
-    if (found) {
-      out.push(found);
-      i = found.secondIndex + found.length;
-    } else i++;
+/** Posição e tempo de ORIGEM de cada palavra da timeline. */
+function sourceIndex(project: Project) {
+  const byAsset = new Map<string, Map<string, SourceWord>>();
+  for (const asset of Object.values(project.assets)) {
+    const m = new Map<string, SourceWord>();
+    asset.transcript?.words.forEach((w, index) => m.set(w.id, { index, start: w.start, end: w.end }));
+    byAsset.set(asset.id, m);
   }
-  return out;
+  return { get: (w: TimelineWord) => byAsset.get(w.assetId)?.get(w.id) };
+}
+
+/** Linhas "id | início–fim (vídeo bruto) | palavra", com cabeçalho de formato. */
+export function wordLines(project: Project, words: TimelineWord[]): string[] {
+  const source = sourceIndex(project);
+  return [
+    "Formato: id | início–fim no vídeo bruto (s) | palavra",
+    ...words.map((w) => {
+      const s = source.get(w);
+      return `${w.id} | ${s?.start ?? w.start}–${s?.end ?? w.end} | ${w.text}`;
+    }),
+  ];
+}
+
+/** Palavras da timeline entre dois ids (inclusive), para a ferramenta read_words. */
+export function wordsBetween(project: Project, fromId: string, toId: string, max: number): TimelineWord[] {
+  const words = timelineWords(project);
+  const a = words.findIndex((w) => w.id === fromId);
+  if (a < 0) throw new Error(`palavra ${fromId} não está na timeline (não existe ou já foi cortada)`);
+  const b = words.findIndex((w) => w.id === toId);
+  if (b < 0) throw new Error(`palavra ${toId} não está na timeline (não existe ou já foi cortada)`);
+  return words.slice(Math.min(a, b), Math.min(Math.max(a, b) + 1, Math.min(a, b) + max));
 }

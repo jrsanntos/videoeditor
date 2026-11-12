@@ -9,7 +9,7 @@ describe("biblioteca de componentes", () => {
   });
 
   it("aplica defaults e rejeita params inválidos ou componentes inexistentes", () => {
-    expect(validateComponent("counter", { to: 10 })).toMatchObject({ from: 0, accent: "#facc15" });
+    expect(validateComponent("counter", { to: 10 })).toMatchObject({ from: 0 });
     expect(() => validateComponent("bar_chart", { bars: [{ label: "a", value: 1 }] })).toThrow(/params inválidos/);
     expect(() => validateComponent("nao_existe", {})).toThrow(/não existe/);
   });

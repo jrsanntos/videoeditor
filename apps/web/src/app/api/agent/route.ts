@@ -1,16 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import {
+  AgentOperationSchema,
   applyOperations,
   buildAgentContext,
   creditCost,
   PRICING,
-  OperationSchema,
   ProjectSchema,
   projectDuration,
-  timelineWords,
   wordLines,
+  wordsBetween,
   type OperationInput,
+  type Project,
 } from "@videoeditor/core";
 import { catalogForAgent, validateComponent } from "@videoeditor/renderer";
 import { agentModel, anthropicClient, anthropicError } from "@/server/ai";
@@ -20,9 +21,9 @@ import { errorResponse, HttpError, requireUser } from "@/server/users";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const MAX_TURNS = 6;
-/** Janela máxima de uma leitura de palavras: mantém o contexto enxuto em vídeos longos. */
-const MAX_WORDS_WINDOW = 90;
+const MAX_TURNS = 8;
+/** Máximo de palavras por leitura: mantém o contexto enxuto em vídeos longos. */
+const MAX_WORDS_WINDOW = 160;
 /** Modelos que aceitam fallback de recusa no servidor. */
 const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
@@ -36,47 +37,71 @@ const RequestSchema = z.object({
     .default([]),
 });
 
-const ToolInputSchema = z.object({ operations: z.array(OperationSchema).min(1) });
+// O agente só fala em ids de palavra e de clip: tempo de timeline não entra no vocabulário dele.
+const ToolInputSchema = z.object({ operations: z.array(AgentOperationSchema).min(1) });
 
 const EDIT_TOOL: Anthropic.Beta.BetaTool = {
   name: "edit_timeline",
   description:
-    "Aplica uma lista de operações de edição à timeline, em ordem. A chamada é atômica: se qualquer operação falhar, nenhuma é aplicada e o erro é devolvido para você corrigir. Devolve um resumo do que mudou.",
+    "Aplica uma lista de operações de edição à timeline. A chamada é atômica: se qualquer operação falhar, nenhuma é aplicada e o erro é devolvido para você corrigir. O usuário vê o resultado de cada chamada na hora. Devolve um resumo do que mudou.",
   input_schema: z.toJSONSchema(ToolInputSchema, { io: "input" }) as Anthropic.Beta.BetaTool["input_schema"],
 };
 
 const ReadWordsSchema = z.object({
-  start: z.number().min(0).describe("início em segundos (tempo de timeline atual)"),
-  end: z.number().min(0).describe(`fim em segundos; janela de até ${MAX_WORDS_WINDOW}s`),
+  fromWord: z.string().describe("id da primeira palavra"),
+  toWord: z.string().describe(`id da última palavra; até ${MAX_WORDS_WINDOW} palavras por leitura`),
 });
 
 const READ_WORDS_TOOL: Anthropic.Beta.BetaTool = {
   name: "read_words",
   description:
-    "Lê a transcrição com tempo por palavra (id | início–fim | palavra) num trecho da timeline ATUAL, já considerando cortes feitos nesta conversa. Use antes de remove_ranges e para sincronizar componentes com a palavra exata. Não altera nada.",
+    "Lê a transcrição palavra por palavra (id | tempo no vídeo bruto | palavra) entre dois ids, já sem o que foi cortado. Use quando precisar do id exato de uma palavra no meio de uma frase. Não altera nada.",
   input_schema: z.toJSONSchema(ReadWordsSchema, { io: "input" }) as Anthropic.Beta.BetaTool["input_schema"],
 };
 
 // Prefixo estável (instruções + catálogo) → fica em cache entre requisições.
-const SYSTEM = `Você é o diretor de edição de um editor de vídeo web voltado a vídeo falado (VSLs, aulas, conteúdo de especialistas). O usuário descreve o que quer em português e você edita a timeline dele.
+const SYSTEM = `Você é o diretor de edição de um editor de vídeo web para vídeo falado (Reels, Shorts, VSLs, aulas de especialistas). O usuário descreve o que quer em português e você edita a timeline dele.
 
-Você nunca toca em pixels nem escreve código de animação: você altera o estado da timeline chamando a ferramenta edit_timeline com operações. O navegador do usuário renderiza o resultado na hora.
+Você nunca toca em pixels nem escreve código de animação: você altera o estado da timeline chamando edit_timeline com operações. O navegador do usuário renderiza o resultado na hora.
+
+## Referências: sempre por palavra
+- Cada palavra da transcrição tem um id (w0, w1, …) e um tempo no vídeo BRUTO. Esses valores nunca mudam, nem depois de cortes.
+- Todas as operações usam ids de palavra (ou de clip). Você não calcula tempo de timeline e não precisa reler nada depois de cortar: uma âncora continua valendo. A ordem das operações não importa.
+- Cortes: cut_words com {from, to} (inclusive). O corte cai sozinho no intervalo entre palavras.
+- Zooms e componentes: atWord (onde começam) e untilWord ou duration (segundos). Itens internos de um componente que aceitam \`at\` recebem \`atWord\` com o id da palavra em que devem entrar.
+- Não ancore nada em uma palavra que você está cortando.
+
+## Prioridade nº 1: erros de gravação
+Antes de qualquer efeito, limpe a fala. Um vídeo com um take errado no meio está estragado, por melhor que seja o resto.
+- A seção "Takes ruins detectados" traz os candidatos com o corte pronto. Confiança alta: corte. Confiança media: leia o trecho e corte só se for erro (frase abandonada, tropeço, recomeço); repetição retórica fica.
+- Procure também o que o detector não vê: a mesma ideia dita duas vezes com outras palavras (fica a última versão completa), frases que param no meio, falas para a equipe ou para si ("deixa eu ver", "tá gravando?"), e avisos de erro.
+- Ao cortar um take ruim, corte-o inteiro: do início da frase errada até a palavra anterior ao take bom.
+- remove_retakes corta de uma vez os de confiança alta; remove_silences tira as pausas. Os dois são determinísticos.
 
 ## Como trabalhar
-- Você recebe o estado atual da timeline e a transcrição com tempos em segundos (tempo de timeline). Baseie cada decisão nesses tempos; não invente trechos que não estão na transcrição.
-- Faça tudo em UMA chamada de edit_timeline sempre que possível. As operações rodam em ordem e cada uma enxerga o resultado da anterior, então coloque primeiro o que usa os tempos que você leu (add_zoom, add_component) e deixe os cortes (remove_ranges, remove_silences) por ÚLTIMO: o ripple desloca zooms e componentes junto com a fala.
-- Para tirar pausas, use remove_silences (determinístico). Para tirar erros, repetições ou trechos específicos, use remove_ranges com tempos POR PALAVRA, cortando no intervalo entre palavras para não comer sílabas. As repetições detectadas já vêm com o intervalo de corte exato: use-o sem alterar; para qualquer outro corte preciso, chame read_words no trecho antes. Os tempos de frase são aproximados: não corte com eles.
-- Zooms: use nos momentos de ênfase, 2 a 5 segundos, escala entre 1.15 e 1.4. Em vídeo de pessoa falando, o foco costuma ser o rosto (y≈0.35–0.4). Não empilhe zooms no mesmo instante.
-- Motion design: escolha componentes do catálogo abaixo e preencha params com dados que a pessoa realmente disse. Sincronize o início com a fala correspondente. Quando um componente tiver instantes internos (\`at\`, em segundos desde o início dele), calcule-os a partir do tempo por palavra de cada citação (use read_words), para cada elemento entrar quando é dito; os cortes feitos depois ajustam esses instantes sozinhos. Se o pedido não couber em nenhum componente, diga isso em vez de improvisar.
-- Se houver SELEÇÃO ATIVA, o pedido vale só para aquele trecho: não altere nada fora dele.
-- Se o pedido depender de transcrição e ela não existir, explique que é preciso transcrever o vídeo primeiro (botão "Transcrever") em vez de chutar tempos.
+- Baseie cada decisão na transcrição; não invente trechos que não estão nela.
+- Trabalhe em etapas, uma chamada de edit_timeline por etapa, para o usuário ver a edição sendo montada: (1) limpeza — takes ruins e silêncios; (2) câmera — zooms; (3) motion e legendas. Pule as etapas que o pedido não pede. Pedidos pequenos cabem em uma chamada só.
+- Zooms: nos momentos de ênfase, 2 a 5 segundos, escala entre 1.1 e 1.4. Em vídeo de pessoa falando, o foco é o rosto (y≈0.35–0.4). ease 0 é punch-in seco; ease alto é aproximação lenta. Não empilhe zooms no mesmo instante.
+- Motion design: escolha componentes do catálogo e preencha params com o que a pessoa realmente disse. Comece o componente na palavra em que o assunto é dito.
+- Marca: não passe cores nos params — os componentes herdam o Brand Kit do usuário. A tarja de nome (lower_third) usa o nome e a credencial do Brand Kit quando você omite title/subtitle; se o Brand Kit não tem apresentador e o usuário não disse o nome, não invente: não use a tarja e avise.
+- Cada componente de motion custa créditos ao usuário: use os que fazem diferença, não encha o vídeo.
+- Legendas: se a transcrição tem um erro evidente numa palavra que vai aparecer na tela (nome próprio, termo técnico, palavra trocada por outra parecida), corrija com edit_word. Só quando o contexto deixa a palavra certa clara.
+- Se houver SELEÇÃO ATIVA, o pedido vale só para aquelas palavras: não altere nada fora delas.
+- Se o pedido depender de transcrição e ela não existir, explique que é preciso transcrever o vídeo primeiro (botão "Transcrever") em vez de chutar.
 - Se o pedido for ambíguo a ponto de arriscar estragar a edição, pergunte antes. Para ajustes de gosto, decida você e conte o que fez.
 
 ## Resposta final
-Depois das edições, responda em português, em 1 a 3 frases, dizendo o que mudou (quantos cortes, quanto tempo saiu, o que foi adicionado e onde). Sem markdown, sem listar ids internos.
+Depois das edições, responda em português, em 1 a 3 frases curtas e num parágrafo só, dizendo o que mudou (quantos cortes, quanto tempo saiu, o que foi adicionado). Sem markdown, sem ids internos.
 
 ## Catálogo de componentes de motion design
 ${catalogForAgent()}`;
+
+/** Eventos enviados ao navegador, um JSON por linha, enquanto o agente trabalha. */
+type AgentEvent =
+  | { type: "status"; text: string }
+  | { type: "ops"; project: Project; log: string[] }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number }
+  | { type: "error"; error: string };
 
 export async function POST(req: Request) {
   try {
@@ -103,34 +128,18 @@ export async function POST(req: Request) {
       },
     ];
 
-    const finish = async (finalText: string) => {
+    /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
+    const settle = async () => {
       const credits = log.length ? creditCost({ type: "agent", motionScenes }) : 0;
-      await recordUsage({
-        userId: user.id,
-        kind: "agent",
-        provider: "anthropic",
-        model,
-        tokens: usage,
-        costUSD: anthropicCostUSD(model, usage),
-        credits,
-      });
-      // Só cobra quando a timeline realmente mudou.
-      const newBalance = credits ? await charge(user.id, credits, "pedido ao agente") : available;
-      return Response.json({
-        message: finalText || (log.length ? "Edição aplicada." : "Não fiz alterações."),
-        project: working,
-        log,
-        credits,
-        balance: newBalance,
-        usage,
-        model,
-      });
+      if (usage.input || usage.output)
+        await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits });
+      return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
     };
 
-    try {
-      let finalText = "";
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
-        const response = await client.beta.messages.create({
+    /** Um turno do modelo, em streaming: avisa o navegador assim que uma ferramenta começa a ser usada. */
+    const runTurn = async (send: (e: AgentEvent) => void) => {
+      const stream = client.beta.messages.stream(
+        {
           model,
           max_tokens: 16000,
           system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
@@ -138,15 +147,28 @@ export async function POST(req: Request) {
           output_config: { effort: "medium" },
           tools: [READ_WORDS_TOOL, EDIT_TOOL],
           messages,
-          ...(supportsFallback(model)
-            ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
-            : {}),
-        });
-        usage.input += response.usage.input_tokens;
-        usage.output += response.usage.output_tokens;
-        usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
-        usage.cacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+          ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+        },
+        // Se o usuário fechar a aba, a chamada ao modelo é cancelada e para de custar.
+        { signal: req.signal },
+      );
+      stream.on("streamEvent", (ev) => {
+        if (ev.type === "content_block_start" && ev.content_block.type === "tool_use")
+          send({ type: "status", text: ev.content_block.name === "read_words" ? "Conferindo a transcrição…" : log.length ? "Aplicando a próxima etapa…" : "Montando a edição…" });
+      });
+      const response = await stream.finalMessage();
+      usage.input += response.usage.input_tokens;
+      usage.output += response.usage.output_tokens;
+      usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
+      usage.cacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+      return response;
+    };
 
+    const run = async (send: (e: AgentEvent) => void) => {
+      let finalText = "";
+      send({ type: "status", text: "Lendo a transcrição…" });
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        const response = await runTurn(send);
         finalText = response.content
           .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
           .map((b) => b.text)
@@ -167,30 +189,23 @@ export async function POST(req: Request) {
         const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
         for (const block of response.content) {
           if (block.type !== "tool_use") continue;
+          const fail = (content: string) => results.push({ type: "tool_result", tool_use_id: block.id, is_error: true, content });
           if (block.name === "read_words") {
             results.push(readWords(working, block.id, block.input));
             continue;
           }
           const input = ToolInputSchema.safeParse(block.input);
           if (!input.success) {
-            results.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              is_error: true,
-              content: `Entrada inválida: ${z.prettifyError(input.error)}`,
-            });
+            fail(`Entrada inválida: ${z.prettifyError(input.error)}`);
             continue;
           }
           const ops = input.data.operations as OperationInput[];
           const scenes = ops.filter((o) => o.op === "add_component").length;
           const cost = creditCost({ type: "agent", motionScenes: motionScenes + scenes });
           if (scenes && cost > available) {
-            results.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              is_error: true,
-              content: `Créditos insuficientes: com ${motionScenes + scenes} cena(s) de motion o pedido custaria ${cost} créditos e o usuário tem ${available}. Nada desta chamada foi aplicado. Reduza as cenas de motion (cada uma custa ${PRICING.motionScene}) ou faça só os cortes e zooms, e conte isso ao usuário.`,
-            });
+            fail(
+              `Créditos insuficientes: com ${motionScenes + scenes} cena(s) de motion o pedido custaria ${cost} créditos e o usuário tem ${available}. Nada desta chamada foi aplicado. Reduza as cenas de motion (cada uma custa ${PRICING.motionScene}) ou faça só os cortes e zooms, e conte isso ao usuário.`,
+            );
             continue;
           }
           try {
@@ -198,50 +213,66 @@ export async function POST(req: Request) {
             working = result.project;
             log.push(...result.log);
             motionScenes += scenes;
+            // A timeline do usuário é atualizada agora, sem esperar o agente terminar.
+            send({ type: "ops", project: working, log: result.log });
             results.push({
               type: "tool_result",
               tool_use_id: block.id,
-              content: `Aplicado:\n${result.log.map((l) => `- ${l}`).join("\n")}\nDuração atual: ${projectDuration(working)}s. Os tempos da transcrição que você recebeu não valem mais depois de cortes.`,
+              content: `Aplicado:\n${result.log.map((l) => `- ${l}`).join("\n")}\nDuração atual: ${projectDuration(working)}s. Os ids de palavra continuam os mesmos.`,
             });
           } catch (e) {
-            results.push({
-              type: "tool_result",
-              tool_use_id: block.id,
-              is_error: true,
-              content: `${(e as Error).message}\nNenhuma operação desta chamada foi aplicada. Corrija e envie a lista completa de novo.`,
-            });
+            fail(`${(e as Error).message}\nNenhuma operação desta chamada foi aplicada. Corrija e envie a lista completa de novo.`);
           }
         }
         messages.push({ role: "user", content: results });
       }
-      return finish(finalText);
-    } catch (e) {
-      // Tokens já gastos antes da falha também são despesa.
-      if (usage.input || usage.output)
-        await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits: 0 });
-      throw anthropicError(e) ?? e;
-    }
+      const bill = await settle();
+      send({ type: "done", message: finalText || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
+    };
+
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (e: AgentEvent) => {
+          try {
+            controller.enqueue(encoder.encode(`${JSON.stringify(e)}\n`));
+          } catch {
+            // navegador desconectou: nada a enviar
+          }
+        };
+        try {
+          await run(send);
+        } catch (e) {
+          // O que já foi gasto e entregue antes da falha é registrado e cobrado.
+          await settle().catch((err) => console.error("agent: falha ao registrar uso", err));
+          const known = anthropicError(e) ?? e;
+          if (!(known instanceof HttpError) && !req.signal.aborted) console.error(known);
+          send({ type: "error", error: known instanceof HttpError ? known.message : "Erro inesperado no servidor." });
+        } finally {
+          try {
+            controller.close();
+          } catch {
+            // já fechado
+          }
+        }
+      },
+    });
+    return new Response(body, {
+      headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" },
+    });
   } catch (e) {
     return errorResponse(e);
   }
 }
 
-function readWords(
-  project: z.infer<typeof ProjectSchema>,
-  toolUseId: string,
-  raw: unknown,
-): Anthropic.Beta.BetaToolResultBlockParam {
+function readWords(project: Project, toolUseId: string, raw: unknown): Anthropic.Beta.BetaToolResultBlockParam {
   const input = ReadWordsSchema.safeParse(raw);
   if (!input.success)
     return { type: "tool_result", tool_use_id: toolUseId, is_error: true, content: z.prettifyError(input.error) };
-  const start = input.data.start;
-  const end = Math.min(input.data.end, start + MAX_WORDS_WINDOW);
-  const words = timelineWords(project, { start, end });
-  return {
-    type: "tool_result",
-    tool_use_id: toolUseId,
-    content: words.length
-      ? `Palavras em ${start}s–${end}s:\n${wordLines(words).join("\n")}`
-      : `Nenhuma palavra em ${start}s–${end}s.`,
-  };
+  try {
+    const words = wordsBetween(project, input.data.fromWord, input.data.toWord, MAX_WORDS_WINDOW);
+    return { type: "tool_result", tool_use_id: toolUseId, content: wordLines(project, words).join("\n") };
+  } catch (e) {
+    return { type: "tool_result", tool_use_id: toolUseId, is_error: true, content: (e as Error).message };
+  }
 }

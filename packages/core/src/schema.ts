@@ -105,6 +105,31 @@ export const CaptionStyleSchema = z.object({
 });
 export type CaptionStyle = z.infer<typeof CaptionStyleSchema>;
 
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "cor em hexadecimal, ex.: #0B0F19");
+
+/** Pares tipográficos disponíveis: uma sem serifa forte + uma serifada itálica para ênfase. */
+export const FONT_PAIRS = {
+  "inter-instrument": { name: "Inter + Instrument Serif", sans: "Inter", serif: "Instrument Serif" },
+  "montserrat-playfair": { name: "Montserrat + Playfair Display", sans: "Montserrat", serif: "Playfair Display" },
+} as const;
+export type FontPairId = keyof typeof FONT_PAIRS;
+
+/**
+ * Brand Kit: a estética do usuário, definida uma vez e herdada por todos os
+ * vídeos. Componentes e legendas usam estes valores quando o clip não define os seus.
+ */
+export const BrandKitSchema = z.object({
+  primaryColor: hex.default("#FACC15").describe("cor de destaque principal"),
+  secondaryColor: hex.default("#38BDF8").describe("cor de apoio"),
+  backgroundColor: hex.default("#0B0F19").describe("fundo das cenas de tela cheia"),
+  textColor: hex.default("#F8FAFC"),
+  fontPair: z.enum(["inter-instrument", "montserrat-playfair"]).default("inter-instrument"),
+  displayName: z.string().max(40).default("").describe("nome exibido na tarja (ex.: Dra. Ana Silva)"),
+  credential: z.string().max(60).default("").describe("registro ou cargo (ex.: CRM 12345, Personal Trainer)"),
+});
+export type BrandKit = z.infer<typeof BrandKitSchema>;
+export const defaultBrandKit = (): BrandKit => BrandKitSchema.parse({});
+
 export const ProjectSchema = z.object({
   version: z.literal(1),
   id: z.string(),
@@ -118,6 +143,8 @@ export const ProjectSchema = z.object({
     enabled: z.boolean(),
     style: CaptionStyleSchema,
   }),
+  // Com default: projetos salvos antes do Brand Kit continuam abrindo.
+  brand: BrandKitSchema.default(defaultBrandKit),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 

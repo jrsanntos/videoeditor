@@ -59,7 +59,7 @@ export function renderFrame(
       const parsed = def.schema.safeParse(c.params);
       if (!parsed.success) continue;
       ctx.save();
-      def.draw({ ctx, params: parsed.data, t: t - c.start, duration: c.duration, width, height, u });
+      def.draw({ ctx, params: parsed.data, t: t - c.start, duration: c.duration, width, height, u, brand: project.brand });
       ctx.restore();
     }
   }

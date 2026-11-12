@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, findClip, mainClips, type Clip, type EditTemplate, type OperationInput } from "@videoeditor/core";
+import { creditCost, findClip, FONT_PAIRS, mainClips, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
-import { applyTemplate, removeSilencesLocally, transcribe } from "@/lib/actions";
+import { applyTemplate, removeRetakesLocally, removeSilencesLocally, saveBrand, transcribe } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 
 const section = "border-b border-zinc-800 p-3";
@@ -26,7 +26,9 @@ export function Sidebar() {
   const addComponent = (id: string) => {
     const def = COMPONENTS[id]!;
     const { time } = useEditor.getState();
-    apply([{ op: "add_component", component: id, start: time, duration: def.defaultDuration, params: def.example as Record<string, unknown> }]);
+    // A tarja usa o nome e a credencial do Brand Kit quando eles existem.
+    const params = id === "lower_third" && project.brand.displayName ? {} : (def.example as Record<string, unknown>);
+    apply([{ op: "add_component", component: id, start: time, duration: def.defaultDuration, params }]);
   };
 
   return (
@@ -38,12 +40,18 @@ export function Sidebar() {
             Remover silêncios
             <span className="block text-[10px] text-emerald-400">no navegador · grátis</span>
           </button>
+          <button className={btn} disabled={!!busy || !hasTranscript} onClick={removeRetakesLocally} title={hasTranscript ? undefined : "Transcreva o vídeo primeiro"}>
+            Remover erros de gravação
+            <span className="block text-[10px] text-emerald-400">retomadas e gaguejos · grátis</span>
+          </button>
           <button className={btn} disabled={!!busy || hasTranscript} onClick={transcribe}>
             {hasTranscript ? "Vídeo transcrito ✓" : "Transcrever fala"}
             {!hasTranscript && <span className="block text-[10px] text-amber-400">{ingestCost} {ingestCost === 1 ? "crédito" : "créditos"} · libera legendas e cortes por fala</span>}
           </button>
         </div>
       </div>
+
+      <Brand />
 
       <Templates hasTranscript={hasTranscript} />
 
@@ -251,5 +259,86 @@ function Param({ name, value, onCommit }: { name: string; value: unknown; onComm
         />
       )}
     </label>
+  );
+}
+
+const SWATCHES: { key: "primaryColor" | "secondaryColor" | "backgroundColor" | "textColor"; label: string }[] = [
+  { key: "primaryColor", label: "Destaque" },
+  { key: "secondaryColor", label: "Apoio" },
+  { key: "backgroundColor", label: "Fundo" },
+  { key: "textColor", label: "Texto" },
+];
+
+/** Brand Kit: definido uma vez, salvo na conta e herdado pelos próximos vídeos. */
+function Brand() {
+  const brand = useEditor((s) => s.project!.brand);
+  const saved = useEditor((s) => s.brand);
+  const [draft, setDraft] = useState<BrandKit>(brand);
+  const [open, setOpen] = useState(!saved);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setDraft(brand), [brand]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(brand) || !saved;
+
+  return (
+    <div className={section} data-testid="brand">
+      <button className="flex w-full items-center justify-between" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <h3 className={`${heading} mb-0`}>Sua marca</h3>
+        <span className="flex items-center gap-1">
+          {SWATCHES.slice(0, 3).map((sw) => (
+            <span key={sw.key} className="h-3 w-3 rounded-full border border-zinc-700" style={{ background: brand[sw.key] }} />
+          ))}
+        </span>
+      </button>
+      {open && (
+        <form
+          className="mt-3 space-y-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setBusy(true);
+            void saveBrand(draft).then((error) => {
+              setBusy(false);
+              useEditor.getState().setNotice(error ?? "Marca salva. Os próximos vídeos já nascem com ela.");
+            });
+          }}
+        >
+          {!saved && <p className="text-[11px] leading-snug text-zinc-500">Defina uma vez: cores, fontes e sua credencial entram sozinhas em todo vídeo.</p>}
+          <label className="block text-xs text-zinc-400">
+            Nome na tarja
+            <input className={`${field} mt-1`} maxLength={40} placeholder="Dra. Ana Silva" value={draft.displayName} onChange={(e) => setDraft({ ...draft, displayName: e.target.value })} />
+          </label>
+          <label className="block text-xs text-zinc-400">
+            Registro ou cargo
+            <input className={`${field} mt-1`} maxLength={60} placeholder="CRM 12345" value={draft.credential} onChange={(e) => setDraft({ ...draft, credential: e.target.value })} />
+          </label>
+          <div className="grid grid-cols-4 gap-2">
+            {SWATCHES.map((sw) => (
+              <label key={sw.key} className="block text-center text-[10px] text-zinc-500">
+                <input
+                  type="color"
+                  className="h-8 w-full cursor-pointer rounded border border-zinc-800 bg-zinc-900"
+                  value={draft[sw.key]}
+                  onChange={(e) => setDraft({ ...draft, [sw.key]: e.target.value.toUpperCase() })}
+                  aria-label={sw.label}
+                />
+                {sw.label}
+              </label>
+            ))}
+          </div>
+          <label className="block text-xs text-zinc-400">
+            Fontes
+            <select className={`${field} mt-1`} value={draft.fontPair} onChange={(e) => setDraft({ ...draft, fontPair: e.target.value as FontPairId })}>
+              {(Object.keys(FONT_PAIRS) as FontPairId[]).map((id) => (
+                <option key={id} value={id}>
+                  {FONT_PAIRS[id].name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className={btn} disabled={busy || !dirty}>
+            {busy ? "Salvando…" : "Salvar marca"}
+          </button>
+        </form>
+      )}
+    </div>
   );
 }
