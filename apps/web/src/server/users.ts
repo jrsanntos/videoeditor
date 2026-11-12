@@ -74,11 +74,26 @@ export async function findUserIdByEmail(email: string): Promise<string | null> {
   return (await db.one<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizeEmail(email)]))?.id ?? null;
 }
 
-export async function createUser(input: { email: string; name: string; password: string }): Promise<User> {
+/**
+ * Cria a conta. Com `verified: false` ela nasce pendente: só entra depois de
+ * confirmar o e-mail. Um novo cadastro com o e-mail de uma conta ainda
+ * pendente assume a conta (nome e senha novos) — quem confirma o e-mail é o
+ * dono, e ninguém consegue "reservar" o e-mail de outra pessoa com a própria senha.
+ */
+export async function createUser(input: { email: string; name: string; password: string }, opts: { verified: boolean } = { verified: true }): Promise<User> {
   const email = normalizeEmail(input.email);
   // Fora da transação: o hash leva dezenas de ms e não deve segurar uma conexão.
   const passwordHash = await hashPassword(input.password);
   return tx(async () => {
+    const pending = await db.one<User>(
+      `UPDATE users SET name = $2, password_hash = $3 WHERE email = $1 AND email_verified_at IS NULL AND banned_at IS NULL RETURNING ${USER_COLS}`,
+      [email, input.name.trim(), passwordHash],
+    );
+    if (pending) {
+      await db.run("DELETE FROM sessions WHERE user_id = $1", [pending.id]);
+      if (opts.verified) await db.run("UPDATE users SET email_verified_at = now() WHERE id = $1", [pending.id]);
+      return pending;
+    }
     // Em desenvolvimento, sem ADMIN_EMAILS e sem nenhum admin, a primeira conta assume o painel.
     // Em produção só ADMIN_EMAILS cria admins: ninguém "chega primeiro" num deploy público.
     const bootstrap =
@@ -90,10 +105,10 @@ export async function createUser(input: { email: string; name: string; password:
     const credits = SIGNUP_CREDITS;
     // A unicidade é garantida pelo índice: sem corrida entre "existe?" e o insert.
     const user = await db.one<User>(
-      `INSERT INTO users (id, email, name, password_hash, role, plan, credits_plan, credits_cycle_grant, credits_renew_at)
-       VALUES ($1, $2, $3, $4, $5, 'free', 0, 0, now() + interval '1 month')
+      `INSERT INTO users (id, email, name, password_hash, role, plan, credits_plan, credits_cycle_grant, credits_renew_at, email_verified_at)
+       VALUES ($1, $2, $3, $4, $5, 'free', 0, 0, now() + interval '1 month', CASE WHEN $6 THEN now() END)
        ON CONFLICT (email) DO NOTHING RETURNING ${USER_COLS}`,
-      [`usr_${crypto.randomUUID()}`, email, input.name.trim(), passwordHash, role],
+      [`usr_${crypto.randomUUID()}`, email, input.name.trim(), passwordHash, role, opts.verified],
     );
     if (!user) throw new HttpError(409, "Já existe uma conta com este e-mail.");
     await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason) VALUES ($1, $2, 'extra', $3)", [
@@ -111,17 +126,19 @@ export async function createUser(input: { email: string; name: string; password:
 let dummyHash: Promise<string> | undefined;
 
 export async function verifyLogin(emailRaw: string, password: string): Promise<User> {
-  const row = await db.one<User & { password_hash: string }>(`SELECT ${USER_COLS}, password_hash FROM users WHERE email = $1`, [
+  const row = await db.one<User & { password_hash: string; email_verified_at: string | null }>(`SELECT ${USER_COLS}, password_hash, email_verified_at FROM users WHERE email = $1`, [
     normalizeEmail(emailRaw),
   ]);
   const ok = await verifyPassword(password, row?.password_hash ?? (await (dummyHash ??= hashPassword(randomToken()))));
   if (!row || !ok) throw new HttpError(401, "E-mail ou senha incorretos.");
   if (row.banned_at) throw new HttpError(403, bannedMessage(row));
+  // Só depois de conferir a senha: a resposta não revela a quem não é o dono que a conta existe.
+  if (!row.email_verified_at) throw new HttpError(403, "Confirme seu e-mail para entrar: enviamos um link quando você criou a conta.", undefined, "email_unverified");
   if (row.role !== "admin" && adminEmails().has(row.email)) {
     await db.run("UPDATE users SET role = 'admin' WHERE id = $1", [row.id]);
     row.role = "admin";
   }
-  const { password_hash: _, ...user } = row;
+  const { password_hash: _, email_verified_at: __, ...user } = row;
   return user;
 }
 
@@ -188,6 +205,41 @@ export async function requireAdmin(): Promise<User> {
   return user;
 }
 
+// ---------- Confirmação de e-mail ----------
+
+const VERIFY_HOURS = 24;
+export const VERIFY_LINK_HOURS = VERIFY_HOURS;
+
+/** Gera o token do link de confirmação (só o hash vai para o banco). O link mais recente é o que vale. */
+export async function createEmailVerification(userId: string): Promise<string> {
+  const token = randomToken();
+  await tx(async () => {
+    await db.run("DELETE FROM email_verifications WHERE user_id = $1", [userId]);
+    await db.run("INSERT INTO email_verifications (token_hash, user_id, expires_at) VALUES ($1, $2, now() + make_interval(hours => $3))", [sha256(token), userId, VERIFY_HOURS]);
+  });
+  if (Math.random() < 0.05) void db.run("DELETE FROM email_verifications WHERE expires_at < now()").catch(() => {});
+  return token;
+}
+
+/** Conta ainda não confirmada com este e-mail, ou null. */
+export async function findUnverified(emailRaw: string): Promise<Pick<User, "id" | "email" | "name"> | null> {
+  return (
+    (await db.one<Pick<User, "id" | "email" | "name">>("SELECT id, email, name FROM users WHERE email = $1 AND email_verified_at IS NULL AND banned_at IS NULL", [
+      normalizeEmail(emailRaw),
+    ])) ?? null
+  );
+}
+
+/** Confirma o e-mail com o token do link (uso único). Devolve o id da conta, ou null se o link não vale mais. */
+export async function verifyEmail(token: string): Promise<string | null> {
+  return tx(async () => {
+    const row = await db.one<{ user_id: string }>("DELETE FROM email_verifications WHERE token_hash = $1 AND expires_at > now() RETURNING user_id", [sha256(token)]);
+    if (!row) return null;
+    await db.run("UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1", [row.user_id]);
+    return row.user_id;
+  });
+}
+
 // ---------- Recuperação de senha ----------
 
 /**
@@ -226,7 +278,8 @@ export async function resetPassword(token: string, password: string) {
       [sha256(token)],
     );
     if (!reset) throw new HttpError(400, "Este link expirou ou já foi usado. Peça um novo.");
-    await db.run("UPDATE users SET password_hash = $2 WHERE id = $1", [reset.user_id, passwordHash]);
+    // Quem abriu o link de redefinição provou que o e-mail é seu.
+    await db.run("UPDATE users SET password_hash = $2, email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1", [reset.user_id, passwordHash]);
     await db.run("DELETE FROM sessions WHERE user_id = $1", [reset.user_id]);
   });
 }

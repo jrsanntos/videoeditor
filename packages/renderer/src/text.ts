@@ -1,4 +1,15 @@
-import { type Ctx2D, font, serifFont } from "./draw";
+import { type Ctx2D, font, getUnit, serifFont } from "./draw";
+
+/**
+ * Legibilidade da ênfase. A serifada itálica é fina: em corpo pequeno, e
+ * sobretudo em cor clara, ela some na tela do celular. Então:
+ * - abaixo de SERIF_MIN (em unidades de layout) a ênfase sai na própria fonte
+ *   sem serifa, em peso forte, só com a cor de destaque;
+ * - acima disso sai na serifada, engrossada por um contorno da mesma cor.
+ */
+const SERIF_MIN = 76;
+const SERIF_FATTEN = 0.034;
+const serifEmphasis = (style: RichStyle) => style.size >= SERIF_MIN * getUnit();
 
 /**
  * Tipografia mista: uma mesma frase com a fonte sem serifa de impacto e, nas
@@ -38,7 +49,8 @@ export const plainText = (text: string) =>
     .map((w) => w.text)
     .join(" ");
 
-const wordFont = (style: RichStyle, emph: boolean) => (emph ? serifFont(style.size * 1.12) : font(style.weight, style.size));
+const wordFont = (style: RichStyle, emph: boolean) =>
+  emph ? (serifEmphasis(style) ? serifFont(style.size * 1.12) : font(Math.max(style.weight, 800), style.size)) : font(style.weight, style.size);
 
 export function layoutRich(ctx: Ctx2D, text: string, style: RichStyle, maxWidth: number): RichLayout {
   const leading = style.leading ?? 1.15;
@@ -56,7 +68,7 @@ export function layoutRich(ctx: Ctx2D, text: string, style: RichStyle, maxWidth:
     x = 0;
   };
   for (const word of parseRich(text)) {
-    const shown = style.upper && !word.emph ? word.text.toUpperCase() : word.text;
+    const shown = style.upper && !(word.emph && serifEmphasis(style)) ? word.text.toUpperCase() : word.text;
     ctx.font = wordFont(style, word.emph);
     const w = ctx.measureText(shown).width;
     if (cur.length && x + w > maxWidth) flush();
@@ -115,6 +127,13 @@ export function drawRich(ctx: Ctx2D, layout: RichLayout, x: number, y: number, o
       const shown = budget >= word.chars ? word.text : word.text.slice(0, Math.max(0, Math.floor(budget)));
       ctx.font = wordFont(style, word.emph);
       ctx.fillStyle = word.emph ? style.emphColor : style.color;
+      if (word.emph && serifEmphasis(style)) {
+        // Engrossa o traço da serifada: mesma cor, contorno arredondado.
+        ctx.strokeStyle = style.emphColor;
+        ctx.lineJoin = "round";
+        ctx.lineWidth = style.size * SERIF_FATTEN;
+        ctx.strokeText(shown, left + word.x, baseline);
+      }
       ctx.fillText(shown, left + word.x, baseline);
       cursor = { x: left + word.x + ctx.measureText(shown).width, y: baseline };
       budget -= word.chars + 1;

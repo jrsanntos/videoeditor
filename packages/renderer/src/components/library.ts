@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BrandKit, SafeArea } from "@videoeditor/core";
+import type { BrandKit, SafeArea, SubjectBox } from "@videoeditor/core";
 import type { SFX_CATALOG } from "../sounds";
 import { V1_COMPONENTS } from "./v1";
 import {
@@ -40,10 +40,18 @@ export type DrawArgs<P> = {
   /** Margens que textos e tarjas respeitam (interface de Reels/TikTok/Shorts no vertical). */
   safe: SafeArea;
   vertical: boolean;
+  /** Onde o apresentador está no quadro (frações 0–1), quando o vídeo foi analisado. */
+  subject: SubjectBox | null;
   /** Há recorte do apresentador para este quadro (segmentação pronta). */
   hasPerson: boolean;
   /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */
   drawPerson: () => void;
+  /**
+   * Informa onde um texto editável foi desenhado (no sistema de coordenadas
+   * atual do contexto). `key` é o caminho do parâmetro: "title", "items.1.text".
+   * É o que permite clicar, arrastar e reescrever o texto direto no vídeo.
+   */
+  region: (key: string, x: number, y: number, w: number, h: number) => void;
 };
 
 export type SfxId = keyof typeof SFX_CATALOG;
@@ -64,6 +72,10 @@ export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   needsPerson?: boolean;
   /** false: fica só no menu manual; o agente não recebe no catálogo. */
   agent?: boolean;
+  /** Rótulos em português dos parâmetros, para o editor visual. */
+  labels?: Record<string, string>;
+  /** Textos que se movem sozinhos: chave da região → parâmetro que guarda o deslocamento {x, y}. */
+  positions?: Record<string, string>;
 };
 
 const define = <S extends z.ZodType>(def: ComponentDef<S>) => def;

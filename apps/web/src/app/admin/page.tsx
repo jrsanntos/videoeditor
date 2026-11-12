@@ -8,6 +8,6 @@ export const metadata = { title: "Administração — videoeditor" };
 export default async function AdminPage() {
   const user = await currentUser();
   if (!user) redirect("/login");
-  if (user.role !== "admin") redirect("/");
+  if (user.role !== "admin") redirect("/app");
   return <AdminPanel me={{ id: user.id, name: user.name, email: user.email }} />;
 }

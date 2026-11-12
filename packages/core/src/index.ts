@@ -7,3 +7,4 @@ export * from "./retakes";
 export * from "./agent-context";
 export * from "./template";
 export * from "./skills";
+export * from "./pacing";

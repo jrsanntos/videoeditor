@@ -25,7 +25,7 @@ export function AdminPanel({ me }: { me: Me }) {
       <header className="flex h-12 items-center gap-4 border-b border-zinc-800 bg-zinc-950 px-4">
         <span className="text-sm font-semibold text-white">videoeditor</span>
         <span className="text-sm text-zinc-500">Administração</span>
-        <a href="/" className="ml-auto text-sm text-zinc-300 hover:text-white">
+        <a href="/app" className="ml-auto text-sm text-zinc-300 hover:text-white">
           ← Voltar ao editor
         </a>
         <span className="text-xs text-zinc-500">{me.email}</span>

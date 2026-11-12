@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "videoeditor — edição de vídeo com IA",
-  description: "Envie o vídeo bruto, diga o que quer e a IA monta a edição. Ajuste na timeline sem gastar créditos.",
+  title: "videoeditor — a IA que dirige a edição do seu vídeo",
+  description:
+    "Envie o vídeo bruto: a IA corta erros e pausas, planeja o ritmo e aplica zooms, legendas e motion design. Você ajusta na timeline e exporta no navegador.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

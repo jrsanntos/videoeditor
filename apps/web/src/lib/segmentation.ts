@@ -67,13 +67,18 @@ export function personMask(key: string, image: CanvasImageSource, width: number,
     const canvas = new OffscreenCanvas(mask.width, mask.height);
     const ctx = canvas.getContext("2d")!;
     const pixels = ctx.createImageData(mask.width, mask.height);
+    let covered = 0;
     for (let i = 0; i < data.length; i++) {
       // Curva em S: borda suave na transição, miolo opaco, fundo limpo.
       const v = Math.min(1, Math.max(0, (data[i]! - 0.35) / 0.3));
+      if (v > 0.5) covered++;
       pixels.data[i * 4 + 3] = Math.round(v * v * (3 - 2 * v) * 255);
     }
     ctx.putImageData(pixels, 0, 0);
     result.close();
+    // Recorte que não achou ninguém (ou quase ninguém) não serve: quem pediu cai no plano B,
+    // em vez de pôr um título "atrás" de uma pessoa que não foi recortada.
+    if (covered < data.length * 0.04) return null;
     if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value!);
     cache.set(key, canvas);
     return canvas;

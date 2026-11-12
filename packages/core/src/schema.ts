@@ -14,6 +14,15 @@ export const WordSchema = z.object({
   text: z.string(),
   start: z.number(),
   end: z.number(),
+  /**
+   * Energia da voz nesta palavra, em dB relativos à mediana do apresentador
+   * (medida no navegador). Positivo = dita com mais força: ênfase real.
+   */
+  energy: z.number().optional(),
+  /** Some só da legenda; a fala e a transcrição continuam. */
+  hidden: z.boolean().optional(),
+  /** Deslocamento (s) da legenda desta palavra na timeline. */
+  shift: z.number().min(-5).max(5).optional(),
 });
 export type Word = z.infer<typeof WordSchema>;
 
@@ -32,7 +41,35 @@ export const AssetSchema = z.object({
   width: z.number().optional(),
   height: z.number().optional(),
   hasAudio: z.boolean().default(true),
+  /**
+   * main: o vídeo falado. context: mídia de apoio (b-roll) que o usuário
+   * enviou ou trouxe de um banco gratuito, para cobrir trechos da fala.
+   */
+  role: z.enum(["main", "context"]).optional(),
+  /** O que a mídia de contexto mostra, em poucas palavras: é o que o agente lê para decidir onde usá-la. */
+  description: z.string().max(200).optional(),
+  /** Origem de mídia de banco gratuito, para dar o crédito. */
+  credit: z.object({ provider: z.string(), author: z.string().optional(), url: z.string().optional() }).optional(),
   transcript: TranscriptSchema.optional(),
+  /**
+   * Onde o apresentador está no quadro de ORIGEM (frações 0–1), medido no
+   * navegador por segmentação em alguns quadros. É o que permite ao agente e
+   * ao compositor posicionar zooms e textos sem cobrir o rosto.
+   */
+  subject: z
+    .array(
+      z.object({
+        t: z.number(),
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+        /** Centro estimado do rosto. */
+        faceX: z.number(),
+        faceY: z.number(),
+      }),
+    )
+    .optional(),
 });
 export type Asset = z.infer<typeof AssetSchema>;
 
@@ -80,13 +117,38 @@ export const ComponentClipSchema = z.object({
   /** id de um componente da biblioteca pré-validada (@videoeditor/renderer). */
   component: z.string(),
   params: z.record(z.string(), z.unknown()),
+  /** Ajustes visuais deste clip, feitos pelo usuário no editor de motion. */
+  style: z
+    .object({
+      /** Deslocamento em fração da largura/altura do quadro. */
+      dx: z.number().min(-1).max(1).default(0),
+      dy: z.number().min(-1).max(1).default(0),
+      scale: z.number().min(0.3).max(3).default(1),
+      primaryColor: z.string().optional(),
+      textColor: z.string().optional(),
+      backgroundColor: z.string().optional(),
+      fontPair: z.string().optional(),
+    })
+    .optional(),
 });
 export type ComponentClip = z.infer<typeof ComponentClipSchema>;
+
+/** Mídia de contexto (b-roll) por cima do vídeo falado; o áudio da fala continua. */
+export const BrollClipSchema = z.object({
+  ...clipBase,
+  type: z.literal("broll"),
+  assetId: z.string(),
+  sourceStart: z.number().min(0).default(0),
+  /** full: cobre o quadro. card: cartão na parte de cima, com o apresentador visível embaixo. */
+  layout: z.enum(["full", "card"]).default("full"),
+});
+export type BrollClip = z.infer<typeof BrollClipSchema>;
 
 export const ClipSchema = z.discriminatedUnion("type", [
   MediaClipSchema,
   ZoomClipSchema,
   ComponentClipSchema,
+  BrollClipSchema,
 ]);
 export type Clip = z.infer<typeof ClipSchema>;
 
@@ -94,8 +156,9 @@ export type Clip = z.infer<typeof ClipSchema>;
  * main    — vídeo falado; magnética (sem buracos), só clips `media`
  * fx      — zooms aplicados ao vídeo principal
  * overlay — componentes de motion design
+ * broll   — mídia de contexto por cima do vídeo (criada ao inserir a primeira)
  */
-export const TrackKindSchema = z.enum(["main", "fx", "overlay"]);
+export const TrackKindSchema = z.enum(["main", "fx", "overlay", "broll"]);
 export type TrackKind = z.infer<typeof TrackKindSchema>;
 
 export const TrackSchema = z.object({
@@ -113,6 +176,8 @@ export const CaptionStyleSchema = z.object({
   color: z.string().default("#ffffff"),
   highlightColor: z.string().default("#facc15"),
   fontScale: z.number().min(0.5).max(2).default(1),
+  /** Altura do centro da legenda (0 topo, 1 base). Quando definida, vale no lugar de `position`. */
+  y: z.number().min(0.05).max(0.95).optional(),
 });
 export type CaptionStyle = z.infer<typeof CaptionStyleSchema>;
 
@@ -122,6 +187,10 @@ const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "cor em hexadecimal, ex.: #0B0
 export const FONT_PAIRS = {
   "inter-instrument": { name: "Inter + Instrument Serif", sans: "Inter", serif: "Instrument Serif" },
   "montserrat-playfair": { name: "Montserrat + Playfair Display", sans: "Montserrat", serif: "Playfair Display" },
+  "poppins-playfair": { name: "Poppins + Playfair Display", sans: "Poppins", serif: "Playfair Display" },
+  "bebas-instrument": { name: "Bebas Neue + Instrument Serif", sans: "Bebas Neue", serif: "Instrument Serif" },
+  "anton-playfair": { name: "Anton + Playfair Display", sans: "Anton", serif: "Playfair Display" },
+  "oswald-instrument": { name: "Oswald + Instrument Serif", sans: "Oswald", serif: "Instrument Serif" },
 } as const;
 export type FontPairId = keyof typeof FONT_PAIRS;
 
@@ -134,9 +203,11 @@ export const BrandKitSchema = z.object({
   secondaryColor: hex.default("#38BDF8").describe("cor de apoio"),
   backgroundColor: hex.default("#0B0F19").describe("fundo das cenas de tela cheia"),
   textColor: hex.default("#F8FAFC"),
-  fontPair: z.enum(["inter-instrument", "montserrat-playfair"]).default("inter-instrument"),
+  fontPair: z.enum(Object.keys(FONT_PAIRS) as [FontPairId, ...FontPairId[]]).default("inter-instrument"),
   displayName: z.string().max(40).default("").describe("nome exibido na tarja (ex.: Dra. Ana Silva)"),
   credential: z.string().max(60).default("").describe("registro ou cargo (ex.: CRM 12345, Personal Trainer)"),
+  /** Desligado: nenhuma tarja de nome/cargo aparece no vídeo, e o agente não cria uma. */
+  showLowerThird: z.boolean().default(true),
 });
 export type BrandKit = z.infer<typeof BrandKitSchema>;
 export const defaultBrandKit = (): BrandKit => BrandKitSchema.parse({});
@@ -165,6 +236,13 @@ export const ProjectSchema = z.object({
   framing: z.object({ x: z.number().min(0).max(1).default(0.5), y: z.number().min(0).max(1).default(0.5) }).default({ x: 0.5, y: 0.5 }),
   /** Efeitos sonoros automáticos sincronizados com os movimentos visuais. */
   sfx: z.object({ enabled: z.boolean().default(true), volume: z.number().min(0).max(2).default(1) }).default({ enabled: true, volume: 1 }),
+  /**
+   * Acabamento automático, o que separa "cortado" de "finalizado":
+   * - cutZoom: alterna um leve zoom a cada corte da fala, para o corte parecer
+   *   troca de enquadramento e não um salto;
+   * - voice: leva a voz ao volume padrão das redes (≈ −14 LUFS) com compressão leve.
+   */
+  finish: z.object({ cutZoom: z.boolean().default(true), voice: z.boolean().default(true) }).default({ cutZoom: true, voice: true }),
 });
 
 export type AspectRatio = Project["aspectRatio"];

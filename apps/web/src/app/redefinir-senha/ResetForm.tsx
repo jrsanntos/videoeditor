@@ -1,6 +1,6 @@
 "use client";
 
-import { AuthShell, ErrorNote, field, link, submitBtn, useSubmit } from "../login/AuthShell";
+import { AuthShell, card, ErrorNote, field, link, submitBtn, useSubmit } from "../login/AuthShell";
 
 export function ResetForm({ token }: { token: string }) {
   const { error, busy, submit, setError } = useSubmit("/api/auth/reset", () => {
@@ -22,7 +22,7 @@ export function ResetForm({ token }: { token: string }) {
   return (
     <AuthShell subtitle="Crie uma nova senha para a sua conta." footer={again}>
       <form
-        className="mt-6 space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-5"
+        className={card}
         onSubmit={(e) => {
           e.preventDefault();
           const form = new FormData(e.currentTarget);

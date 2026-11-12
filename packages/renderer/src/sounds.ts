@@ -53,6 +53,10 @@ export const SFX_CATALOG = {
   notificacao: { file: "notificacao.mp3", level: -18, filePeak: -4.5, peakAt: 0.23, offset: 0, minGap: 5 },
 } as const satisfies Record<string, SfxSpec>;
 
+/** A partir deste nível (dB) um som é "de destaque" e entra no limite global de frequência. */
+export const HIGHLIGHT_LEVEL = -14;
+export const HIGHLIGHT_GAP = 5;
+
 /** Um som a tocar: começa em `start` (tempo de timeline), pulando `skip` segundos do arquivo. */
 export type SoundEvent = { start: number; skip: number; sfx: SfxId; gain: number; duration?: number };
 
@@ -71,6 +75,8 @@ export function soundEvents(project: Project): SoundEvent[] {
         if (c.mode === "hold" && c.ease > 0 && c.ease <= 0.45 && (pans || c.scale >= 1.2)) cues.push({ t: c.start, sfx: "whoosh_rapido" });
         else if (c.mode === "hold" && c.ease === 0 && c.scale >= 1.12) cues.push({ t: c.start, sfx: "zoom_punch" });
       } else if (c.type === "component") {
+        // Tarja desligada no Brand Kit: não aparece e não faz som.
+        if (!project.brand.showLowerThird && (c.component === "executive_lower_third" || c.component === "lower_third")) continue;
         const def = COMPONENTS[c.component];
         const parsed = def?.sounds ? def.schema.safeParse(c.params) : null;
         if (!def?.sounds || !parsed?.success) continue;
@@ -92,7 +98,10 @@ export function soundEvents(project: Project): SoundEvent[] {
       (k) =>
         (k.sfx === cue.sfx && Math.abs(k.peak - cue.peak) < spec.minGap) ||
         // Som contínuo de fundo (digitação) convive com os pontuais.
-        (!spec.sustained && !(SFX_CATALOG[k.sfx] as SfxSpec).sustained && Math.abs(k.peak - cue.peak) < 0.15),
+        (!spec.sustained && !(SFX_CATALOG[k.sfx] as SfxSpec).sustained && Math.abs(k.peak - cue.peak) < 0.15) ||
+        // Sons de destaque (impactos, whooshes) disputam a atenção entre si: no máximo um a cada HIGHLIGHT_GAP,
+        // seja qual for o som. Os discretos (pop, clique, tecla) pontuam itens em sequência e ficam de fora.
+        (spec.level >= HIGHLIGHT_LEVEL && SFX_CATALOG[k.sfx].level >= HIGHLIGHT_LEVEL && Math.abs(k.peak - cue.peak) < HIGHLIGHT_GAP),
     );
     if (!clash) kept.push(cue);
   }

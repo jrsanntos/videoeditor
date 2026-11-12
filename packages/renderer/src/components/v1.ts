@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { drawTopoBackground } from "../background";
-import { clamp01, EASE, enter, font, formatNumber, rgba, roundRect, serifFont, setBlur, stage } from "../draw";
+import { clamp01, EASE, enter, font, formatNumber, rgba, roundRect, setBlur, stage } from "../draw";
 import { drawRich, fitRich, plainText, typewriter } from "../text";
 import type { ComponentDef, SoundCue } from "./library";
 
@@ -12,6 +12,11 @@ import type { ComponentDef, SoundCue } from "./library";
 const define = <S extends z.ZodType>(def: ComponentDef<S>) => def;
 const rich = (max: number, what: string) => z.string().min(1).max(max).describe(`${what}. Marque 1–2 palavras de ênfase com *asteriscos*`);
 const at = z.number().min(0).optional().describe("instante de entrada, em segundos desde o início do componente; mande atWord com o id da palavra");
+
+const pos = z
+  .object({ x: z.number().min(-1).max(1).default(0), y: z.number().min(-1).max(1).default(0) })
+  .optional()
+  .describe("posição ajustada à mão pelo usuário (fração do quadro); o agente não usa");
 
 const CPS = 24;
 /** Sai nos últimos 0,3 s. */
@@ -34,10 +39,15 @@ const depthHookTitle = define({
     title: z.string().min(1).max(26).describe("1 a 3 palavras de impacto; aparece em caixa alta"),
     left: rich(48, "texto curto à esquerda da cabeça").optional(),
     right: rich(48, "texto curto à direita da cabeça").optional(),
+    titlePos: pos,
+    leftPos: pos,
+    rightPos: pos,
   }),
+  labels: { title: "Título gigante", left: "Texto da esquerda", right: "Texto da direita" },
+  positions: { title: "titlePos", left: "leftPos", right: "rightPos" },
   example: { title: "3 erros", left: "que fazem você", right: "*perder dinheiro*" },
   sounds: () => [{ at: 0.1, sfx: "impacto_grave" }],
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson, region, subject }) {
     const p = EASE.snap(stage(t, 0, 0.6));
     const out = fadeOut(t, duration);
     const words = params.title.toUpperCase().split(/\s+/);
@@ -49,11 +59,14 @@ const depthHookTitle = define({
     if (widest > W * 0.94) size *= (W * 0.94) / widest;
     const block = lines.length * size * 0.92;
     // Atrás da pessoa: na altura dos ombros. Sem recorte disponível: acima da cabeça, onde não cobre o rosto.
-    const cy = hasPerson ? H * (vertical ? 0.33 : 0.4) : safe.top + block / 2 + 10 * u;
+    // Sem recorte, o título nunca pode ficar por cima do rosto: vai para o peito, logo abaixo dele
+    // (ou, sem saber onde o rosto está, para o meio do quadro).
+    const below = subject ? Math.min(H * 0.7, (subject.faceY + 0.13) * H + block / 2) : H * (vertical ? 0.56 : 0.66);
+    const cy = hasPerson ? H * (vertical ? 0.33 : 0.4) : below;
 
     ctx.save();
     ctx.globalAlpha = out * clamp01(p * 1.5);
-    ctx.translate(W / 2, cy);
+    ctx.translate(W / 2 + (params.titlePos?.x ?? 0) * W, cy + (params.titlePos?.y ?? 0) * H);
     ctx.scale(1.2 - 0.2 * p, 1.2 - 0.2 * p);
     setBlur(ctx, (1 - p) * 26 * u);
     ctx.font = font(900, size);
@@ -63,6 +76,7 @@ const depthHookTitle = define({
       ctx.fillStyle = i === lines.length - 1 && lines.length > 1 ? brand.primaryColor : brand.textColor;
       ctx.fillText(line, 0, (i - (lines.length - 1) / 2) * size * 0.92);
     });
+    region("title", -Math.min(widest, W * 0.94) / 2, -block / 2, Math.min(widest, W * 0.94), block);
     ctx.restore();
 
     drawPerson();
@@ -76,12 +90,15 @@ const depthHookTitle = define({
       if (!text) return;
       const e = EASE.snap(stage(t, delay, 0.5));
       const layout = fitRich(ctx, text, style, maxW, 3);
+      const off = right ? params.rightPos : params.leftPos;
       ctx.save();
+      ctx.translate((off?.x ?? 0) * W, (off?.y ?? 0) * H);
       ctx.globalAlpha = out;
       ctx.shadowColor = "rgba(0,0,0,0.6)";
       ctx.shadowBlur = 14 * u;
       enter(ctx, e, (right ? 70 : -70) * u, 0);
       drawRich(ctx, layout, right ? W - safe.right : safe.left, sideTop, { align: right ? "right" : "left" });
+      region(right ? "right" : "left", right ? W - safe.right - layout.width : safe.left, sideTop, layout.width, layout.height);
       ctx.restore();
     };
     side(params.left, false, 0.35);
@@ -101,11 +118,12 @@ const kineticPivotCard = define({
     pivot: z.object({ at }).optional().describe("quando a primeira frase gira e a conclusão entra"),
   }),
   example: { setup: "Preço não é o problema", punchline: "A *oferta* é que não convence" },
+  labels: { setup: "Primeira frase", punchline: "Frase de conclusão", pivot: "Momento da virada" },
   sounds: (params, duration) => {
     const pivotAt = params.pivot?.at ?? pivotDefault(duration);
     return [{ at: 0.05, sfx: "impacto_grave" }, ...typing(0.3, params.setup), { at: pivotAt + 0.1, sfx: "swoosh_texto" }, ...typing(pivotAt + 0.45, params.punchline)];
   },
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, region }) {
     const out = fadeOut(t, duration);
     drawTopoBackground(ctx, W, H, t, brand, Math.min(EASE.snap(t / 0.35), out));
     const pivotAt = params.pivot?.at ?? pivotDefault(duration);
@@ -126,6 +144,7 @@ const kineticPivotCard = define({
     ctx.scale(1 - (1 - shrink) * q, 1 - (1 - shrink) * q);
     setBlur(ctx, Math.sin(q * Math.PI) * 16 * u);
     drawRich(ctx, setup, 0, -setup.height / 2, { align: "center", reveal: typed.reveal, cursor: q === 0 && typed.cursor });
+    region("setup", -setup.width / 2, -setup.height / 2, setup.width, setup.height);
     ctx.restore();
 
     // Barra de destaque entre a frase girada e a conclusão.
@@ -147,6 +166,7 @@ const kineticPivotCard = define({
       ctx.save();
       ctx.globalAlpha = out;
       drawRich(ctx, punch, left, H / 2 - punch.height / 2, { reveal: typing.reveal, cursor: typing.cursor });
+      region("punchline", left, H / 2 - punch.height / 2, punch.width, punch.height);
       ctx.restore();
     }
   },
@@ -169,13 +189,14 @@ const stepProgress = define({
     style: z.enum(["stairs", "line"]).default("stairs").describe("stairs: escada; line: linha de tendência ascendente"),
     fullscreen: z.boolean().default(true).describe("true: cena de tela cheia em fundo escuro; false: por cima do vídeo"),
   }),
+  labels: { title: "Título", steps: "Degraus", label: "Rótulo", style: "Formato", fullscreen: "Tela cheia" },
   example: { title: "Do *não* ao sim", steps: [{ label: "Não" }, { label: "Não" }, { label: "Talvez" }, { label: "Sim" }] },
   sounds: (params, duration) => [
     ...(params.fullscreen ? [{ at: 0.05, sfx: "impacto_grave" as const }] : []),
     // O último degrau é a chegada: conclusão positiva.
     ...params.steps.map((s, i) => ({ at: s.at ?? spread(i, params.steps.length, duration), sfx: i === params.steps.length - 1 ? ("ding" as const) : itemSound(i) })),
   ],
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, region }) {
     const out = fadeOut(t, duration);
     if (params.fullscreen) drawTopoBackground(ctx, W, H, t, brand, Math.min(EASE.snap(t / 0.35), out));
     const n = params.steps.length;
@@ -197,6 +218,7 @@ const stepProgress = define({
       ctx.save();
       enter(ctx, EASE.snap(stage(t, 0.1, 0.5)), 0, 40 * u);
       drawRich(ctx, title, left, bottom - areaH - title.height - 110 * u);
+      region("title", left, bottom - areaH - title.height - 110 * u, title.width, title.height);
       ctx.restore();
     }
 
@@ -268,9 +290,10 @@ const acronymList = define({
       .max(5),
     side: z.enum(["left", "right"]).default("right"),
   }),
+  labels: { mode: "Tipo", title: "Rótulo acima da lista", items: "Itens", text: "Texto", side: "Lado da tela" },
   example: { title: "Os 3 erros", items: [{ text: "Tudo na *poupança*" }, { text: "Sem reserva de emergência" }, { text: "Investir sem *objetivo*" }] },
   sounds: (params, duration) => params.items.map((it, i) => ({ at: it.at ?? spread(i, params.items.length, duration, 0.4), sfx: itemSound(i) })),
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, region }) {
     const out = fadeOut(t, duration);
     const right = params.side === "right";
     const panelW = (W - safe.left - safe.right) * (vertical ? 0.56 : 0.36);
@@ -294,6 +317,8 @@ const acronymList = define({
       ctx.shadowColor = "rgba(0,0,0,0.7)";
       ctx.shadowBlur = 12 * u;
       ctx.fillText(params.title.toUpperCase(), right ? x + panelW : x, y - 22 * u);
+      // Área ocupada pelo rótulo: as legendas desviam dele também.
+      region("", x, y - 56 * u, panelW, 40 * u);
       ctx.restore();
     }
     params.items.forEach((item, i) => {
@@ -329,6 +354,7 @@ const acronymList = define({
         // Na sigla, a palavra é digitada a partir da letra; na lista entra inteira.
         const typing = params.mode === "acronym" ? typewriter(t - start - 0.15, layout.chars, CPS * 1.4) : null;
         drawRich(ctx, layout, tx, y + rowH / 2 - layout.height / 2, typing ? { reveal: typing.reveal } : {});
+        region(`items.${i}.text`, tx, y + rowH / 2 - layout.height / 2, layout.width, layout.height);
         ctx.restore();
       }
       y += rowH + gap;
@@ -348,8 +374,9 @@ const executiveLowerThird = define({
     credential: z.string().max(60).optional().describe("omita para usar a credencial do Brand Kit"),
   }),
   example: { name: "Dra. Ana Silva", credential: "Cardiologista • CRM 12345" },
+  labels: { name: "Nome", credential: "Registro ou cargo" },
   sounds: () => [{ at: 0.2, sfx: "swoosh_texto" }],
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, region }) {
     const name = params.name ?? brand.displayName;
     const credential = params.credential ?? (params.name ? "" : brand.credential);
     if (!name) return;
@@ -362,8 +389,8 @@ const executiveLowerThird = define({
       nameSize *= maxW / nameW;
       nameW = maxW;
     }
-    let credSize = 36 * u;
-    ctx.font = serifFont(credSize);
+    let credSize = 34 * u;
+    ctx.font = font(600, credSize);
     let credW = credential ? ctx.measureText(credential).width : 0;
     if (credW > maxW) {
       credSize *= maxW / credW;
@@ -394,10 +421,12 @@ const executiveLowerThird = define({
     ctx.fillStyle = brand.textColor;
     ctx.font = font(700, nameSize);
     ctx.fillText(name, x + padX + 8 * u, y + (credential ? 58 : 62) * u);
+    region("name", x + padX + 8 * u, y + (credential ? 58 : 62) * u - nameSize * 0.85, nameW, nameSize);
     if (credential) {
       ctx.fillStyle = rgba(brand.textColor, 0.82);
-      ctx.font = serifFont(credSize);
+      ctx.font = font(600, credSize);
       ctx.fillText(credential, x + padX + 8 * u, y + 106 * u);
+      region("credential", x + padX + 8 * u, y + 106 * u - credSize * 0.85, credW, credSize);
     }
     ctx.restore();
     ctx.fillStyle = brand.primaryColor;
@@ -422,6 +451,7 @@ const statCounter = define({
     fullscreen: z.boolean().default(false).describe("true: cena de tela cheia em fundo escuro, para o número mais importante do vídeo"),
   }),
   example: { value: 30, suffix: "%", prefix: "+", label: "de retorno para quem tem *objetivo*" },
+  labels: { value: "Valor final", from: "Começa em", prefix: "Antes do número", suffix: "Depois do número", decimals: "Casas decimais", label: "Legenda do número", fullscreen: "Tela cheia" },
   sounds: (params, duration) => {
     const end = 0.2 + countTime(duration);
     const money = /\$/.test(params.prefix);
@@ -431,7 +461,7 @@ const statCounter = define({
       { at: end, sfx: money ? ("caixa_registradora" as const) : params.fullscreen ? ("impacto_grave" as const) : ("pop" as const) },
     ];
   },
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, region }) {
     const out = fadeOut(t, duration);
     if (params.fullscreen) drawTopoBackground(ctx, W, H, t, brand, Math.min(EASE.snap(t / 0.35), out));
     const k = EASE.snap(stage(t, 0.2, countTime(duration)));
@@ -461,6 +491,8 @@ const statCounter = define({
       ctx.fillStyle = rgba(brand.backgroundColor, 0.82);
       roundRect(ctx, cx - cardW / 2, top - 30 * u, cardW, blockH + 60 * u, 28 * u);
       ctx.fill();
+      // O cartão inteiro ocupa a tela: as legendas desviam dele.
+      region("", cx - cardW / 2, top - 30 * u, cardW, blockH + 60 * u);
     }
     // Pequeno pulso quando o contador chega ao valor final.
     const pulse = 1 + 0.06 * Math.sin(Math.PI * stage(t, 0.2 + countTime(duration), 0.35));
@@ -473,7 +505,10 @@ const statCounter = define({
     ctx.textBaseline = "middle";
     ctx.fillText(text, 0, size * 0.04);
     ctx.restore();
-    if (label) drawRich(ctx, label, cx, top + size + 22 * u, { align: "center" });
+    if (label) {
+      drawRich(ctx, label, cx, top + size + 22 * u, { align: "center" });
+      region("label", cx - label.width / 2, top + size + 22 * u, label.width, label.height);
+    }
     ctx.restore();
   },
 });

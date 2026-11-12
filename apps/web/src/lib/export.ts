@@ -15,12 +15,13 @@ import {
   QUALITY_HIGH,
   WebMOutputFormat,
 } from "mediabunny";
-import { mainClips, projectDuration, type Project } from "@videoeditor/core";
+import { mainClips, projectDuration, type BrollClip, type Project } from "@videoeditor/core";
 import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
-import { loadBrandFonts } from "./fonts";
+import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
 import { scheduleSfx } from "./sfx";
+import { voiceCompressor, voiceGain } from "./voice";
 
 /**
  * Exportação local via WebCodecs: decodifica, compõe e codifica o vídeo final
@@ -66,7 +67,7 @@ export async function exportInBrowser(
   output.addVideoTrack(videoSource, { frameRate: fps });
 
   // Fontes do Brand Kit e, se algum título usa profundidade, o modelo de segmentação.
-  await loadBrandFonts(project.brand);
+  await loadProjectFonts(project);
   const depth = personIntervals(project);
   if (depth.length) await ensureSegmenter();
 
@@ -94,11 +95,67 @@ export async function exportInBrowser(
       inputs.set(clip.assetId, { input, sink: new CanvasSink(track, { poolSize: 2 }) });
     }
 
+    // Mídia de contexto: um leitor por clip, que avança junto com a timeline.
+    const brolls = project.tracks.flatMap((t) => t.clips).filter((c): c is BrollClip => c.type === "broll");
+    const readers = new Map<string, { frames?: AsyncGenerator<{ canvas: HTMLCanvasElement | OffscreenCanvas; timestamp: number }, void, unknown>; current: FrameSource | null; next: { src: FrameSource; at: number } | null; done: boolean }>();
+    const stills = new Map<string, FrameSource>();
+    for (const c of brolls) {
+      const asset = project.assets[c.assetId];
+      const blob = mediaBlob(c.assetId);
+      if (!asset || !blob) continue;
+      if (asset.kind === "image") {
+        if (!stills.has(c.assetId)) {
+          const bmp = await createImageBitmap(blob).catch(() => null);
+          if (bmp) stills.set(c.assetId, { image: bmp, width: bmp.width, height: bmp.height });
+        }
+        continue;
+      }
+      let entry = inputs.get(`broll:${c.assetId}`);
+      if (!entry) {
+        const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+        const track = await input.getPrimaryVideoTrack();
+        if (!track || !(await track.canDecode())) {
+          input.dispose();
+          continue;
+        }
+        entry = { input, sink: new CanvasSink(track, { poolSize: 3 }) };
+        inputs.set(`broll:${c.assetId}`, entry);
+      }
+      readers.set(c.id, { frames: entry.sink.canvases(c.sourceStart, c.sourceStart + c.duration + 0.1), current: null, next: null, done: false });
+    }
+    const brollAt = async (t: number) => {
+      const out = new Map<string, FrameSource>();
+      for (const c of brolls) {
+        if (t < c.start || t >= c.start + c.duration) continue;
+        const still = stills.get(c.assetId);
+        if (still) {
+          out.set(c.id, still);
+          continue;
+        }
+        const r = readers.get(c.id);
+        if (!r?.frames) continue;
+        const want = c.sourceStart + (t - c.start);
+        // Avança até o quadro cujo tempo já chegou.
+        while (!r.done && (!r.next || r.next.at <= want)) {
+          if (r.next) r.current = r.next.src;
+          const step = await r.frames.next();
+          if (step.done) r.done = true;
+          else r.next = { src: { image: step.value.canvas, width: step.value.canvas.width, height: step.value.canvas.height }, at: step.value.timestamp };
+        }
+        if (r.done && r.next && r.next.at <= want) r.current = r.next.src;
+        const shown = r.current ?? r.next?.src;
+        if (shown) out.set(c.id, shown);
+      }
+      return out;
+    };
+
     await output.start();
     const audioDone = audioSource && audioBuffer ? audioSource.add(audioBuffer) : Promise.resolve();
 
     const totalFrames = Math.max(1, Math.round(duration * fps));
     let frame = 0;
+    // Último quadro decodificado: se o primeiro quadro de um clip demorar, a emenda repete o anterior em vez de sair preta.
+    let last: FrameSource | null = null;
     for (const clip of clips) {
       const end = clip.start + clip.duration;
       const first = frame;
@@ -106,13 +163,14 @@ export async function exportInBrowser(
       for (let i = first; i < totalFrames && i / fps < end; i++)
         sourceTimes.push(clip.sourceStart + Math.max(0, i / fps - clip.start));
       const { sink } = inputs.get(clip.assetId)!;
-      let last: FrameSource | null = null;
       for await (const wrapped of sink.canvasesAtTimestamps(sourceTimes)) {
         if (signal?.aborted) throw new DOMException("Exportação cancelada", "AbortError");
         if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };
         const t = frame / fps;
         const sourceTime = sourceTimes[frame - first] ?? clip.sourceStart;
+        const context = brolls.length ? await brollAt(t) : null;
         renderFrame(ctx, project, t, () => last, {
+          getBrollFrame: context ? (c) => context.get(c.id) ?? null : undefined,
           // Segmentação só nos quadros dos trechos que pedem; as máscaras vistas no preview vêm do cache.
           getPersonMask: depth.some((r) => t >= r.start && t < r.end)
             ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height)
@@ -167,6 +225,12 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
   if (![...decoded.values()].some(Boolean) && !soundEvents(project).length) return null;
 
   const off = new OfflineAudioContext(2, Math.ceil(duration * RATE), RATE);
+  // Barramento da voz: com o acabamento ligado, ganho até o volume padrão das redes e compressão leve.
+  const master = project.finish.voice;
+  const voiceBus = master ? voiceCompressor(off) : off.destination;
+  if (master) voiceBus.connect(off.destination);
+  const boost = new Map<string, number>();
+  if (master) for (const clip of clips) if (!boost.has(clip.assetId)) boost.set(clip.assetId, await voiceGain(clip.assetId));
   for (const clip of clips) {
     const buffer = decoded.get(clip.assetId);
     if (!buffer) continue;
@@ -175,16 +239,29 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
     const gain = off.createGain();
     // Micro-fade nas bordas de cada corte evita estalos.
     const edge = Math.min(0.008, clip.duration / 4);
+    const level = clip.volume * (boost.get(clip.assetId) ?? 1);
     gain.gain.setValueAtTime(0, clip.start);
-    gain.gain.linearRampToValueAtTime(clip.volume, clip.start + edge);
-    gain.gain.setValueAtTime(clip.volume, clip.start + clip.duration - edge);
+    gain.gain.linearRampToValueAtTime(level, clip.start + edge);
+    gain.gain.setValueAtTime(level, clip.start + clip.duration - edge);
     gain.gain.linearRampToValueAtTime(0, clip.start + clip.duration);
-    src.connect(gain).connect(off.destination);
+    src.connect(gain).connect(voiceBus);
     src.start(clip.start, clip.sourceStart, clip.duration);
   }
   // Efeitos sonoros nos mesmos instantes do preview.
   await scheduleSfx(off, project);
-  return off.startRendering();
+  const mixed = await off.startRendering();
+  // Teto de segurança: nenhum pico acima de −1 dBFS (sem distorção em nenhum aparelho).
+  let peak = 0;
+  for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
+    const data = mixed.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]!));
+  }
+  const ceiling = 0.89;
+  if (peak > ceiling) for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
+    const data = mixed.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) data[i] = (data[i]! * ceiling) / peak;
+  }
+  return mixed;
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

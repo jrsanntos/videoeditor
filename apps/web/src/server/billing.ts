@@ -88,8 +88,18 @@ export async function adjustCredits(userId: string, delta: number, reason: strin
   else if (delta < 0) await debit(userId, -delta, reason, actorId);
 }
 
+/**
+ * Administradores usam a plataforma sem consumir créditos: nada é checado nem
+ * debitado. O custo real de cada chamada continua registrado em usage_events.
+ * Vale só para o papel "admin" — nenhum plano dá créditos ilimitados.
+ */
+export async function hasUnlimitedCredits(userId: string): Promise<boolean> {
+  return (await db.one<{ role: string }>("SELECT role FROM users WHERE id = $1", [userId]))?.role === "admin";
+}
+
 /** Falha cedo, antes de gastar com provedores, se o saldo não cobre a ação. */
 export async function assertCredits(userId: string, needed: number) {
+  if (await hasUnlimitedCredits(userId)) return;
   const have = await balance(userId);
   if (have < needed)
     throw new HttpError(402, `Créditos insuficientes: esta ação custa ${needed} e você tem ${have}.`);
@@ -101,7 +111,8 @@ export async function assertCredits(userId: string, needed: number) {
  * ficar negativo e bloqueia a próxima ação.
  */
 export async function charge(userId: string, amount: number, reason: string): Promise<number> {
-  return amount > 0 ? debit(userId, amount, reason) : balance(userId);
+  if (amount <= 0 || (await hasUnlimitedCredits(userId))) return balance(userId);
+  return debit(userId, amount, reason);
 }
 
 /**

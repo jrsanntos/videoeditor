@@ -54,6 +54,7 @@ export function createProject(opts: {
     aspectRatio,
     framing: { x: 0.5, y: 0.5 },
     sfx: { enabled: true, volume: 1 },
+    finish: { cutZoom: true, voice: true },
   };
 }
 
@@ -74,6 +75,15 @@ export function addAssetToProject(project: Project, asset: Asset): Project {
   });
   return next;
 }
+
+/** Registra uma mídia de contexto no projeto (sem colocá-la na timeline). */
+export function addContextAsset(project: Project, asset: Asset): Project {
+  const next = structuredClone(project);
+  next.assets[asset.id] = { ...asset, role: "context" };
+  return next;
+}
+
+export const contextAssets = (project: Project): Asset[] => Object.values(project.assets).filter((a) => a.role === "context");
 
 export function getTrack(project: Project, kind: TrackKind): Track {
   const t = project.tracks.find((t) => t.kind === kind);
@@ -213,4 +223,62 @@ export function timelineWord(project: Project, wordId: string, words = timelineW
   const w = words.find((w) => w.id === wordId);
   if (!w) throw new Error(`palavra ${wordId} não está na timeline (não existe ou já foi cortada)`);
   return w;
+}
+
+export type SubjectBox = { x: number; y: number; w: number; h: number; faceX: number; faceY: number };
+
+/**
+ * Onde o apresentador está no QUADRO DO PROJETO (frações 0–1) no instante `t`
+ * da timeline, já com o recorte de enquadramento aplicado. null quando o vídeo
+ * ainda não foi analisado.
+ */
+export function subjectAt(project: Project, t: number): SubjectBox | null {
+  const clip = mainClipAt(project, t) ?? mainClips(project)[0];
+  const asset = clip ? project.assets[clip.assetId] : null;
+  const samples = asset?.subject;
+  if (!clip || !asset || !samples?.length || !asset.width || !asset.height) return null;
+  const srcT = clip.sourceStart + Math.max(0, Math.min(t - clip.start, clip.duration));
+  let best = samples[0]!;
+  for (const s of samples) if (Math.abs(s.t - srcT) < Math.abs(best.t - srcT)) best = s;
+  const { width: W, height: H } = project;
+  const s0 = Math.max(W / asset.width, H / asset.height);
+  const w0 = asset.width * s0;
+  const h0 = asset.height * s0;
+  const x0 = (W - w0) * project.framing.x;
+  const y0 = (H - h0) * project.framing.y;
+  const fx = (v: number) => (x0 + v * w0) / W;
+  const fy = (v: number) => (y0 + v * h0) / H;
+  const c = (v: number) => r3(Math.min(1, Math.max(0, v)));
+  const left = c(fx(best.x));
+  const top = c(fy(best.y));
+  return {
+    x: left,
+    y: top,
+    w: r3(c(fx(best.x + best.w)) - left),
+    h: r3(c(fy(best.y + best.h)) - top),
+    faceX: c(fx(best.faceX)),
+    faceY: c(fy(best.faceY)),
+  };
+}
+
+const jumpCache = new WeakMap<Project, Map<string, number>>();
+
+/**
+ * Quantos cortes de verdade (saltos no vídeo bruto) existem antes de cada clip
+ * da trilha principal. Um clip apenas dividido, sem material removido, não conta.
+ */
+export function jumpsBefore(project: Project, clipId: string): number {
+  let map = jumpCache.get(project);
+  if (!map) {
+    map = new Map();
+    let jumps = 0;
+    let prev: MediaClip | null = null;
+    for (const c of mainClips(project).sort((a, b) => a.start - b.start)) {
+      if (prev && (prev.assetId !== c.assetId || Math.abs(c.sourceStart - (prev.sourceStart + prev.duration)) > 0.12)) jumps++;
+      map.set(c.id, jumps);
+      prev = c;
+    }
+    jumpCache.set(project, map);
+  }
+  return map.get(clipId) ?? 0;
 }

@@ -32,6 +32,12 @@ import {
   silencesFromAudio,
   silencesFromWords,
   timelineWords,
+  auditPacing,
+  enforcePacing,
+  pacingReport,
+  subjectAt,
+  jumpsBefore,
+  DEFAULT_PACING,
   type Project,
 } from "./index";
 
@@ -328,7 +334,7 @@ describe("referências estáveis por palavra", () => {
 
   it("o contexto do agente usa ids de palavra e tempo do vídeo bruto, mesmo depois de cortes", () => {
     const before = buildAgentContext(talk());
-    expect(before).toContain("[w0–w1 | 1–1.9] Olá pessoal.");
+    expect(before).toContain("[w0–w1 | 1–1.9 | 1–1.9] Olá pessoal.");
     const { project } = applyOperations(talk(), [{ op: "cut_words", cuts: [{ from: "w0", to: "w1" }] }]);
     const after = buildAgentContext(project);
     // "O" continua sendo w2 em 2s do bruto, embora agora esteja no início da timeline.
@@ -485,5 +491,120 @@ describe("modelos de edição", () => {
     expect(prompt).toContain("cerca de 4 por minuto");
     expect(prompt).toContain("- bar_chart: quando citar números comparáveis");
     expect(EditTemplateSchema.safeParse(template).success).toBe(true);
+  });
+});
+
+describe("ritmo da edição", () => {
+  const base = () => {
+    const p = fixture();
+    p.assets.a1!.duration = 40;
+    getTrack(p, "main").clips[0]!.duration = 40;
+    return p;
+  };
+
+  it("acusa vídeo sub-editado: gancho nu, trecho parado, zoom imperceptível", () => {
+    const { project } = applyOperations(base(), [{ op: "add_zoom", start: 10, duration: 4, scale: 1.08, mode: "creep" }]);
+    const audit = auditPacing(project);
+    const codes = audit.issues.map((i) => i.code);
+    expect(codes).toEqual(expect.arrayContaining(["hook", "estatico", "zoom_fraco", "poucos_zooms", "poucos_componentes"]));
+    expect(audit.longestStatic).toBe(26);
+    expect(pacingReport(audit)).toContain("Corrija (obrigatório)");
+  });
+
+  it("acusa excesso e colisão, e a poda determinística resolve o que colide", () => {
+    const { project } = applyOperations(base(), [
+      { op: "add_zoom", start: 0, duration: 3, scale: 1.2, ease: 0 },
+      { op: "add_zoom", start: 2, duration: 3, scale: 1.2, ease: 0 },
+      { op: "add_component", component: "kinetic_pivot_card", start: 1, duration: 5, params: {} },
+      { op: "add_component", component: "kinetic_pivot_card", start: 2, duration: 5, params: {} },
+      { op: "add_component", component: "stat_counter", start: 3, duration: 3, params: { fullscreen: true } },
+    ]);
+    const codes = auditPacing(project).issues.map((i) => i.code);
+    expect(codes).toEqual(expect.arrayContaining(["densidade", "sobreposicao", "zoom_sobreposto"]));
+    const pruned = enforcePacing(project);
+    expect(pruned.log.length).toBeGreaterThan(0);
+    const after = auditPacing(pruned.project).issues.map((i) => i.code);
+    for (const gone of ["densidade", "sobreposicao", "zoom_sobreposto", "componentes_colados"]) expect(after).not.toContain(gone);
+    // A entrada não é mutada.
+    expect(auditPacing(project).issues.map((i) => i.code)).toContain("sobreposicao");
+  });
+
+  it("três punch-ins seguidos pedem outra modalidade", () => {
+    const { project } = applyOperations(base(), [0, 4, 8].map((start) => ({ op: "add_zoom" as const, start, duration: 2, scale: 1.2, ease: 0 })));
+    expect(auditPacing(project, { ...DEFAULT_PACING, maxPunchStreak: 2 }).issues.map((i) => i.code)).toContain("punch_repetido");
+  });
+});
+
+describe("enquadramento e legendas editáveis", () => {
+  it("zoom sem foco fecha no rosto medido, convertido para o quadro do projeto", () => {
+    const p = fixture();
+    Object.assign(p.assets.a1!, { width: 1920, height: 1080, subject: [{ t: 1, x: 0.4, y: 0.1, w: 0.2, h: 0.9, faceX: 0.5, faceY: 0.25 }] });
+    const s = subjectAt(p, 1)!;
+    expect(s.faceX).toBeCloseTo(0.5, 2);
+    expect(s.faceY).toBeCloseTo(0.25, 2);
+    const { project } = applyOperations(p, [{ op: "add_zoom", start: 0, duration: 2 }, { op: "add_zoom", start: 3, duration: 1, x: 0.1, y: 0.9 }]);
+    const zooms = getTrack(project, "fx").clips;
+    expect(zooms[0]).toMatchObject({ x: s.faceX, y: s.faceY });
+    expect(zooms[1]).toMatchObject({ x: 0.1, y: 0.9 });
+    expect(buildAgentContext(project)).toContain("Enquadramento (medido no vídeo");
+  });
+
+  it("edit_caption reescreve, esconde e desloca sem mexer nas outras palavras", () => {
+    const { project } = applyOperations(fixture(), [
+      { op: "edit_caption", wordIds: ["w0", "w1", "w2"], text: "oi gente" },
+      { op: "edit_caption", wordIds: ["w3", "w4"], hidden: true, shift: 0.4 },
+    ]);
+    const words = project.assets.a1!.transcript!.words;
+    expect(words.slice(0, 3).map((w) => w.text)).toEqual(["oi", "gente", ""]);
+    expect(words[3]).toMatchObject({ hidden: true, shift: 0.4 });
+    expect(words[5]!.hidden).toBeUndefined();
+    const back = applyOperations(project, [{ op: "edit_caption", wordIds: ["w3", "w4"], hidden: false, shift: 0 }]).project;
+    expect(back.assets.a1!.transcript!.words[3]).not.toHaveProperty("hidden");
+    expect(back.assets.a1!.transcript!.words[3]).not.toHaveProperty("shift");
+  });
+
+  it("a energia da voz aparece no contexto do agente", () => {
+    const p = fixture();
+    p.assets.a1!.transcript!.words[6]!.energy = 6.2;
+    expect(buildAgentContext(p)).toMatch(/forte: w6 "vendas" \+6dB/);
+  });
+});
+
+describe("mídia de contexto (b-roll)", () => {
+  const withMedia = () => {
+    const p = fixture();
+    p.assets.b1 = { id: "b1", kind: "video", name: "academia.mp4", duration: 3, hasAudio: false, role: "context", description: "pessoa levantando peso" };
+    return p;
+  };
+
+  it("entra numa trilha própria, presa à duração do material, e segue os cortes", () => {
+    const { project, log } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", atWord: "w2", duration: 8 }]);
+    const track = project.tracks.find((t) => t.kind === "broll")!;
+    expect(track.clips[0]).toMatchObject({ type: "broll", start: 4, duration: 3, layout: "full" });
+    expect(log[0]).toContain("academia.mp4");
+    // A trilha fica entre o motion e o zoom.
+    expect(project.tracks.map((t) => t.kind)).toEqual(["overlay", "broll", "fx", "main"]);
+    const cut = applyOperations(project, [{ op: "remove_ranges", ranges: [{ start: 1, end: 3 }] }]).project;
+    expect(cut.tracks.find((t) => t.kind === "broll")!.clips[0]!.start).toBe(2);
+  });
+
+  it("recusa asset que não é de contexto e aparece para o agente e para o auditor", () => {
+    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "a1", start: 0, duration: 2 }])).toThrow(/não existe/);
+    expect(AgentOperationSchema.safeParse({ op: "add_broll", assetId: "b1", atWord: "w2", untilWord: "w4" }).success).toBe(true);
+    const { project } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", start: 0, duration: 3 }]);
+    expect(buildAgentContext(project)).toContain("b1 | vídeo de 3s | academia.mp4 — pessoa levantando peso");
+    expect(auditPacing(project).issues.map((i) => i.code)).not.toContain("hook");
+  });
+});
+
+describe("acabamento", () => {
+  it("conta só cortes de verdade: dividir um clip não é um salto", () => {
+    const split = applyOperations(fixture(), [{ op: "split", time: 5 }]).project;
+    const [a, b] = mainClips(split);
+    expect(jumpsBefore(split, a!.id)).toBe(0);
+    expect(jumpsBefore(split, b!.id)).toBe(0);
+    const cut = applyOperations(fixture(), [{ op: "remove_ranges", ranges: [{ start: 2, end: 4 }, { start: 6, end: 7 }] }]).project;
+    expect(mainClips(cut).map((c) => jumpsBefore(cut, c.id))).toEqual([0, 1, 2]);
+    expect(cut.finish).toEqual({ cutZoom: true, voice: true });
   });
 });

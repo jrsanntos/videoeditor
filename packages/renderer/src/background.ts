@@ -63,9 +63,10 @@ export function drawWatermark(ctx: Ctx2D, width: number, height: number, text = 
   ctx.textBaseline = "middle";
   const w = ctx.measureText(text).width + 44 * u;
   const h = 62 * u;
-  // Dentro da área útil do vertical (longe da interface do app), no terço superior.
-  const cx = width / 2;
-  const cy = height * 0.19;
+  // No canto superior esquerdo da área útil: visível, mas fora do rosto e dos textos centrais.
+  const vertical = height > width;
+  const cx = (vertical ? width * 0.06 : width * 0.04) + w / 2;
+  const cy = (vertical ? height * 0.13 : height * 0.06) + h / 2;
   ctx.fillStyle = "rgba(0,0,0,0.45)";
   ctx.beginPath();
   ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);

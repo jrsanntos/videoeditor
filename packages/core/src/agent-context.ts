@@ -1,6 +1,6 @@
 import type { Project, TimeRange } from "./schema";
 import { findRetakes } from "./retakes";
-import { clipEnd, projectDuration, timelineWords, type TimelineWord } from "./timeline";
+import { clipEnd, contextAssets, projectDuration, subjectAt, timelineWords, type TimelineWord } from "./timeline";
 
 /**
  * Serializa o estado da timeline em texto compacto para o agente.
@@ -28,6 +28,14 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
     `Brand Kit: destaque ${b.primaryColor}, apoio ${b.secondaryColor}, fundo ${b.backgroundColor}, texto ${b.textColor}` +
       (b.displayName ? ` — apresentador: ${b.displayName}${b.credential ? ` • ${b.credential}` : ""}` : " — apresentador não informado"),
   );
+  lines.push(
+    !b.showLowerThird
+      ? "Tarja de nome/cargo: DESLIGADA pelo usuário. Não use executive_lower_third nem cite isso como pendência."
+      : b.displayName
+        ? "Tarja de nome/cargo: disponível (executive_lower_third sem params)."
+        : "Tarja de nome/cargo: indisponível (sem nome no Brand Kit). Não use e não trate como pendência: abra o vídeo com outro recurso.",
+  );
+  lines.push(...framingLines(project));
   lines.push(`Legendas: ${project.captions.enabled ? "ligadas" : "desligadas"} (${JSON.stringify(project.captions.style)})`);
   if (selection)
     lines.push(
@@ -46,11 +54,22 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
       overlays.push(
         c.type === "zoom"
           ? `  ${c.id} [${where}] ${c.duration}s zoom ${c.scale}x foco(${c.x},${c.y}) ease ${c.ease}`
-          : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
+          : c.type === "broll"
+            ? `  ${c.id} [${where}] ${c.duration}s mídia de contexto ${c.assetId} (${c.layout})`
+            : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
       );
     }
   }
   if (overlays.length) lines.push("", "## Zooms e componentes já na timeline", ...overlays);
+
+  const media = contextAssets(project);
+  if (media.length)
+    lines.push(
+      "",
+      "## Mídias de contexto (b-roll) enviadas pelo usuário",
+      "Use com add_broll só onde a fala trata do que a mídia mostra, segundo o nome e a descrição. Você não vê o conteúdo: na dúvida, não use.",
+      ...media.map((a) => `  ${a.id} | ${a.kind === "image" ? "imagem" : `vídeo de ${Math.round(a.duration * 10) / 10}s`} | ${a.name}${a.description ? ` — ${a.description}` : ""}`),
+    );
 
   lines.push("", "## Transcrição");
   if (!words.length) {
@@ -58,21 +77,32 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
     return lines.join("\n");
   }
 
+  const hasEnergy = words.some((w) => w.energy !== undefined);
   if (selection) {
     // Trecho curto: precisão por palavra.
     lines.push(...wordLines(project, words));
   } else {
     // Vídeo inteiro: frases curtas; os ids dentro de uma frase são consecutivos.
     lines.push(
-      "Formato: [primeira palavra–última palavra | início–fim no vídeo bruto, em s] texto.",
+      "Formato: [primeira palavra–última palavra | início–fim no vídeo bruto, em s | posição atual na timeline, em s] texto {ritmo e voz}.",
       "Dentro de uma frase os ids são consecutivos (a 3ª palavra de [w10–w17] é w12). Na dúvida, confira com read_words. Pausas longas aparecem como (pausa Xs).",
+      hasEnergy
+        ? "Voz: \"forte\" lista as palavras ditas com mais energia que o normal do apresentador (dB acima da mediana) — é ali que a ênfase REAL está, não onde o texto parece importante. \"pal/s\" é a velocidade da fala no trecho."
+        : "Voz: a energia da fala ainda não foi medida; deduza a ênfase pelo texto e pelas pausas.",
     );
     let seg: TimelineWord[] = [];
     const flush = () => {
       if (!seg.length) return;
       const a = seg[0]!;
       const z = seg[seg.length - 1]!;
-      lines.push(`[${a.id}–${z.id} | ${source.get(a)!.start}–${source.get(z)!.end}] ${seg.map((w) => w.text).join(" ")}`);
+      const rate = seg.length >= 3 && z.end > a.start ? ` {${Math.round((seg.length / (z.end - a.start)) * 10) / 10} pal/s` : " {";
+      const loud = seg
+        .filter((w) => (w.energy ?? 0) >= 3.5 && w.text.replace(/[^\p{L}\p{N}]/gu, "").length > 2)
+        .sort((x, y) => (y.energy ?? 0) - (x.energy ?? 0))
+        .slice(0, 2)
+        .map((w) => `${w.id} "${w.text}" +${Math.round(w.energy!)}dB`);
+      const voice = `${rate}${loud.length ? `${rate.length > 2 ? "; " : ""}forte: ${loud.join(", ")}` : ""}}`;
+      lines.push(`[${a.id}–${z.id} | ${source.get(a)!.start}–${source.get(z)!.end} | ${a.start}–${z.end}] ${seg.map((w) => w.text).join(" ")}${voice.length > 3 ? voice : ""}`);
       seg = [];
     };
     let prev: TimelineWord | null = null;
@@ -99,6 +129,29 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
       lines.push(`${r.confidence} | ${r.kind} | cortar {"from":"${r.from}","to":"${r.to}"} "${r.cutText}" → fica "${r.keepText}"`);
   }
   return lines.join("\n");
+}
+
+/** Onde o apresentador está no quadro e quanto espaço sobra para texto. */
+function framingLines(project: Project): string[] {
+  const duration = projectDuration(project);
+  const at = [0.1, 0.5, 0.9].map((f) => subjectAt(project, duration * f)).filter((s) => s !== null);
+  if (!at.length) return ["Enquadramento: não analisado. Assuma o apresentador centralizado, com o rosto no terço superior."];
+  const avg = (k: "x" | "y" | "w" | "h" | "faceX" | "faceY") => Math.round((at.reduce((s, b) => s + b[k], 0) / at.length) * 100) / 100;
+  const x = avg("x");
+  const y = avg("y");
+  const w = avg("w");
+  const pct = (n: number) => `${Math.round(Math.max(0, n) * 100)}%`;
+  const left = x;
+  const right = 1 - (x + w);
+  const moved = at.length > 1 && Math.max(...at.map((b) => b.faceX)) - Math.min(...at.map((b) => b.faceX)) > 0.12;
+  return [
+    `Enquadramento (medido no vídeo, frações do quadro): apresentador ocupa x ${x}–${Math.round((x + w) * 100) / 100}, do topo ${y} para baixo; rosto em (${avg("faceX")}, ${avg("faceY")})${moved ? "; ele se desloca ao longo do vídeo" : ""}.`,
+    `Espaço livre: esquerda ${pct(left)}, direita ${pct(right)}, acima da cabeça ${pct(y)}. ${
+      Math.max(left, right) < 0.18
+        ? "Quase não há lateral livre: componentes laterais (acronym_list) exigem pan de câmera para o lado oposto, ou use a parte de baixo."
+        : `Lado mais livre: ${left > right ? "esquerda" : "direita"} — é onde componentes laterais atrapalham menos.`
+    } Zooms sem x/y já fecham no rosto.`,
+  ];
 }
 
 type SourceWord = { index: number; start: number; end: number };

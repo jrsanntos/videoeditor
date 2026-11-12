@@ -1,123 +1,220 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, findClip, FONT_PAIRS, FORMATS, mainClips, PLANS, type AspectRatio, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
+import { creditCost, FONT_PAIRS, FORMATS, mainClips, PLANS, type AspectRatio, type BrandKit, type EditTemplate, type FontPairId } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
-import { applyTemplate, deleteBrand, removeRetakesLocally, removeSilencesLocally, saveBrand, transcribe } from "@/lib/actions";
+import { applyTemplate, autoClean, deleteBrand, removeSilencesLocally, saveBrand, toggleCaptions } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
+import { MediaPanel } from "./MediaPanel";
+import { Icon, ToggleRow } from "./ui";
 
-const section = "border-b border-zinc-800 p-3";
-const heading = "mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500";
+type Tab = "editar" | "midia" | "motion" | "estilo";
+
+const section = "border-b border-line px-4 py-4";
+const heading = "mb-3 flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-500";
 const btn =
-  "w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-left text-xs text-zinc-200 hover:border-zinc-600 disabled:opacity-40";
-const field = "w-full rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-zinc-500";
+  "w-full rounded-lg border border-line bg-ink-850 px-3 py-2 text-left text-xs text-zinc-200 transition hover:border-line-strong hover:bg-ink-800 disabled:opacity-40";
+const field = "w-full rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-xs text-zinc-100 outline-none transition focus:border-brand-400";
+
+/** Ícone e uma linha de explicação para cada componente do menu. */
+const MOTION_HINT: Record<string, string> = {
+  depth_hook_title: "Título gigante atrás de você",
+  kinetic_pivot_card: "Frase que vira conclusão",
+  step_progress: "Etapas subindo em escada",
+  acronym_list: "Lista ao lado, item a item",
+  executive_lower_third: "Seu nome e cargo",
+  stat_counter: "Número com contador",
+};
 
 export function Sidebar() {
   const project = useEditor((s) => s.project)!;
   const busy = useEditor((s) => s.busy);
   const apply = useEditor((s) => s.apply);
-  const selectedClipId = useEditor((s) => s.selectedClipId);
-  const selected = selectedClipId ? findClip(project, selectedClipId)?.clip : null;
+  const width = useEditor((s) => s.layout.left);
   const asset = project.assets[mainClips(project)[0]?.assetId ?? ""];
   const hasTranscript = Boolean(asset?.transcript?.words.length);
   const ingestCost = asset ? creditCost({ type: "ingest", durationSec: asset.duration }) : 0;
   const caps = project.captions;
+  const unlimited = useEditor((s) => s.unlimited);
+  const credits = (n: number) => (unlimited ? "sem custo para admin" : `${n} ${n === 1 ? "crédito" : "créditos"}`);
+  const tour = useEditor((s) => s.tour);
+  const [tab, setTab] = useState<Tab>("editar");
+  // O guia inicial aponta para a Limpeza automática, que mora na aba Editar.
+  const shown: Tab = tour === 0 ? "editar" : tab;
 
   const addComponent = (id: string) => {
     const def = COMPONENTS[id]!;
     const { time } = useEditor.getState();
     // A tarja usa o nome e a credencial do Brand Kit quando eles existem.
-    const params = id === "lower_third" && project.brand.displayName ? {} : (def.example as Record<string, unknown>);
-    apply([{ op: "add_component", component: id, start: time, duration: def.defaultDuration, params }]);
+    const usesBrand = (id === "lower_third" || id === "executive_lower_third") && project.brand.displayName;
+    const before = new Set(project.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+    if (apply([{ op: "add_component", component: id, start: time, duration: def.defaultDuration, params: usesBrand ? {} : (def.example as Record<string, unknown>) }])) return;
+    // Já abre o editor do componente recém-criado.
+    const created = useEditor.getState().project!.tracks.flatMap((t) => t.clips).find((c) => !before.has(c.id));
+    if (created) {
+      useEditor.getState().select(created.id);
+      // Avança o cursor até depois da animação de entrada: o componente já aparece no vídeo.
+      useEditor.getState().seek(created.start + Math.min(1.2, created.duration / 2));
+    }
   };
 
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "editar", label: "Editar", icon: <Icon.wand size={18} /> },
+    { id: "midia", label: "Mídia", icon: <Icon.film size={18} /> },
+    { id: "motion", label: "Animações", icon: <Icon.layers size={18} /> },
+    { id: "estilo", label: "Estilo", icon: <Icon.palette size={18} /> },
+  ];
+
   return (
-    <aside className="flex w-64 shrink-0 flex-col overflow-y-auto border-r border-zinc-800 bg-zinc-950">
+    <aside className="flex shrink-0 bg-ink-900" style={{ width }}>
+      <nav className="flex w-[62px] shrink-0 flex-col items-center gap-1 border-r border-line py-2" aria-label="Ferramentas">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            aria-pressed={shown === t.id}
+            data-testid={`tab-${t.id}`}
+            className={`flex w-[52px] flex-col items-center gap-1 rounded-xl py-2 text-[10px] font-medium transition ${shown === t.id ? "bg-brand-500/15 text-brand-300" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"}`}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </nav>
+      <div className="min-w-0 flex-1 overflow-y-auto" key={shown}>
+        {shown === "editar" && (
+          <div className="pop-in">
       <div className={section}>
-        <h3 className={heading}>Automações</h3>
+        <h3 className={heading}>
+          <Icon.bolt size={12} /> Automações
+        </h3>
         <div className="space-y-2">
-          <button className={btn} disabled={!!busy} onClick={removeSilencesLocally}>
-            Remover silêncios
-            <span className="block text-[10px] text-emerald-400">no navegador · grátis</span>
+          <button
+            className="btn-brand group w-full rounded-xl px-3.5 py-3 text-left disabled:opacity-50"
+            disabled={!!busy}
+            onClick={() => {
+              const s = useEditor.getState();
+              if (s.tour === 0) s.setTour(1);
+              void autoClean();
+            }}
+            data-tour="clean"
+            data-testid="auto-clean"
+          >
+            <span className="flex items-center gap-2 text-[13px] font-semibold">
+              <Icon.wand size={16} /> Limpeza automática
+            </span>
+            <span className="mt-1 block text-[11.5px] leading-snug text-white/85">Remove erros de gravação e retira pausas, deixando profissional e limpo.</span>
+            {!hasTranscript && <span className="mt-1.5 inline-block rounded-md bg-black/25 px-1.5 py-0.5 text-[10.5px] text-white/90">inclui a transcrição · {credits(ingestCost)}</span>}
           </button>
-          <button className={btn} disabled={!!busy || !hasTranscript} onClick={removeRetakesLocally} title={hasTranscript ? undefined : "Transcreva o vídeo primeiro"}>
-            Remover erros de gravação
-            <span className="block text-[10px] text-emerald-400">retomadas e gaguejos · grátis</span>
-          </button>
-          <button className={btn} disabled={!!busy || hasTranscript} onClick={transcribe}>
-            {hasTranscript ? "Vídeo transcrito ✓" : "Transcrever fala"}
-            {!hasTranscript && <span className="block text-[10px] text-amber-400">{ingestCost} {ingestCost === 1 ? "crédito" : "créditos"} · libera legendas e cortes por fala</span>}
+          <button className={btn} disabled={!!busy} onClick={removeSilencesLocally} data-testid="remove-silences">
+            <span className="flex items-center gap-2 font-medium">
+              <Icon.scissors size={14} className="text-zinc-400" /> Remover silêncios
+            </span>
+            <span className="mt-1 block text-[11px] leading-snug text-zinc-500">Corta o vídeo nas pausas de fala, facilitando a edição manual. Grátis.</span>
           </button>
         </div>
       </div>
 
-      <Frame />
-
-      <Brand />
-
-      <Templates hasTranscript={hasTranscript} />
-
       <div className={section}>
-        <h3 className={heading}>Legendas</h3>
-        <label className="flex items-center gap-2 text-xs text-zinc-300">
-          <input
-            type="checkbox"
-            checked={caps.enabled}
-            disabled={!hasTranscript}
-            onChange={(e) => apply([{ op: "set_captions", enabled: e.target.checked }])}
-          />
-          {hasTranscript ? "Exibir legendas" : "Transcreva para ativar"}
-        </label>
-        {hasTranscript && (
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <select
-              className={field}
-              value={caps.style.preset}
-              onChange={(e) => apply([{ op: "set_captions", style: { preset: e.target.value as "bold" } }])}
-            >
+        <h3 className={heading}>
+          <Icon.captions size={12} /> Legendas
+        </h3>
+        <ToggleRow
+          label="Legendas no vídeo"
+          hint={hasTranscript ? "Aparecem na timeline: clique numa para editar, mover ou remover." : `Transcreve a fala ao ligar · ${credits(ingestCost)}`}
+          checked={caps.enabled}
+          disabled={!!busy}
+          onChange={(v) => void toggleCaptions(v)}
+          testid="captions-toggle"
+        />
+        {caps.enabled && hasTranscript && (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <select className={field} value={caps.style.preset} aria-label="Estilo da legenda" onChange={(e) => apply([{ op: "set_captions", style: { preset: e.target.value as "bold" } }])}>
               <option value="karaoke">Karaokê</option>
               <option value="bold">Negrito</option>
               <option value="clean">Limpa</option>
             </select>
-            <select
-              className={field}
-              value={caps.style.position}
-              onChange={(e) => apply([{ op: "set_captions", style: { position: e.target.value as "top" } }])}
-            >
+            <select className={field} value={caps.style.y !== undefined ? "custom" : caps.style.position} aria-label="Posição da legenda" onChange={(e) => e.target.value !== "custom" && apply([{ op: "set_captions", style: { position: e.target.value as "top" } }])}>
               <option value="bottom">Embaixo</option>
               <option value="center">Centro</option>
               <option value="top">Topo</option>
+              {caps.style.y !== undefined && <option value="custom">Posição livre</option>}
             </select>
+            <label className="col-span-2 flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+              Palavras por vez
+              <input type="range" min={1} max={8} value={caps.style.maxWords} className="w-32" onChange={(e) => apply([{ op: "set_captions", style: { maxWords: Number(e.target.value) } }])} />
+              <span className="w-3 font-mono text-zinc-300">{caps.style.maxWords}</span>
+            </label>
           </div>
         )}
       </div>
 
+            <div className={section}>
+              <h3 className={heading}>
+                <Icon.sparkles size={12} /> Acabamento
+              </h3>
+              <div className="space-y-3">
+                <ToggleRow label="Disfarçar os cortes" hint="Alterna um leve zoom a cada corte, como uma troca de câmera." checked={project.finish.cutZoom} onChange={(v) => apply([{ op: "set_format", finish: { cutZoom: v } }])} testid="finish-cutzoom" />
+                <ToggleRow label="Voz no volume das redes" hint="Deixa a fala no nível de Reels, TikTok e YouTube, sem estourar." checked={project.finish.voice} onChange={(v) => apply([{ op: "set_format", finish: { voice: v } }])} testid="finish-voice" />
+              </div>
+            </div>
+            <Templates />
+          </div>
+        )}
+        {shown === "midia" && (
+          <div className="pop-in">
+            <MediaPanel />
+          </div>
+        )}
+        {shown === "motion" && (
+          <div className="pop-in">
       <div className={section}>
-        <h3 className={heading}>Motion design</h3>
+        <h3 className={heading}>
+          <Icon.layers size={12} /> Textos e gráficos animados
+        </h3>
         <div className="grid grid-cols-2 gap-2">
-          {Object.values(COMPONENTS).map((c) => (
-            <button
-              key={c.id}
-              title={c.description}
-              onClick={() => addComponent(c.id)}
-              className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-2 text-left text-[11px] text-zinc-200 hover:border-emerald-500/60"
-            >
-              {c.name}
-            </button>
-          ))}
+          {Object.values(COMPONENTS)
+            .filter((c) => c.agent !== false)
+            .map((c) => (
+              <button key={c.id} title={c.description} onClick={() => addComponent(c.id)} className="rounded-xl border border-line bg-ink-850 px-2.5 py-2 text-left transition hover:border-emerald-400/50 hover:bg-ink-800">
+                <span className="block text-[11.5px] font-medium leading-tight text-zinc-100">{c.name}</span>
+                <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">{MOTION_HINT[c.id] ?? ""}</span>
+              </button>
+            ))}
         </div>
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[11px] text-zinc-500 hover:text-zinc-300">Mais componentes</summary>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {Object.values(COMPONENTS)
+              .filter((c) => c.agent === false)
+              .map((c) => (
+                <button key={c.id} title={c.description} onClick={() => addComponent(c.id)} className="rounded-lg border border-line bg-ink-850 px-2 py-1.5 text-left text-[11px] text-zinc-300 transition hover:border-emerald-400/50">
+                  {c.name}
+                </button>
+              ))}
+          </div>
+        </details>
         <button
-          className={`${btn} mt-2`}
+          className={`${btn} mt-2 flex items-center gap-2`}
           onClick={() => {
             const { time } = useEditor.getState();
             apply([{ op: "add_zoom", start: time, duration: 3 }]);
           }}
         >
-          + Zoom no cursor
+          <Icon.zoomIn size={14} className="text-amber-300" /> Zoom no cursor
         </button>
+        <p className="mt-2 text-[10.5px] leading-snug text-zinc-600">Entram onde está o cursor da timeline. Clique no bloco criado para editar.</p>
       </div>
 
-      {selected && <Inspector key={selected.id} clip={selected} />}
+          </div>
+        )}
+        {shown === "estilo" && (
+          <div className="pop-in">
+            <Frame />
+            <Brand />
+          </div>
+        )}
+      </div>
     </aside>
   );
 }
@@ -125,7 +222,7 @@ export function Sidebar() {
 type PublishedTemplate = { id: string; data: EditTemplate; thumbnail: string | null };
 
 /** Modelos de edição publicados pelo admin, extraídos de vídeos de exemplo. */
-function Templates({ hasTranscript }: { hasTranscript: boolean }) {
+function Templates() {
   const busy = useEditor((s) => s.busy);
   const [templates, setTemplates] = useState<PublishedTemplate[] | null>(null);
   useEffect(() => {
@@ -140,136 +237,24 @@ function Templates({ hasTranscript }: { hasTranscript: boolean }) {
       <h3 className={heading}>Modelos de edição</h3>
       <div className="space-y-2">
         {templates.map((t) => (
-          <div key={t.id} className="overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
+          <div key={t.id} className="overflow-hidden rounded-md border border-line bg-ink-900">
             {t.thumbnail && <img src={t.thumbnail} alt="" className="aspect-video w-full object-cover opacity-80" />}
             <div className="p-2">
               <div className="text-xs font-medium text-zinc-100">{t.data.name}</div>
               <p className="mt-0.5 text-[11px] leading-snug text-zinc-400">{t.data.description}</p>
               <button
-                className="mt-2 w-full rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
-                disabled={!!busy || !hasTranscript}
-                title={hasTranscript ? "Aplica o estilo com o agente" : "Transcreva o vídeo primeiro"}
+                className="mt-2 w-full rounded btn-brand px-2 py-1.5 text-[11px] font-medium disabled:opacity-40"
+                disabled={!!busy}
+                title="Aplica o estilo com o Diretor de IA"
                 onClick={() => void applyTemplate(t.data)}
               >
-                {hasTranscript ? "Aplicar modelo" : "Transcreva para aplicar"}
+                Aplicar modelo
               </button>
             </div>
           </div>
         ))}
       </div>
     </div>
-  );
-}
-
-function Inspector({ clip }: { clip: Clip }) {
-  const apply = useEditor((s) => s.apply);
-  const update = (patch: Omit<Extract<OperationInput, { op: "update_clip" }>, "op" | "clipId">) =>
-    apply([{ op: "update_clip", clipId: clip.id, ...patch }]);
-
-  return (
-    <div className={section} data-testid="inspector">
-      <h3 className={heading}>
-        {clip.type === "media" ? "Clip de vídeo" : clip.type === "zoom" ? "Zoom" : (COMPONENTS[clip.component]?.name ?? "Componente")}
-      </h3>
-      <div className="space-y-2">
-        {clip.type === "media" && (
-          <Num label="Volume" value={clip.volume} min={0} max={2} step={0.05} onCommit={(volume) => update({ volume })} />
-        )}
-        {clip.type === "zoom" && (
-          <>
-            <Num label="Escala" value={clip.scale} min={1} max={4} step={0.05} onCommit={(scale) => update({ scale })} />
-            <Num label="Foco X" value={clip.x} min={0} max={1} step={0.05} onCommit={(x) => update({ x })} />
-            <Num label="Foco Y" value={clip.y} min={0} max={1} step={0.05} onCommit={(y) => update({ y })} />
-            <Num label="Suavização (s)" value={clip.ease} min={0} max={2} step={0.05} onCommit={(ease) => update({ ease })} />
-            <Num label="Pan X (− esq. / + dir.)" value={clip.panX} min={-0.5} max={0.5} step={0.02} onCommit={(panX) => update({ panX })} />
-            <Num label="Pan Y" value={clip.panY} min={-0.5} max={0.5} step={0.02} onCommit={(panY) => update({ panY })} />
-            <label className="flex items-center justify-between gap-2 text-xs text-zinc-400">
-              Movimento
-              <select className={`${field} w-32`} value={clip.mode} onChange={(e) => update({ mode: e.target.value as "hold" | "creep" })}>
-                <option value="hold">Entra e segura</option>
-                <option value="creep">Avanço lento</option>
-              </select>
-            </label>
-          </>
-        )}
-        {clip.type === "component" &&
-          Object.entries(clip.params).map(([key, value]) => (
-            <Param key={key} name={key} value={value} onCommit={(v) => update({ params: { [key]: v } })} />
-          ))}
-        <button
-          className="w-full rounded-md border border-rose-900/60 px-3 py-1.5 text-xs text-rose-300 hover:bg-rose-950"
-          onClick={() => {
-            if (!apply([{ op: "delete_clip", clipId: clip.id }])) useEditor.getState().select(null);
-          }}
-        >
-          Apagar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function Num(props: { label: string; value: number; min: number; max: number; step: number; onCommit: (n: number) => void }) {
-  return (
-    <label className="flex items-center justify-between gap-2 text-xs text-zinc-400">
-      {props.label}
-      <input
-        type="number"
-        className={`${field} w-20`}
-        defaultValue={props.value}
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        onBlur={(e) => {
-          const n = Number(e.target.value);
-          if (Number.isFinite(n) && n !== props.value) props.onCommit(Math.min(props.max, Math.max(props.min, n)));
-        }}
-        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-      />
-    </label>
-  );
-}
-
-/** Editor genérico de um parâmetro de componente: texto, número ou JSON para listas. */
-function Param({ name, value, onCommit }: { name: string; value: unknown; onCommit: (v: unknown) => void }) {
-  const structured = typeof value === "object" && value !== null;
-  const initial = structured ? JSON.stringify(value, null, 1) : String(value ?? "");
-  const [text, setText] = useState(initial);
-  useEffect(() => {
-    setText(initial);
-  }, [initial]);
-
-  const commit = () => {
-    if (text === initial) return;
-    if (structured) {
-      try {
-        onCommit(JSON.parse(text));
-      } catch {
-        useEditor.getState().setNotice(`"${name}" precisa ser um JSON válido.`);
-        setText(initial);
-      }
-    } else if (typeof value === "number") {
-      const n = Number(text);
-      if (Number.isFinite(n)) onCommit(n);
-      else setText(initial);
-    } else onCommit(text);
-  };
-
-  return (
-    <label className="block text-xs text-zinc-400">
-      {name}
-      {structured ? (
-        <textarea className={`${field} mt-1 h-24 font-mono`} value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} />
-      ) : (
-        <input
-          className={`${field} mt-1`}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        />
-      )}
-    </label>
   );
 }
 
@@ -291,19 +276,20 @@ function Frame() {
   const frameRatio = project.width / project.height;
   const cropsX = srcRatio !== null && srcRatio > frameRatio + 0.01;
   const cropsY = srcRatio !== null && srcRatio < frameRatio - 0.01;
-  const check = "flex items-center gap-2 text-xs text-zinc-300";
 
   return (
     <div className={section} data-testid="frame">
-      <h3 className={heading}>Quadro</h3>
-      <div className="space-y-2">
+      <h3 className={heading}>
+        <Icon.frame size={12} /> Quadro
+      </h3>
+      <div className="space-y-3">
         <div className="grid grid-cols-2 gap-2">
           {(Object.keys(FORMATS) as AspectRatio[]).map((ratio) => (
             <button
               key={ratio}
               title={FORMATS[ratio].name}
               aria-pressed={project.aspectRatio === ratio}
-              className={`rounded-md border px-2 py-1.5 text-xs ${project.aspectRatio === ratio ? "border-indigo-500 bg-indigo-500/15 text-white" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600"}`}
+              className={`rounded-lg border px-2 py-2 text-xs transition ${project.aspectRatio === ratio ? "border-brand-400 bg-brand-500/15 font-medium text-white" : "border-line bg-ink-850 text-zinc-300 hover:border-line-strong"}`}
               onClick={() => apply([{ op: "set_format", aspectRatio: ratio }])}
             >
               {ratio === "9:16" ? "Vertical 9:16" : "Horizontal 16:9"}
@@ -327,14 +313,8 @@ function Frame() {
             />
           </label>
         )}
-        <label className={check}>
-          <input type="checkbox" checked={guides} onChange={(e) => useEditor.setState({ guides: e.target.checked })} />
-          Mostrar áreas seguras {project.aspectRatio === "9:16" ? "(Reels, TikTok, Shorts)" : ""}
-        </label>
-        <label className={check}>
-          <input type="checkbox" checked={project.sfx.enabled} onChange={(e) => apply([{ op: "set_format", sfx: { enabled: e.target.checked } }])} />
-          Efeitos sonoros automáticos
-        </label>
+        <ToggleRow label="Áreas seguras" hint={project.aspectRatio === "9:16" ? "Onde ficam os botões de Reels, TikTok e Shorts." : undefined} checked={guides} onChange={(v) => useEditor.setState({ guides: v })} />
+        <ToggleRow label="Efeitos sonoros automáticos" hint="Sons discretos nos zooms e nas entradas de texto." checked={project.sfx.enabled} onChange={(v) => apply([{ op: "set_format", sfx: { enabled: v } }])} />
       </div>
     </div>
   );
@@ -374,13 +354,24 @@ function Brand() {
   return (
     <div className={section} data-testid="brand">
       <button className="flex w-full items-center justify-between" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <h3 className={`${heading} mb-0`}>Sua marca</h3>
+        <h3 className={`${heading} mb-0`}>
+          <Icon.palette size={12} /> Sua marca
+        </h3>
         <span className="flex items-center gap-1">
           {SWATCHES.slice(0, 3).map((sw) => (
-            <span key={sw.key} className="h-3 w-3 rounded-full border border-zinc-700" style={{ background: brand[sw.key] }} />
+            <span key={sw.key} className="h-3 w-3 rounded-full border border-white/20" style={{ background: brand[sw.key] }} />
           ))}
         </span>
       </button>
+      <div className="mt-3">
+        <ToggleRow
+          label="Tarja de nome e cargo"
+          hint={brand.showLowerThird ? "Seu nome e registro podem aparecer no vídeo." : "Desligada: nome e cargo não aparecem no vídeo."}
+          checked={brand.showLowerThird}
+          onChange={(v) => apply([{ op: "set_brand", brand: { showLowerThird: v } }])}
+          testid="lower-third-toggle"
+        />
+      </div>
       {open && (
         <form
           className="mt-3 space-y-2"
@@ -443,7 +434,7 @@ function Brand() {
               <label key={sw.key} className="block text-center text-[10px] text-zinc-500">
                 <input
                   type="color"
-                  className="h-8 w-full cursor-pointer rounded border border-zinc-800 bg-zinc-900"
+                  className="h-8 w-full cursor-pointer rounded border border-line bg-ink-900"
                   value={draft[sw.key]}
                   onChange={(e) => setDraft({ ...draft, [sw.key]: e.target.value.toUpperCase() })}
                   aria-label={sw.label}
