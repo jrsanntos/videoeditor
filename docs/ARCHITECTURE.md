@@ -59,8 +59,9 @@ Hoje: `lower_third`, `title_card`, `bar_chart`, `counter`, `text_highlight`, `bu
 ## 6. Agente (`apps/web/src/app/api/agent/route.ts`)
 
 - **Entrada**: projeto, pedido do usuário, seleção opcional, histórico curto.
-- **Contexto** (`buildAgentContext`): lista de clips + transcrição em tempo de timeline. Vídeo inteiro vai como frases com tempo e pausas anotadas; com **seleção ativa** vão só os clips e palavras daquele trecho (com id e tempo por palavra) — é a "intervenção cirúrgica" que reduz tokens em ordens de grandeza.
-- **Ferramenta única** `edit_timeline({ operations })`. O servidor aplica em uma cópia do projeto; erro volta como `tool_result` com `is_error` para o modelo corrigir. Máximo de 5 voltas.
+- **Contexto** (`buildAgentContext`): lista de clips + transcrição em tempo de timeline. Vídeo inteiro vai como frases com tempo e pausas anotadas, mais as **repetições detectadas** (`findRepetitions`) com tempo por palavra e o intervalo de corte exato; com **seleção ativa** vão só os clips e palavras daquele trecho (com id e tempo por palavra) — é a "intervenção cirúrgica" que reduz tokens em ordens de grandeza.
+- **Ferramentas**: `edit_timeline({ operations })` altera; `read_words({ start, end })` só lê o tempo por palavra de um trecho da timeline atual (já com os cortes da conversa), para cortes e sincronizações precisos sem mandar a transcrição inteira por palavra. O servidor aplica em uma cópia do projeto; erro volta como `tool_result` com `is_error` para o modelo corrigir. Máximo de 6 voltas.
+- **Instantes internos**: componentes podem ter `at` (segundos desde o início do clip, ex.: quando cada barra do gráfico sobe). Cortes dentro do componente deslocam esses instantes junto com a fala (`shiftTimedParams`).
 - **Saída**: projeto resultante, log legível das operações, custo em créditos. O cliente troca o projeto como um único passo de undo.
 - Prompt de sistema (instruções + catálogo) é estável e marcado para cache.
 - Modelo padrão `claude-sonnet-5-5`, configurável por `AGENT_MODEL` (ex.: `claude-haiku-5-5` para baratear comandos simples). Roteamento automático barato/caro por tipo de pedido está no roadmap.
@@ -78,4 +79,11 @@ Limitações conhecidas desta abordagem, tratadas no roadmap: `decodeAudioData` 
 
 Moeda interna única. Tudo que roda no navegador custa 0; cobram inteligência, mídia generativa e render em nuvem. A tabela de preços e os planos vivem em código, junto de `creditCost(action)`, para que servidor e UI usem a mesma fonte. O agente só cobra quando a timeline realmente mudou.
 
-Hoje a carteira é local (demonstração). O ledger real (débito no servidor, idempotente, por usuário) entra com autenticação e billing.
+O saldo vive no servidor, num ledger (`credit_ledger`): cada cadastro, concessão, mudança de plano e cobrança é uma linha, e o saldo é a soma. As rotas pagas conferem o saldo antes de chamar o provedor (`assertCredits`) e cobram depois do resultado (`charge`); o agente confere de novo antes de cada cena de motion, para nunca passar do saldo. Cada chamada de IA grava o custo real (tokens, segundos de áudio) em `usage_events`, que alimenta o financeiro.
+
+## 9. Contas, painel de administração e modelos
+
+- **Banco**: SQLite embutido no Node (`node:sqlite`, sem dependência nativa) em `DATA_DIR` (padrão `apps/web/.data`). Todo acesso passa por `apps/web/src/server/*`, então migrar para Postgres é trocar essa camada.
+- **Contas**: e-mail e senha (scrypt), sessão em cookie httpOnly com token aleatório (só o hash fica no banco). Contas suspensas perdem as sessões na hora e não entram de novo. Admins vêm de `ADMIN_EMAILS`; em desenvolvimento, sem essa variável, a primeira conta vira admin.
+- **Painel `/admin`**: visão geral (usuários, ativos, receita, resultado, auditoria), usuários (busca, créditos, plano com pagamento, papel, banimento, extrato e uso de IA), financeiro (receitas e despesas lançadas, custo de IA automático convertido pela cotação, série de 12 meses), chaves de API (cifradas com AES-256-GCM usando `APP_SECRET`; têm prioridade sobre o ambiente) e modelos. Toda ação vai para `admin_log`.
+- **Modelos de edição** (`EditTemplate`, em `packages/core/src/template.ts`): o admin envia um vídeo de exemplo já editado; o navegador extrai 12 quadros, o áudio e as pausas (o vídeo não sobe), o servidor transcreve e pede ao Claude, com saída estruturada, o estilo como modelo (legendas, política de pausas, densidade de zoom, componentes e gatilhos, receita). O admin revisa e publica. No editor, aplicar um modelo roda a parte determinística no navegador (legendas, 0 crédito) e manda a receita ao agente.

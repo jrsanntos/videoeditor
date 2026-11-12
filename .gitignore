@@ -8,3 +8,5 @@ dist
 next-env.d.ts
 # Gerado pelo next dev
 apps/web/AGENTS.md
+# Banco local e chave de cifra (apps/web/.data)
+.data

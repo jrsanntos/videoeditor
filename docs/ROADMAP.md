@@ -19,7 +19,8 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [ ] Validar agente e transcrição com chaves reais; ajustar prompt com 10–20 vídeos reais de VSL/aula
 - [ ] Conjunto de avaliação: pedidos típicos × vídeos, com checagens automáticas (duração removida, cortes não comem palavras, componentes válidos)
 - [ ] Streaming da resposta e das operações para a UI (progresso visível durante a edição)
-- [ ] Operações determinísticas adicionais: `remove_fillers` (é, tipo, né), detecção de retomadas/repetições
+- [x] Detecção de retomadas/repetições com intervalo de corte exato; ferramenta `read_words` para tempo por palavra
+- [ ] Operações determinísticas adicionais: `remove_fillers` (é, tipo, né)
 - [ ] Trilha de palavras na timeline: clicar na palavra para cortar/editar (edição por texto)
 - [ ] Forma de onda na trilha principal
 - [ ] Roteamento de modelo: Haiku para comandos simples, Sonnet para direção completa; medir custo real por pedido
@@ -33,8 +34,13 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 
 ## Fase 3 — SaaS
 
-- [ ] Autenticação e projetos na nuvem (Postgres para o JSON da edição; storage S3-compatível para brutos)
-- [ ] Ledger de créditos no servidor (débito idempotente por ação), planos Free/Creator/Pro, top-ups, Stripe + Pix
+- [x] Autenticação (e-mail e senha, sessão httpOnly) e banco no servidor (SQLite embutido, camada isolada para migrar a Postgres)
+- [x] Ledger de créditos no servidor, custo real de IA por chamada
+- [x] Painel de administração: usuários (créditos, plano, papel, banimento), financeiro (receitas, despesas, custo de IA), chaves de API cifradas, auditoria
+- [x] Modelos de edição extraídos de vídeos de exemplo e reaplicáveis por todos os usuários
+- [ ] Projetos na nuvem (JSON da edição no banco; storage S3-compatível para brutos)
+- [ ] Renovação mensal automática dos créditos do plano; top-ups; Stripe + Pix (hoje receitas são lançadas à mão)
+- [ ] Recuperação de senha e verificação de e-mail
 - [ ] Travas do plano Free: 3 min de upload, marca d'água, 720p
 - [ ] Storage lifecycle: exclusão automática dos brutos após 15/30 dias de inatividade, mantendo o JSON; armazenamento prolongado como add-on
 - [ ] Rate limiting e teto de gasto de IA por usuário

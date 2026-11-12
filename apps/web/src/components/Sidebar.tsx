@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, findClip, mainClips, type Clip, type OperationInput } from "@videoeditor/core";
+import { creditCost, findClip, mainClips, type Clip, type EditTemplate, type OperationInput } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
-import { removeSilencesLocally, transcribe } from "@/lib/actions";
+import { applyTemplate, removeSilencesLocally, transcribe } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 
 const section = "border-b border-zinc-800 p-3";
@@ -44,6 +44,8 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+
+      <Templates hasTranscript={hasTranscript} />
 
       <div className={section}>
         <h3 className={heading}>Legendas</h3>
@@ -107,6 +109,45 @@ export function Sidebar() {
 
       {selected && <Inspector key={selected.id} clip={selected} />}
     </aside>
+  );
+}
+
+type PublishedTemplate = { id: string; data: EditTemplate; thumbnail: string | null };
+
+/** Modelos de edição publicados pelo admin, extraídos de vídeos de exemplo. */
+function Templates({ hasTranscript }: { hasTranscript: boolean }) {
+  const busy = useEditor((s) => s.busy);
+  const [templates, setTemplates] = useState<PublishedTemplate[] | null>(null);
+  useEffect(() => {
+    fetch("/api/templates")
+      .then((r) => (r.ok ? r.json() : { templates: [] }))
+      .then((d: { templates: PublishedTemplate[] }) => setTemplates(d.templates))
+      .catch(() => setTemplates([]));
+  }, []);
+  if (!templates?.length) return null;
+  return (
+    <div className={section} data-testid="templates">
+      <h3 className={heading}>Modelos de edição</h3>
+      <div className="space-y-2">
+        {templates.map((t) => (
+          <div key={t.id} className="overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
+            {t.thumbnail && <img src={t.thumbnail} alt="" className="aspect-video w-full object-cover opacity-80" />}
+            <div className="p-2">
+              <div className="text-xs font-medium text-zinc-100">{t.data.name}</div>
+              <p className="mt-0.5 text-[11px] leading-snug text-zinc-400">{t.data.description}</p>
+              <button
+                className="mt-2 w-full rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                disabled={!!busy || !hasTranscript}
+                title={hasTranscript ? "Aplica o estilo com o agente" : "Transcreva o vídeo primeiro"}
+                onClick={() => void applyTemplate(t.data)}
+              >
+                {hasTranscript ? "Aplicar modelo" : "Transcreva para aplicar"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

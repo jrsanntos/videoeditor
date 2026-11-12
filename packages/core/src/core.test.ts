@@ -3,6 +3,10 @@ import {
   addAssetToProject,
   applyOperations,
   buildAgentContext,
+  EditTemplateSchema,
+  templateOperations,
+  templatePrompt,
+  type EditTemplate,
   findRepetitions,
   shiftTimedParams,
   createProject,
@@ -251,5 +255,38 @@ describe("instantes internos de componentes (at)", () => {
 
   it("instante dentro do trecho cortado vai para o ponto do corte", () => {
     expect(shiftTimedParams({ bars: [{ at: 1.2 }] }, 1, 0.5)).toEqual({ bars: [{ at: 1 }] });
+  });
+});
+
+describe("modelos de edição", () => {
+  const template: EditTemplate = {
+    name: "VSL dinâmica",
+    description: "Cortes rápidos e gráfico nos números.",
+    captions: { enabled: true, preset: "bold", position: "center" },
+    silence: { remove: true, minSilence: 0.4, padding: 0.1 },
+    zoom: { perMinute: 4, scale: 1.25, duration: 3, focusY: 0.38 },
+    motion: [{ component: "bar_chart", when: "quando citar números comparáveis" }],
+    pacing: "rápido",
+    instructions: "Corte pausas e dê zoom nas ênfases.",
+  };
+
+  it("legendas do modelo são aplicadas localmente quando há transcrição", () => {
+    const ops = templateOperations(template, fixture());
+    expect(ops).toEqual([{ op: "set_captions", enabled: true, style: { preset: "bold", position: "center" } }]);
+    const { project } = applyOperations(fixture(), ops);
+    expect(project.captions.style).toMatchObject({ preset: "bold", position: "center" });
+  });
+
+  it("sem transcrição não há operação local", () => {
+    const empty = addAssetToProject(createProject({ name: "x" }), { id: "a1", kind: "video", name: "v.mp4", duration: 5, hasAudio: true });
+    expect(templateOperations(template, empty)).toEqual([]);
+  });
+
+  it("a receita para o agente traz pausas, zooms e motion", () => {
+    const prompt = templatePrompt(template);
+    expect(prompt).toContain("acima de 0.4s");
+    expect(prompt).toContain("cerca de 4 por minuto");
+    expect(prompt).toContain("- bar_chart: quando citar números comparáveis");
+    expect(EditTemplateSchema.safeParse(template).success).toBe(true);
   });
 });

@@ -11,6 +11,8 @@ import {
 } from "@videoeditor/core";
 import { validateComponent } from "@videoeditor/renderer";
 
+export type SessionUser = { id: string; name: string; email: string; role: "user" | "admin"; plan: string; planName?: string };
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -29,8 +31,9 @@ type State = {
   selectedClipId: string | null;
   range: TimeRange | null;
   pxPerSec: number;
-  /** Carteira de demonstração (local). Será substituída pelo ledger do backend. */
+  /** Saldo do ledger no servidor; atualizado por /api/me e pelas respostas das ações pagas. */
   credits: number;
+  user: SessionUser | null;
   chat: ChatMessage[];
   busy: string | null;
   notice: string | null;
@@ -45,7 +48,7 @@ type State = {
   select: (clipId: string | null) => void;
   setRange: (r: TimeRange | null) => void;
   setPxPerSec: (n: number) => void;
-  spend: (n: number) => void;
+  setCredits: (n: number) => void;
   pushChat: (m: Omit<ChatMessage, "id">) => void;
   setBusy: (b: string | null) => void;
   setNotice: (n: string | null) => void;
@@ -53,7 +56,6 @@ type State = {
 
 const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
-const CREDITS_KEY = "ve:credits";
 
 export const useEditor = create<State>((set, get) => ({
   project: null,
@@ -64,7 +66,8 @@ export const useEditor = create<State>((set, get) => ({
   selectedClipId: null,
   range: null,
   pxPerSec: 60,
-  credits: 30,
+  credits: 0,
+  user: null,
   chat: [],
   busy: null,
   notice: null,
@@ -124,7 +127,7 @@ export const useEditor = create<State>((set, get) => ({
   select: (selectedClipId) => set({ selectedClipId }),
   setRange: (range) => set({ range }),
   setPxPerSec: (pxPerSec) => set({ pxPerSec }),
-  spend: (n) => set((s) => ({ credits: Math.max(0, s.credits - n) })),
+  setCredits: (credits) => set({ credits }),
   pushChat: (m) => set((s) => ({ chat: [...s.chat, { ...m, id: crypto.randomUUID() }] })),
   setBusy: (busy) => set({ busy }),
   setNotice: (notice) => set({ notice }),
@@ -138,23 +141,16 @@ export function hydrateEditor() {
       const parsed = ProjectSchema.safeParse(JSON.parse(raw));
       if (parsed.success) useEditor.setState({ project: parsed.data });
     }
-    const credits = Number(localStorage.getItem(CREDITS_KEY));
-    if (localStorage.getItem(CREDITS_KEY) !== null && Number.isFinite(credits)) useEditor.setState({ credits });
   } catch {
     // estado salvo corrompido: começa do zero
   }
   let lastProject = useEditor.getState().project;
-  let lastCredits = useEditor.getState().credits;
   return useEditor.subscribe((s) => {
     try {
       if (s.project !== lastProject) {
         lastProject = s.project;
         if (s.project) localStorage.setItem(PROJECT_KEY, JSON.stringify(s.project));
         else localStorage.removeItem(PROJECT_KEY);
-      }
-      if (s.credits !== lastCredits) {
-        lastCredits = s.credits;
-        localStorage.setItem(CREDITS_KEY, String(s.credits));
       }
     } catch {
       // cota do localStorage excedida: segue só em memória

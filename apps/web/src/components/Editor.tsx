@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PRICING, projectDuration } from "@videoeditor/core";
-import { closeProject, importVideo } from "@/lib/actions";
+import { closeProject, importVideo, logout, refreshMe } from "@/lib/actions";
 import { downloadBlob, exportInBrowser } from "@/lib/export";
 import { loadMedia } from "@/lib/media";
 import { hydrateEditor, useEditor } from "@/lib/store";
@@ -17,6 +17,7 @@ export function Editor() {
 
   useEffect(() => {
     const unsubscribe = hydrateEditor();
+    void refreshMe();
     const p = useEditor.getState().project;
     void (async () => {
       if (p) {
@@ -77,7 +78,10 @@ function UploadScreen() {
   const pick = (file?: File | null) => file && void importVideo(file);
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center gap-8 p-6">
+    <div className="relative flex h-screen flex-col items-center justify-center gap-8 p-6">
+      <div className="absolute right-4 top-3">
+        <UserMenu />
+      </div>
       <div className="max-w-xl text-center">
         <h1 className="text-4xl font-semibold tracking-tight text-white">Envie o vídeo bruto. Diga o que quer.</h1>
         <p className="mt-3 text-zinc-400">
@@ -136,7 +140,7 @@ function TopBar() {
         </button>
       </div>
       <div className="ml-auto flex items-center gap-3">
-        <span className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-300" title="Carteira de demonstração (local)">
+        <span className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-300" title="Saldo de créditos da sua conta">
           <b className="text-amber-300" data-testid="credits">{credits}</b> créditos
         </span>
         <button
@@ -148,8 +152,44 @@ function TopBar() {
           Novo
         </button>
         <ExportMenu />
+        <UserMenu />
       </div>
     </header>
+  );
+}
+
+function UserMenu() {
+  const user = useEditor((s) => s.user);
+  const [open, setOpen] = useState(false);
+  if (!user) return null;
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-800 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
+        aria-label="Conta"
+        title={user.email}
+      >
+        {user.name.slice(0, 1).toUpperCase()}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 z-50 w-60 rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-sm shadow-2xl">
+          <div className="px-3 py-2">
+            <div className="truncate font-medium text-zinc-100">{user.name}</div>
+            <div className="truncate text-xs text-zinc-500">{user.email}</div>
+            <div className="mt-1 text-xs text-zinc-400">Plano {user.planName ?? user.plan}</div>
+          </div>
+          {user.role === "admin" && (
+            <a href="/admin" className="block rounded-lg px-3 py-2 text-zinc-200 hover:bg-zinc-800">
+              Painel de administração
+            </a>
+          )}
+          <button onClick={() => void logout()} className="block w-full rounded-lg px-3 py-2 text-left text-zinc-200 hover:bg-zinc-800">
+            Sair
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -4,6 +4,7 @@ import {
   applyOperations,
   buildAgentContext,
   creditCost,
+  PRICING,
   OperationSchema,
   ProjectSchema,
   projectDuration,
@@ -12,16 +13,18 @@ import {
   type OperationInput,
 } from "@videoeditor/core";
 import { catalogForAgent, validateComponent } from "@videoeditor/renderer";
+import { agentModel, anthropicClient, anthropicError } from "@/server/ai";
+import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
+import { errorResponse, HttpError, requireUser } from "@/server/users";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const MODEL = process.env.AGENT_MODEL || "claude-sonnet-5-5";
 const MAX_TURNS = 6;
 /** Janela máxima de uma leitura de palavras: mantém o contexto enxuto em vídeos longos. */
 const MAX_WORDS_WINDOW = 90;
 /** Modelos que aceitam fallback de recusa no servidor. */
-const SUPPORTS_FALLBACK = /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(MODEL);
+const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
 const RequestSchema = z.object({
   project: ProjectSchema,
@@ -76,129 +79,150 @@ Depois das edições, responda em português, em 1 a 3 frases, dizendo o que mud
 ${catalogForAgent()}`;
 
 export async function POST(req: Request) {
-  const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return Response.json({ error: "Requisição inválida." }, { status: 400 });
-  const { project, selection, message, history } = parsed.data;
-
-  let client: Anthropic;
   try {
-    // VIDEOEDITOR_ANTHROPIC_KEY é um nome alternativo para ambientes que reservam ANTHROPIC_API_KEY.
-    client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY || process.env.VIDEOEDITOR_ANTHROPIC_KEY || undefined,
-    });
-  } catch {
-    return noCredentials();
-  }
+    const user = await requireUser();
+    const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
+    const { project, selection, message, history } = parsed.data;
+    // Mínimo para começar; cenas de motion são conferidas antes de cada inserção.
+    assertCredits(user.id, PRICING.agentEdit);
+    const client = anthropicClient();
+    const model = agentModel();
+    const available = balance(user.id);
 
-  let working = project;
-  const log: string[] = [];
-  let motionScenes = 0;
-  const usage = { input: 0, output: 0, cacheRead: 0 };
+    let working = project;
+    const log: string[] = [];
+    let motionScenes = 0;
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-  const messages: Anthropic.Beta.BetaMessageParam[] = [
-    ...history.map((h) => ({ role: h.role, content: h.text })),
-    {
-      role: "user",
-      content: `<timeline>\n${buildAgentContext(project, selection)}\n</timeline>\n\n<pedido>\n${message}\n</pedido>`,
-    },
-  ];
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      ...history.map((h) => ({ role: h.role, content: h.text })),
+      {
+        role: "user",
+        content: `<timeline>\n${buildAgentContext(project, selection)}\n</timeline>\n\n<pedido>\n${message}\n</pedido>`,
+      },
+    ];
 
-  try {
-    let finalText = "";
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      const response = await client.beta.messages.create({
-        model: MODEL,
-        max_tokens: 16000,
-        system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-        thinking: { type: "adaptive" },
-        output_config: { effort: "medium" },
-        tools: [READ_WORDS_TOOL, EDIT_TOOL],
-        messages,
-        ...(SUPPORTS_FALLBACK
-          ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
-          : {}),
+    const finish = (finalText: string) => {
+      const credits = log.length ? creditCost({ type: "agent", motionScenes }) : 0;
+      recordUsage({
+        userId: user.id,
+        kind: "agent",
+        provider: "anthropic",
+        model,
+        tokens: usage,
+        costUSD: anthropicCostUSD(model, usage),
+        credits,
       });
-      usage.input += response.usage.input_tokens;
-      usage.output += response.usage.output_tokens;
-      usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
-
-      finalText = response.content
-        .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("\n")
-        .trim();
-
-      if (response.stop_reason === "refusal") {
-        finalText = "Não posso ajudar com esse pedido. Tente descrever a edição de outra forma.";
-        break;
-      }
-      if (response.stop_reason === "max_tokens") {
-        finalText ||= "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
-        break;
-      }
-      if (response.stop_reason !== "tool_use") break;
-
-      messages.push({ role: "assistant", content: response.content });
-      const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-      for (const block of response.content) {
-        if (block.type !== "tool_use") continue;
-        if (block.name === "read_words") {
-          results.push(readWords(working, block.id, block.input));
-          continue;
-        }
-        const input = ToolInputSchema.safeParse(block.input);
-        if (!input.success) {
-          results.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            is_error: true,
-            content: `Entrada inválida: ${z.prettifyError(input.error)}`,
-          });
-          continue;
-        }
-        try {
-          const ops = input.data.operations as OperationInput[];
-          const result = applyOperations(working, ops, { validateComponent });
-          working = result.project;
-          log.push(...result.log);
-          motionScenes += ops.filter((o) => o.op === "add_component").length;
-          results.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: `Aplicado:\n${result.log.map((l) => `- ${l}`).join("\n")}\nDuração atual: ${projectDuration(working)}s. Os tempos da transcrição que você recebeu não valem mais depois de cortes.`,
-          });
-        } catch (e) {
-          results.push({
-            type: "tool_result",
-            tool_use_id: block.id,
-            is_error: true,
-            content: `${(e as Error).message}\nNenhuma operação desta chamada foi aplicada. Corrija e envie a lista completa de novo.`,
-          });
-        }
-      }
-      messages.push({ role: "user", content: results });
-    }
-
-    return Response.json({
-      message: finalText || (log.length ? "Edição aplicada." : "Não fiz alterações."),
-      project: working,
-      log,
       // Só cobra quando a timeline realmente mudou.
-      credits: log.length ? creditCost({ type: "agent", motionScenes }) : 0,
-      usage,
-      model: MODEL,
-    });
-  } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) return noCredentials();
-    if (e instanceof Anthropic.RateLimitError)
-      return Response.json({ error: "Muitas requisições ao agente. Aguarde alguns segundos e tente de novo." }, { status: 429 });
-    if (e instanceof Anthropic.APIError) {
-      console.error("agent api error", e.status, e.message);
-      return Response.json({ error: "O serviço de IA falhou ao processar o pedido. Tente novamente." }, { status: 502 });
+      const newBalance = credits ? charge(user.id, credits, "pedido ao agente") : available;
+      return Response.json({
+        message: finalText || (log.length ? "Edição aplicada." : "Não fiz alterações."),
+        project: working,
+        log,
+        credits,
+        balance: newBalance,
+        usage,
+        model,
+      });
+    };
+
+    try {
+      let finalText = "";
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        const response = await client.beta.messages.create({
+          model,
+          max_tokens: 16000,
+          system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+          thinking: { type: "adaptive" },
+          output_config: { effort: "medium" },
+          tools: [READ_WORDS_TOOL, EDIT_TOOL],
+          messages,
+          ...(supportsFallback(model)
+            ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
+            : {}),
+        });
+        usage.input += response.usage.input_tokens;
+        usage.output += response.usage.output_tokens;
+        usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
+        usage.cacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+
+        finalText = response.content
+          .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+          .map((b) => b.text)
+          .join("\n")
+          .trim();
+
+        if (response.stop_reason === "refusal") {
+          finalText = "Não posso ajudar com esse pedido. Tente descrever a edição de outra forma.";
+          break;
+        }
+        if (response.stop_reason === "max_tokens") {
+          finalText ||= "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
+          break;
+        }
+        if (response.stop_reason !== "tool_use") break;
+
+        messages.push({ role: "assistant", content: response.content });
+        const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+        for (const block of response.content) {
+          if (block.type !== "tool_use") continue;
+          if (block.name === "read_words") {
+            results.push(readWords(working, block.id, block.input));
+            continue;
+          }
+          const input = ToolInputSchema.safeParse(block.input);
+          if (!input.success) {
+            results.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              is_error: true,
+              content: `Entrada inválida: ${z.prettifyError(input.error)}`,
+            });
+            continue;
+          }
+          const ops = input.data.operations as OperationInput[];
+          const scenes = ops.filter((o) => o.op === "add_component").length;
+          const cost = creditCost({ type: "agent", motionScenes: motionScenes + scenes });
+          if (scenes && cost > available) {
+            results.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              is_error: true,
+              content: `Créditos insuficientes: com ${motionScenes + scenes} cena(s) de motion o pedido custaria ${cost} créditos e o usuário tem ${available}. Nada desta chamada foi aplicado. Reduza as cenas de motion (cada uma custa ${PRICING.motionScene}) ou faça só os cortes e zooms, e conte isso ao usuário.`,
+            });
+            continue;
+          }
+          try {
+            const result = applyOperations(working, ops, { validateComponent });
+            working = result.project;
+            log.push(...result.log);
+            motionScenes += scenes;
+            results.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: `Aplicado:\n${result.log.map((l) => `- ${l}`).join("\n")}\nDuração atual: ${projectDuration(working)}s. Os tempos da transcrição que você recebeu não valem mais depois de cortes.`,
+            });
+          } catch (e) {
+            results.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              is_error: true,
+              content: `${(e as Error).message}\nNenhuma operação desta chamada foi aplicada. Corrija e envie a lista completa de novo.`,
+            });
+          }
+        }
+        messages.push({ role: "user", content: results });
+      }
+      return finish(finalText);
+    } catch (e) {
+      // Tokens já gastos antes da falha também são despesa.
+      if (usage.input || usage.output)
+        recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits: 0 });
+      throw anthropicError(e) ?? e;
     }
-    if (e instanceof Error && /authentication|api.?key|credential/i.test(e.message)) return noCredentials();
-    console.error("agent error", e);
-    return Response.json({ error: "Erro inesperado no agente." }, { status: 500 });
+  } catch (e) {
+    return errorResponse(e);
   }
 }
 
@@ -220,14 +244,4 @@ function readWords(
       ? `Palavras em ${start}s–${end}s:\n${wordLines(words).join("\n")}`
       : `Nenhuma palavra em ${start}s–${end}s.`,
   };
-}
-
-function noCredentials() {
-  return Response.json(
-    {
-      error:
-        "O agente de IA não está configurado neste servidor (defina ANTHROPIC_API_KEY ou VIDEOEDITOR_ANTHROPIC_KEY em apps/web/.env.local). A edição manual e a remoção local de silêncios funcionam sem ele.",
-    },
-    { status: 503 },
-  );
 }

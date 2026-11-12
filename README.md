@@ -27,7 +27,8 @@ Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Plano de execução em
 | --- | --- |
 | `packages/core` | Schema do Timeline State (zod), operações de edição, mapeamento de tempo/transcrição, detecção de silêncio, tabela de créditos e planos, contexto compacto para o agente. Sem dependência de DOM. |
 | `packages/renderer` | `renderFrame` (compositor Canvas 2D), legendas e a biblioteca de componentes de motion design paramétricos. |
-| `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs e as rotas `/api/agent` e `/api/transcribe`. |
+| `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs, contas, painel de administração (`/admin`) e as rotas `/api/agent`, `/api/transcribe`, `/api/auth/*` e `/api/admin/*`. |
+| `apps/web/src/server` | Camada de servidor: banco SQLite (`node:sqlite`), sessões, ledger de créditos, custo de IA, configurações cifradas e modelos de edição. |
 
 ## Rodando
 
@@ -52,6 +53,14 @@ Abra http://localhost:3000. Variáveis em `apps/web/.env.local`:
 | `ANTHROPIC_API_KEY` (ou `VIDEOEDITOR_ANTHROPIC_KEY`) | Agente de edição (chat) | Chat responde que não está configurado; todo o resto funciona |
 | `AGENT_MODEL` | Modelo do agente (padrão `claude-sonnet-5-5`) | — |
 | `GROQ_API_KEY` | Transcrição com timestamp por palavra (Whisper) | Sem legendas e sem cortes baseados na fala |
+
+Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenvolvimento, sem `ADMIN_EMAILS`, a primeira conta vira administradora e acessa `/admin`, onde as chaves de API também podem ser cadastradas (cifradas no banco, com prioridade sobre o `.env.local`). Em produção, defina `ADMIN_EMAILS` e `APP_SECRET`.
+
+| Variável | Para quê |
+| --- | --- |
+| `ADMIN_EMAILS` | E-mails que viram admin (em produção, a única forma) |
+| `APP_SECRET` | Cifra das chaves de API salvas pelo painel |
+| `DATA_DIR` | Pasta do banco SQLite (padrão `apps/web/.data`) |
 
 Sem nenhuma chave já funcionam: upload, preview, edição manual na timeline, remoção de silêncios (análise de áudio local), zooms, componentes de motion e exportação MP4 no navegador.
 
