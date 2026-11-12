@@ -9,7 +9,7 @@ import { formatTime } from "./Player";
 import { Icon, ResizeHandle } from "./ui";
 
 /** Largura da coluna com o nome das trilhas. */
-const LABEL = 78;
+const LABEL = 96;
 const PAD = LABEL + 12;
 const MIN_LEN = 0.2;
 const ROW: Record<Track["kind"] | "captions", number> = { overlay: 34, broll: 40, fx: 34, main: 60, captions: 32 };
@@ -233,7 +233,7 @@ export function Timeline() {
 
           {project.tracks.map((track) => (
             <div key={track.id} className={`relative border-b border-white/[0.04] ${track.kind === "main" ? "bg-white/[0.015]" : ""}`} style={{ height: ROW[track.kind] }}>
-              <TrackLabel kind={track.kind} name={track.name} />
+              <TrackLabel kind={track.kind} name={track.name.replace("Motion", "Animações")} />
               {track.clips.map((clip) => {
                 const g = drag?.clipId === clip.id ? preview(project, clip, drag) : clip;
                 return (

@@ -36,6 +36,7 @@ import {
   enforcePacing,
   pacingReport,
   subjectAt,
+  jumpsBefore,
   DEFAULT_PACING,
   type Project,
 } from "./index";
@@ -593,5 +594,17 @@ describe("mídia de contexto (b-roll)", () => {
     const { project } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", start: 0, duration: 3 }]);
     expect(buildAgentContext(project)).toContain("b1 | vídeo de 3s | academia.mp4 — pessoa levantando peso");
     expect(auditPacing(project).issues.map((i) => i.code)).not.toContain("hook");
+  });
+});
+
+describe("acabamento", () => {
+  it("conta só cortes de verdade: dividir um clip não é um salto", () => {
+    const split = applyOperations(fixture(), [{ op: "split", time: 5 }]).project;
+    const [a, b] = mainClips(split);
+    expect(jumpsBefore(split, a!.id)).toBe(0);
+    expect(jumpsBefore(split, b!.id)).toBe(0);
+    const cut = applyOperations(fixture(), [{ op: "remove_ranges", ranges: [{ start: 2, end: 4 }, { start: 6, end: 7 }] }]).project;
+    expect(mainClips(cut).map((c) => jumpsBefore(cut, c.id))).toEqual([0, 1, 2]);
+    expect(cut.finish).toEqual({ cutZoom: true, voice: true });
   });
 });

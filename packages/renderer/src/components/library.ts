@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BrandKit, SafeArea } from "@videoeditor/core";
+import type { BrandKit, SafeArea, SubjectBox } from "@videoeditor/core";
 import type { SFX_CATALOG } from "../sounds";
 import { V1_COMPONENTS } from "./v1";
 import {
@@ -40,6 +40,8 @@ export type DrawArgs<P> = {
   /** Margens que textos e tarjas respeitam (interface de Reels/TikTok/Shorts no vertical). */
   safe: SafeArea;
   vertical: boolean;
+  /** Onde o apresentador está no quadro (frações 0–1), quando o vídeo foi analisado. */
+  subject: SubjectBox | null;
   /** Há recorte do apresentador para este quadro (segmentação pronta). */
   hasPerson: boolean;
   /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */

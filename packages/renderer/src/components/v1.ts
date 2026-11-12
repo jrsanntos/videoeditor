@@ -47,7 +47,7 @@ const depthHookTitle = define({
   positions: { title: "titlePos", left: "leftPos", right: "rightPos" },
   example: { title: "3 erros", left: "que fazem você", right: "*perder dinheiro*" },
   sounds: () => [{ at: 0.1, sfx: "impacto_grave" }],
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson, region }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson, region, subject }) {
     const p = EASE.snap(stage(t, 0, 0.6));
     const out = fadeOut(t, duration);
     const words = params.title.toUpperCase().split(/\s+/);
@@ -59,7 +59,10 @@ const depthHookTitle = define({
     if (widest > W * 0.94) size *= (W * 0.94) / widest;
     const block = lines.length * size * 0.92;
     // Atrás da pessoa: na altura dos ombros. Sem recorte disponível: acima da cabeça, onde não cobre o rosto.
-    const cy = hasPerson ? H * (vertical ? 0.33 : 0.4) : safe.top + block / 2 + 10 * u;
+    // Sem recorte, o título nunca pode ficar por cima do rosto: vai para o peito, logo abaixo dele
+    // (ou, sem saber onde o rosto está, para o meio do quadro).
+    const below = subject ? Math.min(H * 0.7, (subject.faceY + 0.13) * H + block / 2) : H * (vertical ? 0.56 : 0.66);
+    const cy = hasPerson ? H * (vertical ? 0.33 : 0.4) : below;
 
     ctx.save();
     ctx.globalAlpha = out * clamp01(p * 1.5);

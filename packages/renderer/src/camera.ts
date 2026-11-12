@@ -1,4 +1,4 @@
-import { clipsAt, type Project } from "@videoeditor/core";
+import { clipsAt, jumpsBefore, mainClipAt, subjectAt, type Project } from "@videoeditor/core";
 import { clamp01, type Ctx2D, EASE, setBlur, supportsFilter } from "./draw";
 
 /** Onde o quadro de origem é desenhado no canvas do projeto. */
@@ -20,9 +20,33 @@ export function cameraAt(project: Project, t: number, srcW: number, srcH: number
   const x0 = (W - w0) * project.framing.x;
   const y0 = (H - h0) * project.framing.y;
 
+  const clampTo = (v: number, size: number, frame: number) => Math.min(0, Math.max(frame - size, v));
+  const rectFor = (scale: number, fxN: number, fyN: number, panX = 0, panY = 0): Rect => {
+    const fx = fxN * W;
+    const fy = fyN * H;
+    const w = w0 * scale;
+    const h = h0 * scale;
+    return { x: clampTo(fx - (fx - x0) * scale + panX, w, W), y: clampTo(fy - (fy - y0) * scale + panY, h, H), w, h };
+  };
+
+  // Disfarce de corte: a cada corte real da fala o enquadramento alterna entre
+  // aberto e levemente fechado no rosto, como uma troca de câmera.
+  let base = 1;
+  let bx = 0.5;
+  let by = 0.38;
+  if (project.finish?.cutZoom) {
+    const clip = mainClipAt(project, t);
+    if (clip && jumpsBefore(project, clip.id) % 2 === 1) base = CUT_ZOOM;
+    const face = subjectAt(project, t);
+    if (face) {
+      bx = face.faceX;
+      by = face.faceY;
+    }
+  }
+
   const zooms = clipsAt(project, t, "zoom");
   const z = zooms[zooms.length - 1];
-  if (!z) return { x: x0, y: y0, w: w0, h: h0 };
+  if (!z) return rectFor(base, bx, by);
 
   const local = t - z.start;
   const k =
@@ -31,19 +55,13 @@ export function cameraAt(project: Project, t: number, srcW: number, srcH: number
       : z.ease > 0
         ? Math.min(EASE.swift(local / z.ease), EASE.swift((z.duration - local) / z.ease))
         : 1;
-  const scale = 1 + (z.scale - 1) * k;
-  const fx = z.x * W;
-  const fy = z.y * H;
-  const w = w0 * scale;
-  const h = h0 * scale;
-  const clampTo = (v: number, size: number, frame: number) => Math.min(0, Math.max(frame - size, v));
-  return {
-    x: clampTo(fx - (fx - x0) * scale + z.panX * W * k, w, W),
-    y: clampTo(fy - (fy - y0) * scale + z.panY * H * k, h, H),
-    w,
-    h,
-  };
+  // O zoom parte do enquadramento de base (e volta a ele), sem salto no meio da fala.
+  const scale = base + (Math.max(z.scale, base) - base) * k;
+  return rectFor(scale, bx + (z.x - bx) * k, by + (z.y - by) * k, z.panX * W * k, z.panY * H * k);
 }
+
+/** Aproximação usada para disfarçar cortes: perceptível como troca de plano, sem perder nitidez. */
+export const CUT_ZOOM = 1.08;
 
 /** Quanto a câmera andou desde o quadro anterior, em pixels (maior deslocamento de borda). */
 export function cameraSpeed(a: Rect, b: Rect): number {

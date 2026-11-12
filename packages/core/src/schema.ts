@@ -236,6 +236,13 @@ export const ProjectSchema = z.object({
   framing: z.object({ x: z.number().min(0).max(1).default(0.5), y: z.number().min(0).max(1).default(0.5) }).default({ x: 0.5, y: 0.5 }),
   /** Efeitos sonoros automáticos sincronizados com os movimentos visuais. */
   sfx: z.object({ enabled: z.boolean().default(true), volume: z.number().min(0).max(2).default(1) }).default({ enabled: true, volume: 1 }),
+  /**
+   * Acabamento automático, o que separa "cortado" de "finalizado":
+   * - cutZoom: alterna um leve zoom a cada corte da fala, para o corte parecer
+   *   troca de enquadramento e não um salto;
+   * - voice: leva a voz ao volume padrão das redes (≈ −14 LUFS) com compressão leve.
+   */
+  finish: z.object({ cutZoom: z.boolean().default(true), voice: z.boolean().default(true) }).default({ cutZoom: true, voice: true }),
 });
 
 export type AspectRatio = Project["aspectRatio"];

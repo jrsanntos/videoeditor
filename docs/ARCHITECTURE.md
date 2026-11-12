@@ -141,3 +141,10 @@ Componentes informam ao compositor onde cada texto foi desenhado (`region`). O P
 ## Contas
 
 Autenticação própria sobre Postgres (não usa o Supabase Auth, mesmo quando o banco é do Supabase). Com envio de e-mail configurado (`RESEND_API_KEY` + `EMAIL_FROM`) o cadastro cria a conta pendente e só abre sessão depois do link de confirmação (`/api/auth/verify`). `EMAIL_VERIFICATION=required|off` força ou desliga.
+
+## Acabamento e caminho de um clique
+
+- `project.finish.cutZoom`: a câmera alterna um leve zoom (1,08×, fechado no rosto medido) a cada corte real da fala (`jumpsBefore`), e os zooms partem desse enquadramento de base, sem salto.
+- `project.finish.voice`: a fala é medida no navegador (`lib/voice.ts`) e levada a ≈ −14 LUFS com compressão leve, no preview e na exportação; o mix final tem teto de −1 dBFS.
+- O título de gancho só fica "atrás" do apresentador quando o recorte realmente achou alguém; senão vai para o peito, nunca sobre o rosto.
+- `Assistant.tsx`: a cada vídeo enviado, o usuário escolhe um estilo e um botão roda transcrição → limpeza → edição → revisão, terminando no cartão "vídeo pronto".

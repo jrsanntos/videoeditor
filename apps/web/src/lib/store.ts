@@ -54,6 +54,11 @@ type State = {
   range: TimeRange | null;
   pxPerSec: number;
   layout: Layout;
+  /**
+   * Assistente de edição automática, aberto a cada vídeo enviado:
+   * choose = escolher o estilo; working = a IA está editando; done = vídeo pronto.
+   */
+  assistant: "choose" | "working" | "done" | null;
   /** Passo atual do guia inicial; null = fechado. */
   tour: number | null;
   /** Muda a cada vez que um trecho é enviado da timeline ao Diretor de IA (dispara o efeito visual). */
@@ -119,6 +124,7 @@ export const useEditor = create<State>((set, get) => ({
   range: null,
   pxPerSec: 60,
   layout: DEFAULT_LAYOUT,
+  assistant: null,
   tour: null,
   aiFocus: 0,
   credits: 0,

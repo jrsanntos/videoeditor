@@ -11,6 +11,7 @@ import { Inspector } from "./Inspector";
 import { Player, togglePlay } from "./Player";
 import { Sidebar } from "./Sidebar";
 import { deleteSelection, splitAtPlayhead, Timeline } from "./Timeline";
+import { Assistant } from "./Assistant";
 import { Tour } from "./Tour";
 import { Icon, Logo, ResizeHandle } from "./ui";
 
@@ -81,7 +82,9 @@ export function Editor() {
       </div>
       <Timeline />
       <Notice />
+      <Assistant />
       <Tour />
+      <SmallScreen />
     </div>
   );
 }
@@ -184,6 +187,22 @@ function TopBar() {
         <UserMenu />
       </div>
     </header>
+  );
+}
+
+/** O editor precisa de tela larga: em celular, avisa em vez de mostrar uma interface espremida. */
+function SmallScreen() {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  return (
+    <div className="fixed inset-0 z-[90] flex flex-col items-center justify-center gap-4 bg-ink-950/95 p-8 text-center backdrop-blur min-[900px]:hidden">
+      <Logo />
+      <h2 className="text-xl font-semibold text-white">O editor funciona melhor no computador</h2>
+      <p className="max-w-sm text-sm leading-relaxed text-zinc-400">A timeline e os painéis precisam de uma tela maior. Abra o videoeditor num notebook ou desktop para editar; seu vídeo fica salvo neste navegador.</p>
+      <button className="rounded-xl border border-line-strong px-4 py-2.5 text-sm text-zinc-200" onClick={() => setDismissed(true)}>
+        Continuar mesmo assim
+      </button>
+    </div>
   );
 }
 

@@ -54,6 +54,7 @@ export function createProject(opts: {
     aspectRatio,
     framing: { x: 0.5, y: 0.5 },
     sfx: { enabled: true, volume: 1 },
+    finish: { cutZoom: true, voice: true },
   };
 }
 
@@ -258,4 +259,26 @@ export function subjectAt(project: Project, t: number): SubjectBox | null {
     faceX: c(fx(best.faceX)),
     faceY: c(fy(best.faceY)),
   };
+}
+
+const jumpCache = new WeakMap<Project, Map<string, number>>();
+
+/**
+ * Quantos cortes de verdade (saltos no vídeo bruto) existem antes de cada clip
+ * da trilha principal. Um clip apenas dividido, sem material removido, não conta.
+ */
+export function jumpsBefore(project: Project, clipId: string): number {
+  let map = jumpCache.get(project);
+  if (!map) {
+    map = new Map();
+    let jumps = 0;
+    let prev: MediaClip | null = null;
+    for (const c of mainClips(project).sort((a, b) => a.start - b.start)) {
+      if (prev && (prev.assetId !== c.assetId || Math.abs(c.sourceStart - (prev.sourceStart + prev.duration)) > 0.12)) jumps++;
+      map.set(c.id, jumps);
+      prev = c;
+    }
+    jumpCache.set(project, map);
+  }
+  return map.get(clipId) ?? 0;
 }

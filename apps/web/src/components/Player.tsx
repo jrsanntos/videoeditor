@@ -9,6 +9,7 @@ import { mediaUrl } from "@/lib/media";
 import { getPath, reEmphasize, setPath } from "@/lib/params";
 import { maskKey, personMask } from "@/lib/segmentation";
 import { createSfxPlayer } from "@/lib/sfx";
+import { voiceCompressor, voiceGainNow } from "@/lib/voice";
 import { useEditor } from "@/lib/store";
 import { Icon } from "./ui";
 
@@ -62,6 +63,25 @@ export function Player() {
     let lastWall = performance.now();
     let cur = 0;
     const sfx = createSfxPlayer();
+    // Voz no volume profissional também no preview: os dois vídeos passam por um ganho e um compressor.
+    // Se o navegador não deixar montar o grafo de áudio, o som segue direto do vídeo, como antes.
+    let audio: { ctx: AudioContext; gain: GainNode } | null = null;
+    let audioFailed = false;
+    const ensureAudio = () => {
+      if (audio || audioFailed || !videoA.current || !videoB.current) return;
+      try {
+        const ctx = new AudioContext();
+        const gain = ctx.createGain();
+        const comp = voiceCompressor(ctx);
+        gain.connect(comp).connect(ctx.destination);
+        ctx.createMediaElementSource(videoA.current).connect(gain);
+        ctx.createMediaElementSource(videoB.current).connect(gain);
+        audio = { ctx, gain };
+      } catch (e) {
+        console.warn("acabamento de voz indisponível no preview", e);
+        audioFailed = true;
+      }
+    };
     // Último quadro bom, mostrado enquanto um salto não termina.
     const hold = document.createElement("canvas");
     let holdValid = false;
@@ -124,6 +144,11 @@ export function Player() {
               standby.dataset.clip = "";
             } else if (!video.seeking && video.readyState >= 2) {
               video.volume = Math.min(1, clip.volume);
+              ensureAudio();
+              if (audio) {
+                if (audio.ctx.state === "suspended") void audio.ctx.resume();
+                audio.gain.gain.value = p.finish.voice ? voiceGainNow(clip.assetId) : 1;
+              }
               if (video.paused) void video.play().catch(() => useEditor.getState().setPlaying(false));
               // O relógio da timeline segue o relógio do vídeo (áudio sempre em sincronia).
               t = Math.min(clip.start + Math.max(0, video.currentTime - clip.sourceStart), clip.start + clip.duration);
@@ -199,6 +224,7 @@ export function Player() {
     return () => {
       cancelAnimationFrame(raf);
       sfx.close();
+      void audio?.ctx.close();
     };
   }, []);
 

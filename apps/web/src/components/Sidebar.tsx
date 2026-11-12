@@ -61,7 +61,7 @@ export function Sidebar() {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "editar", label: "Editar", icon: <Icon.wand size={18} /> },
     { id: "midia", label: "Mídia", icon: <Icon.film size={18} /> },
-    { id: "motion", label: "Motion", icon: <Icon.layers size={18} /> },
+    { id: "motion", label: "Animações", icon: <Icon.layers size={18} /> },
     { id: "estilo", label: "Estilo", icon: <Icon.palette size={18} /> },
   ];
 
@@ -149,6 +149,15 @@ export function Sidebar() {
         )}
       </div>
 
+            <div className={section}>
+              <h3 className={heading}>
+                <Icon.sparkles size={12} /> Acabamento
+              </h3>
+              <div className="space-y-3">
+                <ToggleRow label="Disfarçar os cortes" hint="Alterna um leve zoom a cada corte, como uma troca de câmera." checked={project.finish.cutZoom} onChange={(v) => apply([{ op: "set_format", finish: { cutZoom: v } }])} testid="finish-cutzoom" />
+                <ToggleRow label="Voz no volume das redes" hint="Deixa a fala no nível de Reels, TikTok e YouTube, sem estourar." checked={project.finish.voice} onChange={(v) => apply([{ op: "set_format", finish: { voice: v } }])} testid="finish-voice" />
+              </div>
+            </div>
             <Templates />
           </div>
         )}
@@ -161,7 +170,7 @@ export function Sidebar() {
           <div className="pop-in">
       <div className={section}>
         <h3 className={heading}>
-          <Icon.layers size={12} /> Motion design
+          <Icon.layers size={12} /> Textos e gráficos animados
         </h3>
         <div className="grid grid-cols-2 gap-2">
           {Object.values(COMPONENTS)

@@ -94,8 +94,8 @@ const PlanSchema = z.object({
   diagnostico: z
     .string()
     .max(900)
-    .describe("O que este vídeo é e promete, para quem, e o que hoje o enfraquece (começo lento, repetição, trecho confuso, final sem fecho). Compare com um vídeo profissional do mesmo tipo."),
-  cortes: z.string().max(600).describe("O que sai da fala e por quê (takes ruins, aquecimento, repetição). 'nenhum' só se você conferiu a transcrição inteira."),
+    .describe("O que este vídeo é e promete, para quem, e o que hoje o enfraquece (começo lento, repetição, trecho confuso, final sem fecho). Compare com um vídeo profissional do mesmo tipo. O usuário lê este texto: linguagem simples, sem ids de palavra, sem nomes de componentes e sem falar de tarja ou Brand Kit."),
+  cortes: z.string().max(600).describe("O que sai da fala e por quê (takes ruins, aquecimento, repetição), citando as frases entre aspas, sem ids de palavra. 'nenhum' só se você conferiu a transcrição inteira."),
   capitulos: z
     .array(
       z.object({
@@ -103,7 +103,7 @@ const PlanSchema = z.object({
         fromWord: z.string().describe("primeira palavra do capítulo"),
         toWord: z.string().describe("última palavra do capítulo"),
         energia: z.enum(["alta", "media", "baixa"]).describe("alta: muitos estímulos; baixa: tela limpa, só câmera lenta"),
-        tratamento: z.string().max(240).describe("o que acontece na tela neste capítulo e por quê"),
+        tratamento: z.string().max(240).describe("o que acontece na tela neste capítulo e por quê, em linguagem de leigo (o usuário lê isto): 'título gigante', 'lista ao lado', 'número animado', 'cartão de tela cheia' — nunca ids ou nomes internos de componentes"),
         zooms: z.number().int().min(0).max(12),
         componentes: z.number().int().min(0).max(4),
       }),
@@ -192,7 +192,7 @@ Editar pouco é um erro tão grave quanto editar demais. Entregar dois zooms num
 - Se o pedido for ambíguo a ponto de arriscar estragar a edição, pergunte antes. Para ajustes de gosto, decida você e conte o que fez.
 
 ## Resposta final
-Depois das edições, responda em português, em 2 a 4 frases curtas, num único parágrafo de texto corrido: o que você entendeu do vídeo e como a edição serve a isso (o gancho, o ritmo, os destaques, o fecho), com os números do que mudou. É uma mensagem de chat para um leigo: sem listas, sem negrito, sem asteriscos, sem títulos; sem ids nem nomes internos de componentes; sem falar da auditoria, do plano, do Brand Kit, da tarja ou de ferramentas; e sem listar o que você decidiu não fazer nem o que deu trabalho.
+Depois das edições, responda em português em NO MÁXIMO 3 frases curtas (até 400 caracteres), num único parágrafo de texto corrido: o que mudou no vídeo e por quê, com os números principais (tempo cortado, quantos destaques). O plano detalhado o usuário já viu; não o repita. É uma mensagem de chat para um leigo: sem listas, sem negrito, sem asteriscos, sem títulos; sem ids nem nomes internos de componentes; sem falar da auditoria, do plano, do Brand Kit, da tarja ou de ferramentas; e sem listar o que você decidiu não fazer nem o que deu trabalho.
 
 ## Catálogo de componentes de motion design
 ${catalogForAgent()}`;
@@ -476,7 +476,18 @@ Se corrigiu algo, responda em uma frase, em texto corrido, o que ajustou.
 </pedido>`;
 
 /** A resposta vai para um balão de chat sem markdown: tira a marcação que escapar. */
-function plainMessage(text: string): string {
+function plainMessage(raw: string): string {
+  let text = raw.replace(/\s*\n+\s*/g, " ");
+  // Balão de chat: se o modelo se alongar, ficam as primeiras frases que cabem.
+  if (text.length > 520) {
+    const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text];
+    let kept = "";
+    for (const s of sentences) {
+      if (kept && (kept + s).length > 480) break;
+      kept += s;
+    }
+    text = kept;
+  }
   return text
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")

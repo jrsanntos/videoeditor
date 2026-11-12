@@ -211,6 +211,7 @@ const SetFormat = z
     aspectRatio: z.enum(["9:16", "16:9"]).optional(),
     framing: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).partial().optional(),
     sfx: z.object({ enabled: z.boolean(), volume: z.number().min(0).max(2) }).partial().optional(),
+    finish: z.object({ cutZoom: z.boolean(), voice: z.boolean() }).partial().optional(),
   })
   .describe("Muda o formato do quadro (vertical/horizontal), o reenquadramento do vídeo de origem e os efeitos sonoros.");
 
@@ -505,6 +506,7 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       }
       if (op.framing) p.framing = { ...p.framing, ...op.framing };
       if (op.sfx) p.sfx = { ...p.sfx, ...op.sfx };
+      if (op.finish) p.finish = { ...p.finish, ...op.finish };
       return `formato ${p.aspectRatio} (${p.width}x${p.height})`;
     }
     case "set_brand": {

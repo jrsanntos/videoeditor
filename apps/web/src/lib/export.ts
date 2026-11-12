@@ -21,6 +21,7 @@ import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
 import { scheduleSfx } from "./sfx";
+import { voiceCompressor, voiceGain } from "./voice";
 
 /**
  * Exportação local via WebCodecs: decodifica, compõe e codifica o vídeo final
@@ -224,6 +225,12 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
   if (![...decoded.values()].some(Boolean) && !soundEvents(project).length) return null;
 
   const off = new OfflineAudioContext(2, Math.ceil(duration * RATE), RATE);
+  // Barramento da voz: com o acabamento ligado, ganho até o volume padrão das redes e compressão leve.
+  const master = project.finish.voice;
+  const voiceBus = master ? voiceCompressor(off) : off.destination;
+  if (master) voiceBus.connect(off.destination);
+  const boost = new Map<string, number>();
+  if (master) for (const clip of clips) if (!boost.has(clip.assetId)) boost.set(clip.assetId, await voiceGain(clip.assetId));
   for (const clip of clips) {
     const buffer = decoded.get(clip.assetId);
     if (!buffer) continue;
@@ -232,16 +239,29 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
     const gain = off.createGain();
     // Micro-fade nas bordas de cada corte evita estalos.
     const edge = Math.min(0.008, clip.duration / 4);
+    const level = clip.volume * (boost.get(clip.assetId) ?? 1);
     gain.gain.setValueAtTime(0, clip.start);
-    gain.gain.linearRampToValueAtTime(clip.volume, clip.start + edge);
-    gain.gain.setValueAtTime(clip.volume, clip.start + clip.duration - edge);
+    gain.gain.linearRampToValueAtTime(level, clip.start + edge);
+    gain.gain.setValueAtTime(level, clip.start + clip.duration - edge);
     gain.gain.linearRampToValueAtTime(0, clip.start + clip.duration);
-    src.connect(gain).connect(off.destination);
+    src.connect(gain).connect(voiceBus);
     src.start(clip.start, clip.sourceStart, clip.duration);
   }
   // Efeitos sonoros nos mesmos instantes do preview.
   await scheduleSfx(off, project);
-  return off.startRendering();
+  const mixed = await off.startRendering();
+  // Teto de segurança: nenhum pico acima de −1 dBFS (sem distorção em nenhum aparelho).
+  let peak = 0;
+  for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
+    const data = mixed.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]!));
+  }
+  const ceiling = 0.89;
+  if (peak > ceiling) for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
+    const data = mixed.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) data[i] = (data[i]! * ceiling) / peak;
+  }
+  return mixed;
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

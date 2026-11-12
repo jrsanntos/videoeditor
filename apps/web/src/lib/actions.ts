@@ -96,14 +96,8 @@ export async function importVideo(file: File) {
     useEditor.setState({ chat: [], time: 0, range: null });
     setProject(addAssetToProject(project, asset));
     void analyzeAsset(asset.id);
-    // Primeiro vídeo: o guia aponta por onde começar.
-    let seen = false;
-    try {
-      seen = localStorage.getItem(TOUR_KEY) === "1";
-    } catch {
-      // sem armazenamento: mostra o guia
-    }
-    if (!seen) useEditor.getState().setTour(0);
+    // Todo vídeo novo abre o assistente: escolher um estilo e deixar a IA editar é o caminho mais curto.
+    useEditor.setState({ assistant: "choose" });
   } catch (e) {
     setNotice((e as Error).message);
   } finally {
@@ -148,6 +142,8 @@ export async function removeSilencesLocally() {
  * palavra e mede a energia da voz em cada uma. Devolve true se deu certo.
  */
 export async function transcribe(opts: { captions?: boolean } = {}): Promise<boolean> {
+  // O saldo vem do servidor: se a conta ainda não carregou, espera por ela em vez de acusar falta de créditos.
+  if (!useEditor.getState().user) await refreshMe();
   const { project, credits, setBusy, setNotice, setProject, setCredits } = useEditor.getState();
   if (!project) return false;
   const assetId = primaryAssetId(project);
@@ -424,6 +420,39 @@ export function removeRetakesLocally() {
   setNotice(removed ? `Erros de gravação removidos (${removed} palavras repetidas ou erradas). Ctrl+Z desfaz.` : "Nenhum erro de gravação evidente encontrado. Peça ao agente uma revisão mais fina.");
 }
 
+/** Quem prefere editar à mão: fecha o assistente e, na primeira vez, mostra o guia das ferramentas. */
+export function editManually() {
+  useEditor.setState({ assistant: null });
+  let seen = false;
+  try {
+    seen = localStorage.getItem(TOUR_KEY) === "1";
+  } catch {
+    // sem armazenamento: mostra o guia
+  }
+  if (!seen) useEditor.getState().setTour(0);
+}
+
+/**
+ * Edição automática em um clique, pelo assistente: transcreve, limpa, edita
+ * no estilo escolhido e revisa. No fim, o cartão "vídeo pronto".
+ */
+export async function autoEdit(id: SkillId) {
+  useEditor.setState({ assistant: "working" });
+  const before = useEditor.getState().chat.length;
+  await runSkill(id);
+  const s = useEditor.getState();
+  const reply = s.chat.slice(before).filter((m) => m.role === "assistant" && !m.plan);
+  const ok = reply.length > 0 && !reply[reply.length - 1]!.error;
+  // Se algo falhou, o motivo já está no aviso ou no chat: o assistente só sai da frente.
+  useEditor.setState({ assistant: ok ? "done" : null });
+}
+
+/** Só a limpeza, pelo assistente. */
+export async function autoCleanOnly() {
+  useEditor.setState({ assistant: null });
+  await autoClean();
+}
+
 /**
  * Skill: a limpeza determinística roda aqui, de graça; a direção de estilo
  * (cortes finos, câmera, motion) vai para o agente.
@@ -437,7 +466,7 @@ export async function runSkill(id: SkillId) {
   const ops: OperationInput[] = skill.local;
   const error = useEditor.getState().apply(ops);
   if (error) return s.setNotice(error);
-  await askAgent(skillPrompt(skill), `Editar com a skill ${skill.name}`, { skill: id });
+  await askAgent(skillPrompt(skill), `Editar o vídeo no estilo ${skill.name}`, { skill: id });
 }
 
 /**
