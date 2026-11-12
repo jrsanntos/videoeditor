@@ -45,7 +45,12 @@ export async function POST(req: Request) {
     method: "POST",
     headers: { authorization: `Bearer ${key}` },
     body,
+  }).catch((e: unknown) => {
+    console.error("transcribe network error", e);
+    return null;
   });
+  if (!res)
+    return Response.json({ error: "Não foi possível conectar ao serviço de transcrição." }, { status: 502 });
   if (!res.ok) {
     console.error("transcribe error", res.status, await res.text().catch(() => ""));
     return Response.json({ error: "O serviço de transcrição falhou. Tente novamente." }, { status: 502 });
