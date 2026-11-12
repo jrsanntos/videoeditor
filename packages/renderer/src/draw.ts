@@ -87,6 +87,13 @@ export const setActiveFonts = (f: Fonts) => {
 export const font = (weight: number, px: number) => `${weight} ${Math.round(px)}px ${active.sans}`;
 export const serifFont = (px: number) => `italic 400 ${Math.round(px)}px ${active.serif}`;
 
+// Unidade de layout do quadro em desenho (1u = 1px num quadro de 1080 no lado menor).
+let unit = 1;
+export const setUnit = (u: number) => {
+  unit = u;
+};
+export const getUnit = () => unit;
+
 /**
  * Desfoque de movimento. Usa ctx.filter onde existe; onde não existe não faz
  * nada, e a transição fica só com o deslocamento e a opacidade que quem chama

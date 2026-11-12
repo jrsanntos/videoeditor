@@ -1,6 +1,6 @@
 import type { Project, TimeRange } from "./schema";
 import { findRetakes } from "./retakes";
-import { clipEnd, projectDuration, subjectAt, timelineWords, type TimelineWord } from "./timeline";
+import { clipEnd, contextAssets, projectDuration, subjectAt, timelineWords, type TimelineWord } from "./timeline";
 
 /**
  * Serializa o estado da timeline em texto compacto para o agente.
@@ -54,11 +54,22 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
       overlays.push(
         c.type === "zoom"
           ? `  ${c.id} [${where}] ${c.duration}s zoom ${c.scale}x foco(${c.x},${c.y}) ease ${c.ease}`
-          : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
+          : c.type === "broll"
+            ? `  ${c.id} [${where}] ${c.duration}s mídia de contexto ${c.assetId} (${c.layout})`
+            : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
       );
     }
   }
   if (overlays.length) lines.push("", "## Zooms e componentes já na timeline", ...overlays);
+
+  const media = contextAssets(project);
+  if (media.length)
+    lines.push(
+      "",
+      "## Mídias de contexto (b-roll) enviadas pelo usuário",
+      "Use com add_broll só onde a fala trata do que a mídia mostra, segundo o nome e a descrição. Você não vê o conteúdo: na dúvida, não use.",
+      ...media.map((a) => `  ${a.id} | ${a.kind === "image" ? "imagem" : `vídeo de ${Math.round(a.duration * 10) / 10}s`} | ${a.name}${a.description ? ` — ${a.description}` : ""}`),
+    );
 
   lines.push("", "## Transcrição");
   if (!words.length) {

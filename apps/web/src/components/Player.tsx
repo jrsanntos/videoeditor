@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { applyOperations, findClip, isFullscreen, mainClipAt, mainClips, projectDuration, type MediaClip, type OperationInput, type Project } from "@videoeditor/core";
 import { captionGroups, COMPONENTS, needsPersonAt, plainText, renderFrame, validateComponent, type CaptionBox, type EditRegion } from "@videoeditor/renderer";
+import { brollFrame, syncBroll } from "@/lib/broll";
 import { loadProjectFonts } from "@/lib/fonts";
 import { mediaUrl } from "@/lib/media";
 import { getPath, reEmphasize, setPath } from "@/lib/params";
@@ -160,6 +161,7 @@ export function Player() {
         if (t !== s.time) useEditor.setState({ time: t });
         engineTime = t;
 
+        syncBroll(p, t, s.playing);
         const ctx = canvas.getContext("2d");
         if (ctx) {
           hit.regions = [];
@@ -176,6 +178,7 @@ export function Player() {
             },
             {
               guides: s.guides,
+              getBrollFrame: (c) => brollFrame(p, c),
               editClipId: s.selectedClipId,
               onRegion: (r) => hit.regions.push(r),
               onCaption: (b) => (hit.caption = b),

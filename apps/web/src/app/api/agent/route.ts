@@ -25,6 +25,7 @@ import {
 import { catalogForAgent, validateComponent } from "@videoeditor/renderer";
 import { agentModel, anthropicClient, anthropicError, fastAgentModel } from "@/server/ai";
 import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
+import { decrypt, encrypt } from "@/server/crypto";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
 export const runtime = "nodejs";
@@ -55,7 +56,29 @@ const RequestSchema = z.object({
     .array(z.object({ t: z.number(), data: z.string().max(600_000).regex(/^[A-Za-z0-9+/=]+$/) }))
     .max(4)
     .default([]),
+  /**
+   * Revisão visual: capturas do vídeo JÁ editado (com textos e componentes na
+   * tela), enviadas logo depois de uma edição completa. Só vale com o passe
+   * que a própria edição devolveu, e não é cobrada.
+   */
+  review: z
+    .object({
+      token: z.string().max(600),
+      shots: z.array(z.object({ t: z.number(), data: z.string().max(400_000).regex(/^[A-Za-z0-9+/=]+$/) })).min(1).max(8),
+    })
+    .optional(),
 });
+
+const REVIEW_MINUTES = 10;
+const reviewToken = (userId: string) => encrypt(JSON.stringify({ u: userId, exp: Date.now() + REVIEW_MINUTES * 60_000 }));
+function validReview(token: string, userId: string): boolean {
+  try {
+    const data = JSON.parse(decrypt(token)) as { u?: string; exp?: number };
+    return data.u === userId && typeof data.exp === "number" && data.exp > Date.now();
+  } catch {
+    return false;
+  }
+}
 
 // O agente só fala em ids de palavra e de clip: tempo de timeline não entra no vocabulário dele.
 const ToolInputSchema = z.object({ operations: z.array(AgentOperationSchema).min(1) });
@@ -158,6 +181,7 @@ Editar pouco é um erro tão grave quanto editar demais. Entregar dois zooms num
   - acronym_list fica por cima do vídeo: ponha no lado mais livre do enquadramento e combine com um pan lateral para o lado oposto.
   - Use o enquadramento medido: nenhum texto por cima do rosto. Com pouca lateral livre, prefira a parte de baixo ou cenas de tela cheia.
   - depth_hook_title é só para o gancho, nos primeiros segundos.
+- Mídia de contexto (add_broll): só existe o que o usuário enviou, listado em "Mídias de contexto". Use onde a fala trata do que a mídia mostra, por 2 a 5 s, e nunca sobre o gancho falado para a câmera nem junto com uma cena de tela cheia. layout "full" cobre o quadro; "card" deixa o apresentador visível. Conta como mudança visual no ritmo. Sem mídias listadas, não existe b-roll: não mencione.
 - Formato: o contexto diz se o vídeo é vertical ou horizontal. No vertical há pouco espaço lateral: textos curtos.
 - Marca: não passe cores nos params — os componentes herdam o Brand Kit do usuário. A tarja (executive_lower_third) usa o nome e a credencial do Brand Kit quando você omite os params. O contexto diz se ela está disponível; quando não está, siga sem ela e sem comentar — a falta da tarja nunca é motivo para editar menos.
 - Legendas: a plataforma as esconde durante cenas de tela cheia e as desvia do texto dos outros componentes; não precisa desligá-las para evitar sobreposição.
@@ -178,7 +202,7 @@ type AgentEvent =
   | { type: "status"; text: string }
   | { type: "plan"; plan: z.infer<typeof PlanSchema> }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string }
   | { type: "error"; error: string };
 
 export async function POST(req: Request) {
@@ -186,17 +210,19 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
-    const { project, selection, message, history, skill, frames } = parsed.data;
+    const { project, selection, message, history, skill, frames, review } = parsed.data;
+    if (review && !validReview(review.token, user.id)) throw new HttpError(403, "A revisão visual expirou.");
     // Pedido pontual vai para o modelo rápido; direção do vídeo inteiro, para o principal.
     // A mesma classificação roda no navegador, então o preço mostrado é o cobrado.
     const tier = agentTier(message, !!selection);
-    const price = creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
-    await assertCredits(user.id, price);
+    // A revisão visual faz parte da edição completa que a originou: não tem preço próprio.
+    const price = review ? 0 : creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
+    if (!review) await assertCredits(user.id, price);
     const client = await anthropicClient();
-    const model = tier === "full" ? await agentModel() : await fastAgentModel();
+    const model = tier === "full" || review ? await agentModel() : await fastAgentModel();
     const available = await balance(user.id);
 
-    const full = tier === "full";
+    const full = tier === "full" && !review;
     // Só JPEG de verdade segue para o modelo: um quadro corrompido derrubaria o pedido inteiro.
     const stills = frames.filter((f) => f.data.startsWith("/9j/") && f.data.length > 2000);
     const profile: PacingProfile = skill ? SKILLS[skill].pacing : DEFAULT_PACING;
@@ -206,7 +232,21 @@ export async function POST(req: Request) {
     const log: string[] = [];
     const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-    const messages: Anthropic.Beta.BetaMessageParam[] = [
+    const reviewShots = (review?.shots ?? []).filter((f) => f.data.startsWith("/9j/") && f.data.length > 2000);
+    const messages: Anthropic.Beta.BetaMessageParam[] = review
+      ? [
+          {
+            role: "user",
+            content: [
+              ...reviewShots.flatMap((f): Anthropic.Beta.BetaContentBlockParam[] => [
+                { type: "text", text: `Quadro do vídeo EDITADO em ${f.t}s da timeline:` },
+                { type: "image", source: { type: "base64", media_type: "image/jpeg", data: f.data } },
+              ]),
+              { type: "text", text: `<timeline>\n${buildAgentContext(project, null)}\n</timeline>\n\n${visualsReport(project)}\n\n${REVIEW_REQUEST}` },
+            ],
+          },
+        ]
+      : [
       ...history.map((h) => ({ role: h.role, content: h.text })),
       {
         role: "user",
@@ -228,7 +268,8 @@ export async function POST(req: Request) {
 
     /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
     const settle = async () => {
-      const credits = log.length ? price : 0;
+      // Administradores não consomem créditos: o custo real é registrado, o débito é zero.
+      const credits = log.length && user.role !== "admin" ? price : 0;
       if (usage.input || usage.output)
         await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits });
       return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
@@ -242,7 +283,7 @@ export async function POST(req: Request) {
           max_tokens: 16000,
           system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
           // Raciocínio estendido só na edição completa; o ajuste pontual responde direto.
-          ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : {}),
+          ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : review ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
           tools: full ? [READ_WORDS_TOOL, PLAN_TOOL, EDIT_TOOL] : [READ_WORDS_TOOL, EDIT_TOOL],
           messages,
           ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
@@ -276,7 +317,7 @@ export async function POST(req: Request) {
 
     const run = async (send: (e: AgentEvent) => void) => {
       let finalText = "";
-      send({ type: "status", text: full ? "Assistindo ao vídeo inteiro…" : "Lendo a transcrição…" });
+      send({ type: "status", text: review ? "Conferindo os quadros do vídeo editado…" : full ? "Assistindo ao vídeo inteiro…" : "Lendo a transcrição…" });
       const maxTurns = full ? MAX_TURNS_FULL : MAX_TURNS;
       for (let turn = 0; turn < maxTurns; turn++) {
         const response = await runTurn(send);
@@ -372,7 +413,7 @@ export async function POST(req: Request) {
         }
       }
       const bill = await settle();
-      send({ type: "done", message: plainMessage(finalText) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
+      send({ type: "done", ...(full && log.length ? { reviewToken: reviewToken(user.id) } : {}), message: plainMessage(finalText) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
     };
 
     const encoder = new TextEncoder();
@@ -421,6 +462,18 @@ function readWords(project: Project, toolUseId: string, raw: unknown): Anthropic
     return { type: "tool_result", tool_use_id: toolUseId, is_error: true, content: (e as Error).message };
   }
 }
+
+const REVIEW_REQUEST = `<pedido>
+Revisão visual da edição que acabou de ser montada. Os quadros acima são o vídeo como o espectador vai ver, no celular, com os componentes e as legendas na tela. Olhe cada um como um editor exigente e procure só defeitos reais:
+- texto difícil de ler: letra fina ou pequena demais, pouco contraste com o fundo, texto longo que encolheu;
+- texto cortado na borda, quebrado de forma estranha ou saindo da área útil;
+- texto ou cartão por cima do rosto do apresentador;
+- dois elementos disputando o mesmo espaço (componente sobre componente, legenda sobre componente);
+- palavra errada, repetida ou sem sentido num componente.
+Para cada defeito, corrija com edit_timeline: encurte o texto (update_clip com params), tire o destaque de palavras demais, troque o lado da lista, encurte ou remova o componente (delete_clip). Não acrescente elementos novos e não mexa no que está bom.
+Se não houver defeito, não chame nenhuma ferramenta e responda apenas: ok.
+Se corrigiu algo, responda em uma frase, em texto corrido, o que ajustou.
+</pedido>`;
 
 /** A resposta vai para um balão de chat sem markdown: tira a marcação que escapar. */
 function plainMessage(text: string): string {

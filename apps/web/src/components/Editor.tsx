@@ -153,6 +153,7 @@ function UploadScreen() {
 function TopBar() {
   const project = useEditor((s) => s.project)!;
   const credits = useEditor((s) => s.credits);
+  const unlimited = useEditor((s) => s.unlimited);
 
   return (
     <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-ink-900 px-4">
@@ -166,9 +167,9 @@ function TopBar() {
         <a href="/planos" className="flex items-center gap-1.5 rounded-full border border-line bg-ink-850 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-line-strong" title="Saldo de créditos da sua conta. Clique para ver planos e comprar créditos.">
           <Icon.bolt size={13} className="text-amber-300" />
           <b className="font-semibold text-white" data-testid="credits">
-            {formatCredits(credits)}
+            {unlimited ? "Ilimitado" : formatCredits(credits)}
           </b>
-          créditos
+          {unlimited ? "· admin" : "créditos"}
         </a>
         <button
           className="rounded-lg px-2.5 py-1.5 text-[13px] text-zinc-300 transition hover:bg-white/8 hover:text-white"
@@ -178,10 +179,55 @@ function TopBar() {
         >
           Novo vídeo
         </button>
+        <Shortcuts />
         <ExportMenu />
         <UserMenu />
       </div>
     </header>
+  );
+}
+
+const SHORTCUTS: [string, string][] = [
+  ["Espaço", "Reproduzir / pausar"],
+  ["S", "Dividir no cursor"],
+  ["Delete", "Cortar o trecho ou apagar o selecionado"],
+  ["Ctrl + Z", "Desfazer"],
+  ["Ctrl + Shift + Z", "Refazer"],
+  ["← →", "Um quadro para trás / para frente"],
+  ["Shift + ← →", "Um segundo para trás / para frente"],
+  ["Esc", "Soltar a seleção"],
+];
+
+/** Atalhos e gestos do editor, num cartão de ajuda. */
+function Shortcuts() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)} className="flex h-8 w-8 items-center justify-center rounded-lg text-[13px] font-semibold text-zinc-400 transition hover:bg-white/8 hover:text-white" aria-label="Atalhos e dicas" title="Atalhos e dicas" data-testid="shortcuts">
+        ?
+      </button>
+      {open && (
+        <div className="pop-in absolute right-0 top-10 z-50 w-80 rounded-xl border border-line-strong bg-ink-800 p-4 text-[12.5px] shadow-2xl">
+          <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-500">Atalhos</p>
+          <dl className="space-y-1.5">
+            {SHORTCUTS.map(([key, what]) => (
+              <div key={key} className="flex items-center justify-between gap-3">
+                <dd className="text-zinc-300">{what}</dd>
+                <dt className="shrink-0 rounded-md border border-line-strong bg-ink-900 px-1.5 py-0.5 font-mono text-[10.5px] text-zinc-200">{key}</dt>
+              </div>
+            ))}
+          </dl>
+          <p className="mb-2 mt-4 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-500">Com o mouse</p>
+          <ul className="space-y-1.5 text-zinc-300">
+            <li>Clique na timeline: marca um instante e oferece “Dividir aqui”.</li>
+            <li>Arraste na timeline: seleciona um trecho para cortar ou mandar à IA.</li>
+            <li>Clique num bloco: abre o editor dele ao lado do vídeo.</li>
+            <li>No vídeo: arraste um texto para mover; duplo clique para reescrever.</li>
+            <li>Bordas entre os painéis: arraste para redimensionar.</li>
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -21,6 +21,8 @@ export const SETTINGS = {
   STRIPE_PRICE_CREATOR: { label: "Stripe: preço mensal do plano Creator (price_…)", secret: false, env: ["STRIPE_PRICE_CREATOR"] },
   STRIPE_PRICE_PRO: { label: "Stripe: preço mensal do plano Pro (price_…)", secret: false, env: ["STRIPE_PRICE_PRO"] },
   STRIPE_PRICE_TOPUP: { label: "Stripe: preço avulso do pacote de créditos (price_…)", secret: false, env: ["STRIPE_PRICE_TOPUP"] },
+  PEXELS_API_KEY: { label: "Pexels (banco gratuito de vídeos e fotos)", secret: true, env: ["PEXELS_API_KEY"] },
+  PIXABAY_API_KEY: { label: "Pixabay (banco gratuito de vídeos e fotos)", secret: true, env: ["PIXABAY_API_KEY"] },
   RESEND_API_KEY: { label: "Resend (envio de e-mails)", secret: true, env: ["RESEND_API_KEY"] },
   EMAIL_FROM: { label: "Remetente dos e-mails", secret: false, env: ["EMAIL_FROM"] },
 } as const;

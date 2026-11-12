@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { drawTopoBackground } from "../background";
-import { clamp01, EASE, enter, font, formatNumber, rgba, roundRect, serifFont, setBlur, stage } from "../draw";
+import { clamp01, EASE, enter, font, formatNumber, rgba, roundRect, setBlur, stage } from "../draw";
 import { drawRich, fitRich, plainText, typewriter } from "../text";
 import type { ComponentDef, SoundCue } from "./library";
 
@@ -314,6 +314,8 @@ const acronymList = define({
       ctx.shadowColor = "rgba(0,0,0,0.7)";
       ctx.shadowBlur = 12 * u;
       ctx.fillText(params.title.toUpperCase(), right ? x + panelW : x, y - 22 * u);
+      // Área ocupada pelo rótulo: as legendas desviam dele também.
+      region("", x, y - 56 * u, panelW, 40 * u);
       ctx.restore();
     }
     params.items.forEach((item, i) => {
@@ -384,8 +386,8 @@ const executiveLowerThird = define({
       nameSize *= maxW / nameW;
       nameW = maxW;
     }
-    let credSize = 36 * u;
-    ctx.font = serifFont(credSize);
+    let credSize = 34 * u;
+    ctx.font = font(600, credSize);
     let credW = credential ? ctx.measureText(credential).width : 0;
     if (credW > maxW) {
       credSize *= maxW / credW;
@@ -419,7 +421,7 @@ const executiveLowerThird = define({
     region("name", x + padX + 8 * u, y + (credential ? 58 : 62) * u - nameSize * 0.85, nameW, nameSize);
     if (credential) {
       ctx.fillStyle = rgba(brand.textColor, 0.82);
-      ctx.font = serifFont(credSize);
+      ctx.font = font(600, credSize);
       ctx.fillText(credential, x + padX + 8 * u, y + 106 * u);
       region("credential", x + padX + 8 * u, y + 106 * u - credSize * 0.85, credW, credSize);
     }

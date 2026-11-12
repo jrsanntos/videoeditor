@@ -568,3 +568,30 @@ describe("enquadramento e legendas editáveis", () => {
     expect(buildAgentContext(p)).toMatch(/forte: w6 "vendas" \+6dB/);
   });
 });
+
+describe("mídia de contexto (b-roll)", () => {
+  const withMedia = () => {
+    const p = fixture();
+    p.assets.b1 = { id: "b1", kind: "video", name: "academia.mp4", duration: 3, hasAudio: false, role: "context", description: "pessoa levantando peso" };
+    return p;
+  };
+
+  it("entra numa trilha própria, presa à duração do material, e segue os cortes", () => {
+    const { project, log } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", atWord: "w2", duration: 8 }]);
+    const track = project.tracks.find((t) => t.kind === "broll")!;
+    expect(track.clips[0]).toMatchObject({ type: "broll", start: 4, duration: 3, layout: "full" });
+    expect(log[0]).toContain("academia.mp4");
+    // A trilha fica entre o motion e o zoom.
+    expect(project.tracks.map((t) => t.kind)).toEqual(["overlay", "broll", "fx", "main"]);
+    const cut = applyOperations(project, [{ op: "remove_ranges", ranges: [{ start: 1, end: 3 }] }]).project;
+    expect(cut.tracks.find((t) => t.kind === "broll")!.clips[0]!.start).toBe(2);
+  });
+
+  it("recusa asset que não é de contexto e aparece para o agente e para o auditor", () => {
+    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "a1", start: 0, duration: 2 }])).toThrow(/não existe/);
+    expect(AgentOperationSchema.safeParse({ op: "add_broll", assetId: "b1", atWord: "w2", untilWord: "w4" }).success).toBe(true);
+    const { project } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", start: 0, duration: 3 }]);
+    expect(buildAgentContext(project)).toContain("b1 | vídeo de 3s | academia.mp4 — pessoa levantando peso");
+    expect(auditPacing(project).issues.map((i) => i.code)).not.toContain("hook");
+  });
+});

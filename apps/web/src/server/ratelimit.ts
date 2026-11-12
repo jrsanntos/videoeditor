@@ -19,6 +19,9 @@ export const LIMITS = {
   forgotIp: { max: 10, windowSec: 60 * 60 },
   forgotEmail: { max: 3, windowSec: 60 * 60 },
   resetIp: { max: 10, windowSec: 60 * 60 },
+  /** Buscas e downloads nos bancos gratuitos de mídia, por conta. */
+  stockSearch: { max: 120, windowSec: 60 * 60 },
+  stockDownload: { max: 60, windowSec: 60 * 60 },
   /** Reenvios do e-mail de confirmação. */
   verifyIp: { max: 12, windowSec: 60 * 60 },
   verifyEmail: { max: 4, windowSec: 60 * 60 },

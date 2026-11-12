@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { findClip, FONT_PAIRS, isFullscreen, type Clip, type ComponentClip, type FontPairId, type OperationInput, type ZoomClip } from "@videoeditor/core";
+import { findClip, FONT_PAIRS, isFullscreen, type BrollClip, type Clip, type ComponentClip, type FontPairId, type OperationInput, type ZoomClip } from "@videoeditor/core";
 import { captionGroups, COMPONENTS, type ComponentDef } from "@videoeditor/renderer";
 import { fromTokens, toTokens } from "@/lib/params";
 import { useEditor } from "@/lib/store";
@@ -42,10 +42,18 @@ export function Inspector() {
   if (!clip && !caption) return null;
 
   const close = () => useEditor.getState().select(null);
-  const title = caption ? "Legenda" : clip!.type === "media" ? "Clip de vídeo" : clip!.type === "zoom" ? "Movimento de câmera" : (COMPONENTS[clip!.component]?.name ?? "Componente");
+  const title = caption
+    ? "Legenda"
+    : clip!.type === "media"
+      ? "Clip de vídeo"
+      : clip!.type === "zoom"
+        ? "Movimento de câmera"
+        : clip!.type === "broll"
+          ? "Mídia de contexto"
+          : (COMPONENTS[clip!.component]?.name ?? "Componente");
   const kind = caption ? "captions" : clip!.type;
-  const accent = { captions: "text-sky-300 bg-sky-400/15", media: "text-brand-300 bg-brand-500/15", zoom: "text-amber-300 bg-amber-400/15", component: "text-emerald-300 bg-emerald-400/15" }[kind];
-  const KindIcon = { captions: Icon.captions, media: Icon.film, zoom: Icon.zoomIn, component: Icon.layers }[kind];
+  const accent = { captions: "text-sky-300 bg-sky-400/15", media: "text-brand-300 bg-brand-500/15", zoom: "text-amber-300 bg-amber-400/15", component: "text-emerald-300 bg-emerald-400/15", broll: "text-rose-300 bg-rose-400/15" }[kind];
+  const KindIcon = { captions: Icon.captions, media: Icon.film, zoom: Icon.zoomIn, component: Icon.layers, broll: Icon.film }[kind];
 
   return (
     <aside className="pop-in m-3 mr-0 flex w-[340px] shrink-0 flex-col overflow-hidden rounded-2xl border border-line-strong bg-ink-850 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.9)]" data-testid="inspector">
@@ -79,6 +87,7 @@ function ClipEditor({ clip }: { clip: Clip }) {
     <>
       {clip.type === "component" && <ComponentEditor clip={clip} update={update} />}
       {clip.type === "zoom" && <ZoomEditor clip={clip} update={update} />}
+      {clip.type === "broll" && <BrollEditor clip={clip} update={update} />}
       {clip.type === "media" && (
         <div className={group}>
           <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onCommit={(volume) => update({ volume })} />
@@ -103,7 +112,7 @@ function ClipEditor({ clip }: { clip: Clip }) {
             if (!apply([{ op: "delete_clip", clipId: clip.id }])) useEditor.getState().select(null);
           }}
         >
-          <Icon.trash size={14} /> Apagar {clip.type === "media" ? "clip" : clip.type === "zoom" ? "zoom" : "componente"}
+          <Icon.trash size={14} /> {clip.type === "media" ? "Apagar clip" : clip.type === "zoom" ? "Apagar zoom" : clip.type === "broll" ? "Tirar do vídeo" : "Apagar componente"}
         </button>
       </div>
     </>
@@ -432,6 +441,48 @@ function ZoomEditor({ clip, update }: { clip: ZoomClip; update: (p: Update) => v
         <Slider label="Foco vertical" value={clip.y} min={0} max={1} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onCommit={(y) => update({ y })} />
         <Slider label="Suavização" value={clip.ease} min={0} max={1.5} step={0.05} format={(v) => (v === 0 ? "corte seco" : `${v.toFixed(2)}s`)} onCommit={(ease) => update({ ease })} />
         <Slider label="Deslocamento lateral" value={clip.panX} min={-0.5} max={0.5} step={0.01} format={(v) => (v === 0 ? "centro" : v < 0 ? `${Math.round(-v * 100)}% esq.` : `${Math.round(v * 100)}% dir.`)} onCommit={(panX) => update({ panX })} />
+      </div>
+    </>
+  );
+}
+
+// ---------- Mídia de contexto ----------
+
+function BrollEditor({ clip, update }: { clip: BrollClip; update: (p: Update) => void }) {
+  const asset = useEditor((s) => s.project!.assets[clip.assetId]);
+  const layouts = [
+    { id: "full" as const, name: "Tela cheia", hint: "cobre o vídeo; sua voz continua" },
+    { id: "card" as const, name: "Cartão", hint: "em cima, com você visível embaixo" },
+  ];
+  const room = asset && asset.kind !== "image" ? Math.max(0, asset.duration - clip.duration) : 0;
+  return (
+    <>
+      <div className={group}>
+        <h3 className={groupTitle}>Como aparece</h3>
+        <div className="grid grid-cols-2 gap-2">
+          {layouts.map((l) => (
+            <button
+              key={l.id}
+              onClick={() => update({ layout: l.id })}
+              aria-pressed={clip.layout === l.id}
+              className={`rounded-xl border px-3 py-2 text-left transition ${clip.layout === l.id ? "border-rose-300/70 bg-rose-400/10" : "border-line bg-ink-900/60 hover:border-rose-300/40"}`}
+            >
+              <span className="block text-xs font-medium text-zinc-100">{l.name}</span>
+              <span className="block text-[10.5px] text-zinc-500">{l.hint}</span>
+            </button>
+          ))}
+        </div>
+        {room > 0.2 && <Slider label="Começar do segundo" value={clip.sourceStart} min={0} max={room} step={0.1} format={(v) => `${v.toFixed(1)}s`} onCommit={(sourceStart) => update({ sourceStart })} />}
+        <p className="text-[11px] leading-relaxed text-zinc-500">O áudio é sempre o da sua fala. Arraste as bordas do bloco na timeline para mudar quanto tempo a mídia fica na tela.</p>
+        {asset?.credit && (
+          <p className="text-[11px] text-zinc-500">
+            Mídia de{" "}
+            <a href={asset.credit.url} target="_blank" rel="noreferrer" className="text-zinc-300 underline-offset-2 hover:underline">
+              {asset.credit.author ? `${asset.credit.author} · ` : ""}
+              {asset.credit.provider}
+            </a>
+          </p>
+        )}
       </div>
     </>
   );

@@ -2,6 +2,7 @@
 
 import {
   addAssetToProject,
+  addContextAsset,
   agentTier,
   createProject,
   creditCost,
@@ -25,6 +26,7 @@ import {
   type Transcript,
 } from "@videoeditor/core";
 import { analyzeVideo, wordEnergy, type VideoAnalysis } from "./analysis";
+import { clearBroll } from "./broll";
 import { clearMedia, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { TOUR_KEY, useEditor, type EditPlan, type SavedBrand, type SessionUser } from "./store";
 
@@ -82,6 +84,8 @@ export async function importVideo(file: File) {
       hasAudio: true,
     };
     await clearMedia();
+    clearBroll();
+    thumbs.clear();
     await storeMedia(asset.id, file);
     const project = createProject({
       name: file.name.replace(/\.[^.]+$/, ""),
@@ -150,7 +154,7 @@ export async function transcribe(opts: { captions?: boolean } = {}): Promise<boo
   const asset = assetId ? project.assets[assetId] : null;
   if (!assetId || !asset) return false;
   const cost = creditCost({ type: "ingest", durationSec: asset.duration });
-  if (credits < cost) {
+  if (credits < cost && !useEditor.getState().unlimited) {
     setNotice(`Créditos insuficientes: a transcrição custa ${cost} ${cost === 1 ? "crédito" : "créditos"}.`);
     return false;
   }
@@ -235,8 +239,8 @@ export async function refreshMe() {
     window.location.href = "/login";
     return;
   }
-  const data = (await res.json()) as { user?: SessionUser; credits?: number; brands?: SavedBrand[]; brandLimit?: number };
-  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, brands: data.brands ?? [], brandLimit: data.brandLimit ?? 1 });
+  const data = (await res.json()) as { user?: SessionUser; credits?: number; unlimited?: boolean; brands?: SavedBrand[]; brandLimit?: number };
+  if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, unlimited: !!data.unlimited, brands: data.brands ?? [], brandLimit: data.brandLimit ?? 1 });
 }
 
 export async function logout() {
@@ -263,7 +267,7 @@ type AgentEvent =
   | { type: "status"; text: string }
   | { type: "plan"; plan: EditPlan }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string }
   | { type: "error"; error: string };
 
 /**
@@ -290,17 +294,9 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 12_000) : null;
   let applied = false;
   const log: string[] = [];
+  let reviewToken: string | undefined;
   try {
-    const res = await fetch("/api/agent", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ project: useEditor.getState().project, selection: range, message, history, skill: opts.skill, frames: analysis?.frames ?? [] }),
-    });
-    if (!res.ok || !res.body) {
-      const data = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(data?.error ?? "O agente não respondeu.");
-    }
-    const onEvent = (e: AgentEvent) => {
+    await streamAgent({ project: useEditor.getState().project, selection: range, message, history, skill: opts.skill, frames: analysis?.frames ?? [] }, (e) => {
       if (e.type === "status") s.setBusy(e.text);
       else if (e.type === "plan") s.pushChat({ role: "assistant", text: e.plan.diagnostico, plan: e.plan });
       else if (e.type === "ops") {
@@ -311,29 +307,14 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
         s.setBusy(`${e.log[e.log.length - 1] ?? "Edição aplicada"}. Continuando…`);
       } else if (e.type === "done") {
         s.setCredits(e.balance);
+        reviewToken = e.reviewToken;
         s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits });
       } else {
         void refreshMe();
         s.pushChat({ role: "assistant", text: applied ? `${e.error} As etapas já aplicadas foram mantidas (Ctrl+Z desfaz).` : e.error, log: log.length ? log : undefined, error: true });
       }
-    };
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-    let buffer = "";
-    let finished = false;
-    for (;;) {
-      const { value, done } = await reader.read();
-      buffer += value ?? "";
-      const lines = buffer.split("\n");
-      buffer = done ? "" : lines.pop()!;
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line) as AgentEvent;
-        if (event.type === "done" || event.type === "error") finished = true;
-        onEvent(event);
-      }
-      if (done) break;
-    }
-    if (!finished) throw new Error("A conexão com o agente caiu antes do fim.");
+    });
+    if (reviewToken && applied) await visualReview(reviewToken);
   } catch (e) {
     s.pushChat({ role: "assistant", text: (e as Error).message, error: true });
   } finally {
@@ -341,7 +322,95 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   }
 }
 
+/** Envia um pedido ao agente e entrega os eventos (um JSON por linha) conforme chegam. */
+async function streamAgent(body: unknown, onEvent: (e: AgentEvent) => void) {
+  const res = await fetch("/api/agent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok || !res.body) {
+    const data = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(data?.error ?? "O agente não respondeu.");
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let finished = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += value ?? "";
+    const lines = buffer.split("\n");
+    buffer = done ? "" : lines.pop()!;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as AgentEvent;
+      if (event.type === "done" || event.type === "error") finished = true;
+      onEvent(event);
+    }
+    if (done) break;
+  }
+  if (!finished) throw new Error("A conexão com o agente caiu antes do fim.");
+}
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Capturas do vídeo já editado, tiradas do próprio preview: o cursor passa
+ * pelos momentos em que há componente ou mídia de contexto na tela. É o que
+ * o agente recebe para conferir, com os olhos, o que montou.
+ */
+async function captureShots(project: Project, max = 6): Promise<{ t: number; data: string }[]> {
+  const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="preview"]');
+  if (!canvas) return [];
+  const moments = project.tracks
+    .flatMap((t) => t.clips)
+    .filter((c) => c.type === "component" || c.type === "broll")
+    .sort((a, b) => a.start - b.start)
+    .map((c) => Math.round((c.start + Math.min(c.duration * 0.7, Math.max(0.3, c.duration - 0.5))) * 100) / 100);
+  // Espalha pelo vídeo quando há mais momentos do que capturas.
+  const picked = moments.length <= max ? moments : Array.from({ length: max }, (_, i) => moments[Math.round((i * (moments.length - 1)) / (max - 1))]!);
+  const s = useEditor.getState();
+  const back = s.time;
+  s.setPlaying(false);
+  const small = document.createElement("canvas");
+  const scale = Math.min(1, 480 / Math.max(canvas.width, canvas.height));
+  const out: { t: number; data: string }[] = [];
+  try {
+    for (const t of [...new Set(picked)]) {
+      useEditor.getState().seek(t);
+      // Tempo para o vídeo buscar o quadro e o preview redesenhar.
+      await wait(650);
+      small.width = Math.round(canvas.width * scale);
+      small.height = Math.round(canvas.height * scale);
+      small.getContext("2d")!.drawImage(canvas, 0, 0, small.width, small.height);
+      const data = small.toDataURL("image/jpeg", 0.8).split(",")[1];
+      if (data) out.push({ t, data });
+    }
+  } finally {
+    useEditor.getState().seek(back);
+  }
+  return out;
+}
+
+/**
+ * Revisão visual depois de uma edição completa: o agente olha as capturas do
+ * resultado e corrige texto ilegível, cortado ou sobreposto. Faz parte da
+ * edição (sem custo extra) e entra no mesmo ponto de desfazer.
+ */
+async function visualReview(token: string) {
+  const s = useEditor.getState();
+  const project = s.project;
+  if (!project) return;
+  s.setBusy("Conferindo como ficou na tela…");
+  const shots = await captureShots(project);
+  if (!shots.length) return;
+  try {
+    await streamAgent({ project: useEditor.getState().project, message: "Revisão visual da edição.", review: { token, shots } }, (e) => {
+      if (e.type === "status") s.setBusy(e.text);
+      else if (e.type === "ops") s.setProject(e.project, { history: "keep" });
+      else if (e.type === "done" && e.log.length) s.pushChat({ role: "assistant", text: `Revi o vídeo pronto, quadro a quadro. ${e.message}`, log: e.log });
+    });
+  } catch (e) {
+    // A edição já está entregue; uma falha na revisão não é erro para o usuário.
+    console.warn("revisão visual indisponível", e);
+  }
+}
 
 /** Tira os erros de gravação de alta confiança, no navegador: 0 créditos. */
 export function removeRetakesLocally() {
@@ -398,6 +467,169 @@ export async function deleteBrand(id: string): Promise<string | null> {
 
 export async function closeProject() {
   await clearMedia();
+  clearBroll();
+  thumbs.clear();
   useEditor.setState({ chat: [], time: 0, range: null, playing: false });
   useEditor.getState().setProject(null);
+}
+
+// ---------- Mídia de contexto (b-roll) ----------
+
+export type StockItem = {
+  id: string;
+  provider: "pexels" | "pixabay";
+  kind: "video" | "image";
+  thumb: string;
+  url: string;
+  width: number;
+  height: number;
+  duration: number;
+  author: string;
+  page: string;
+};
+
+/** Miniaturas das mídias de contexto (só em memória; refeitas ao reabrir o projeto). */
+const thumbs = new Map<string, string>();
+export const contextThumb = (assetId: string) => thumbs.get(assetId) ?? null;
+
+async function videoThumb(blob: Blob): Promise<string | null> {
+  const url = URL.createObjectURL(blob);
+  const v = document.createElement("video");
+  v.muted = true;
+  v.preload = "auto";
+  v.src = url;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      v.onloadeddata = () => resolve();
+      v.onerror = () => reject(new Error("ilegível"));
+    });
+    await new Promise<void>((resolve) => {
+      v.onseeked = () => resolve();
+      v.currentTime = Math.min(0.6, v.duration / 2);
+    });
+    const canvas = document.createElement("canvas");
+    const scale = 240 / Math.max(v.videoWidth, v.videoHeight);
+    canvas.width = Math.round(v.videoWidth * scale);
+    canvas.height = Math.round(v.videoHeight * scale);
+    canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Garante a miniatura de uma mídia de contexto já guardada (ex.: depois de recarregar a página). */
+export async function ensureContextThumb(assetId: string, kind: Asset["kind"]): Promise<string | null> {
+  if (thumbs.has(assetId)) return thumbs.get(assetId)!;
+  const blob = mediaBlob(assetId);
+  if (!blob) return null;
+  const thumb = kind === "image" ? URL.createObjectURL(blob) : await videoThumb(blob);
+  if (thumb) thumbs.set(assetId, thumb);
+  return thumb;
+}
+
+const MAX_CONTEXT_MB = 300;
+
+/**
+ * Guarda um vídeo ou imagem de contexto no projeto (o arquivo fica no
+ * navegador, como o vídeo principal). Devolve o id do asset, ou null.
+ */
+export async function addContextMedia(file: Blob, name: string, extra: Pick<Asset, "credit" | "description"> = {}): Promise<string | null> {
+  const s = useEditor.getState();
+  if (!s.project) return null;
+  try {
+    if (file.size > MAX_CONTEXT_MB * 1024 * 1024) throw new Error(`"${name}" passa de ${MAX_CONTEXT_MB} MB. Use um trecho menor.`);
+    const image = file.type.startsWith("image/");
+    let meta: { duration: number; width: number; height: number };
+    if (image) {
+      const bmp = await createImageBitmap(file).catch(() => null);
+      if (!bmp) throw new Error(`Não foi possível ler a imagem "${name}".`);
+      meta = { duration: 5, width: bmp.width, height: bmp.height };
+      bmp.close();
+    } else meta = await probeVideo(file);
+    const asset: Asset = { id: newId("ctx"), kind: image ? "image" : "video", name, duration: meta.duration, width: meta.width, height: meta.height, hasAudio: false, role: "context", ...extra };
+    await storeMedia(asset.id, file);
+    await ensureContextThumb(asset.id, asset.kind);
+    const current = useEditor.getState().project;
+    if (!current) return null;
+    // Sem ponto de desfazer: enviar um arquivo não é uma edição da timeline.
+    useEditor.setState({ project: addContextAsset(current, asset) });
+    return asset.id;
+  } catch (e) {
+    s.setNotice((e as Error).message);
+    return null;
+  }
+}
+
+/** Arquivos escolhidos pelo usuário (vários de uma vez). */
+export async function uploadContextFiles(files: FileList | File[]) {
+  const { setBusy, setNotice } = useEditor.getState();
+  const list = [...files].filter((f) => f.type.startsWith("video/") || f.type.startsWith("image/"));
+  if (!list.length) return setNotice("Envie arquivos de vídeo ou imagem.");
+  setBusy(`Preparando ${list.length === 1 ? "a mídia" : `${list.length} mídias`}…`);
+  let added = 0;
+  for (const f of list) if (await addContextMedia(f, f.name.replace(/\.[^.]+$/, ""))) added++;
+  setBusy(null);
+  if (added) setNotice(`${added === 1 ? "Mídia adicionada" : `${added} mídias adicionadas`}. Clique em “Inserir” para pôr no vídeo, ou peça ao Diretor de IA.`);
+}
+
+/** Põe a mídia na timeline, a partir do cursor, e já abre o editor dela. */
+export function insertBroll(assetId: string) {
+  const s = useEditor.getState();
+  if (!s.project) return;
+  const before = new Set(s.project.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+  if (s.apply([{ op: "add_broll", assetId, start: s.time }])) return;
+  const created = useEditor.getState().project!.tracks.flatMap((t) => t.clips).find((c) => !before.has(c.id));
+  if (created) {
+    useEditor.getState().select(created.id);
+    useEditor.getState().seek(created.start + Math.min(0.8, created.duration / 2));
+  }
+}
+
+/** Tira a mídia do projeto, com os trechos em que ela aparece. Ctrl+Z traz de volta. */
+export function removeContextAsset(assetId: string) {
+  const s = useEditor.getState();
+  if (!s.project) return;
+  const next = structuredClone(s.project);
+  delete next.assets[assetId];
+  for (const t of next.tracks) t.clips = t.clips.filter((c) => c.type !== "broll" || c.assetId !== assetId);
+  next.tracks = next.tracks.filter((t) => t.kind !== "broll" || t.clips.length > 0);
+  s.setProject(next, { history: true });
+}
+
+export function describeContextAsset(assetId: string, description: string) {
+  const current = useEditor.getState().project;
+  if (!current?.assets[assetId]) return;
+  const next = structuredClone(current);
+  next.assets[assetId]!.description = description.trim() || undefined;
+  useEditor.setState({ project: next });
+}
+
+export async function searchStock(q: string, kind: "video" | "image", orientation: "portrait" | "landscape"): Promise<{ items: StockItem[]; providers?: { pexels: boolean; pixabay: boolean }; error?: string }> {
+  const res = await fetch(`/api/stock/search?${new URLSearchParams({ q, kind, orientation })}`).catch(() => null);
+  const data = (await res?.json().catch(() => null)) as { items?: StockItem[]; providers?: { pexels: boolean; pixabay: boolean }; error?: string } | null;
+  if (!res?.ok) return { items: [], error: data?.error ?? "Não foi possível buscar agora. Tente de novo." };
+  return { items: data?.items ?? [], providers: data?.providers };
+}
+
+/** Baixa um item do banco gratuito para o navegador e insere no cursor. */
+export async function importStockItem(item: StockItem, label: string) {
+  const { setBusy, setNotice } = useEditor.getState();
+  setBusy("Baixando a mídia…");
+  try {
+    const res = await fetch(`/api/stock/download?url=${encodeURIComponent(item.url)}`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? "Não foi possível baixar esta mídia.");
+    }
+    const provider = item.provider === "pexels" ? "Pexels" : "Pixabay";
+    const id = await addContextMedia(await res.blob(), label, { credit: { provider, author: item.author || undefined, url: item.page }, description: label });
+    if (id) insertBroll(id);
+  } catch (e) {
+    setNotice((e as Error).message);
+  } finally {
+    setBusy(null);
+  }
 }

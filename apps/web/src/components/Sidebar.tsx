@@ -5,7 +5,10 @@ import { creditCost, FONT_PAIRS, FORMATS, mainClips, PLANS, type AspectRatio, ty
 import { COMPONENTS } from "@videoeditor/renderer";
 import { applyTemplate, autoClean, deleteBrand, removeSilencesLocally, saveBrand, toggleCaptions } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
+import { MediaPanel } from "./MediaPanel";
 import { Icon, ToggleRow } from "./ui";
+
+type Tab = "editar" | "midia" | "motion" | "estilo";
 
 const section = "border-b border-line px-4 py-4";
 const heading = "mb-3 flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-500";
@@ -32,7 +35,12 @@ export function Sidebar() {
   const hasTranscript = Boolean(asset?.transcript?.words.length);
   const ingestCost = asset ? creditCost({ type: "ingest", durationSec: asset.duration }) : 0;
   const caps = project.captions;
-  const credits = (n: number) => `${n} ${n === 1 ? "crédito" : "créditos"}`;
+  const unlimited = useEditor((s) => s.unlimited);
+  const credits = (n: number) => (unlimited ? "sem custo para admin" : `${n} ${n === 1 ? "crédito" : "créditos"}`);
+  const tour = useEditor((s) => s.tour);
+  const [tab, setTab] = useState<Tab>("editar");
+  // O guia inicial aponta para a Limpeza automática, que mora na aba Editar.
+  const shown: Tab = tour === 0 ? "editar" : tab;
 
   const addComponent = (id: string) => {
     const def = COMPONENTS[id]!;
@@ -50,8 +58,32 @@ export function Sidebar() {
     }
   };
 
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "editar", label: "Editar", icon: <Icon.wand size={18} /> },
+    { id: "midia", label: "Mídia", icon: <Icon.film size={18} /> },
+    { id: "motion", label: "Motion", icon: <Icon.layers size={18} /> },
+    { id: "estilo", label: "Estilo", icon: <Icon.palette size={18} /> },
+  ];
+
   return (
-    <aside className="flex shrink-0 flex-col overflow-y-auto bg-ink-900" style={{ width }}>
+    <aside className="flex shrink-0 bg-ink-900" style={{ width }}>
+      <nav className="flex w-[62px] shrink-0 flex-col items-center gap-1 border-r border-line py-2" aria-label="Ferramentas">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            aria-pressed={shown === t.id}
+            data-testid={`tab-${t.id}`}
+            className={`flex w-[52px] flex-col items-center gap-1 rounded-xl py-2 text-[10px] font-medium transition ${shown === t.id ? "bg-brand-500/15 text-brand-300" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"}`}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </nav>
+      <div className="min-w-0 flex-1 overflow-y-auto" key={shown}>
+        {shown === "editar" && (
+          <div className="pop-in">
       <div className={section}>
         <h3 className={heading}>
           <Icon.bolt size={12} /> Automações
@@ -117,6 +149,16 @@ export function Sidebar() {
         )}
       </div>
 
+            <Templates />
+          </div>
+        )}
+        {shown === "midia" && (
+          <div className="pop-in">
+            <MediaPanel />
+          </div>
+        )}
+        {shown === "motion" && (
+          <div className="pop-in">
       <div className={section}>
         <h3 className={heading}>
           <Icon.layers size={12} /> Motion design
@@ -155,11 +197,15 @@ export function Sidebar() {
         <p className="mt-2 text-[10.5px] leading-snug text-zinc-600">Entram onde está o cursor da timeline. Clique no bloco criado para editar.</p>
       </div>
 
-      <Frame />
-
-      <Brand />
-
-      <Templates />
+          </div>
+        )}
+        {shown === "estilo" && (
+          <div className="pop-in">
+            <Frame />
+            <Brand />
+          </div>
+        )}
+      </div>
     </aside>
   );
 }

@@ -41,6 +41,15 @@ export const AssetSchema = z.object({
   width: z.number().optional(),
   height: z.number().optional(),
   hasAudio: z.boolean().default(true),
+  /**
+   * main: o vídeo falado. context: mídia de apoio (b-roll) que o usuário
+   * enviou ou trouxe de um banco gratuito, para cobrir trechos da fala.
+   */
+  role: z.enum(["main", "context"]).optional(),
+  /** O que a mídia de contexto mostra, em poucas palavras: é o que o agente lê para decidir onde usá-la. */
+  description: z.string().max(200).optional(),
+  /** Origem de mídia de banco gratuito, para dar o crédito. */
+  credit: z.object({ provider: z.string(), author: z.string().optional(), url: z.string().optional() }).optional(),
   transcript: TranscriptSchema.optional(),
   /**
    * Onde o apresentador está no quadro de ORIGEM (frações 0–1), medido no
@@ -124,10 +133,22 @@ export const ComponentClipSchema = z.object({
 });
 export type ComponentClip = z.infer<typeof ComponentClipSchema>;
 
+/** Mídia de contexto (b-roll) por cima do vídeo falado; o áudio da fala continua. */
+export const BrollClipSchema = z.object({
+  ...clipBase,
+  type: z.literal("broll"),
+  assetId: z.string(),
+  sourceStart: z.number().min(0).default(0),
+  /** full: cobre o quadro. card: cartão na parte de cima, com o apresentador visível embaixo. */
+  layout: z.enum(["full", "card"]).default("full"),
+});
+export type BrollClip = z.infer<typeof BrollClipSchema>;
+
 export const ClipSchema = z.discriminatedUnion("type", [
   MediaClipSchema,
   ZoomClipSchema,
   ComponentClipSchema,
+  BrollClipSchema,
 ]);
 export type Clip = z.infer<typeof ClipSchema>;
 
@@ -135,8 +156,9 @@ export type Clip = z.infer<typeof ClipSchema>;
  * main    — vídeo falado; magnética (sem buracos), só clips `media`
  * fx      — zooms aplicados ao vídeo principal
  * overlay — componentes de motion design
+ * broll   — mídia de contexto por cima do vídeo (criada ao inserir a primeira)
  */
-export const TrackKindSchema = z.enum(["main", "fx", "overlay"]);
+export const TrackKindSchema = z.enum(["main", "fx", "overlay", "broll"]);
 export type TrackKind = z.infer<typeof TrackKindSchema>;
 
 export const TrackSchema = z.object({

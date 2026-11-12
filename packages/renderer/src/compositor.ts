@@ -4,6 +4,7 @@ import {
   mainClipAt,
   safeArea,
   timelineWords,
+  type BrollClip,
   type CaptionStyle,
   type MediaClip,
   type Project,
@@ -12,7 +13,7 @@ import {
 } from "@videoeditor/core";
 import { cameraAt, drawVideo, type Rect } from "./camera";
 import { COMPONENTS } from "./components/library";
-import { brandFonts, type Ctx2D, easeOutBack, font, roundRect, setActiveFonts, stage } from "./draw";
+import { brandFonts, clamp01, type Ctx2D, EASE, easeOutBack, font, roundRect, setActiveFonts, setUnit, stage } from "./draw";
 
 export type FrameSource = { image: CanvasImageSource; width: number; height: number };
 
@@ -23,6 +24,8 @@ export type RenderOptions = {
    * na tela. null = ainda não disponível.
    */
   getPersonMask?: (clip: MediaClip, frame: FrameSource) => CanvasImageSource | null;
+  /** Quadro atual de uma mídia de contexto (vídeo ou imagem). null = ainda não disponível. */
+  getBrollFrame?: (clip: BrollClip, localTime: number) => FrameSource | null;
   /** Desenha as áreas seguras por cima (só no preview; nunca na exportação). */
   guides?: boolean;
   /**
@@ -76,6 +79,7 @@ export function renderFrame(
   const safe = safeArea(project);
   const vertical = height > width;
   setActiveFonts(brandFonts(FONT_PAIRS[project.brand.fontPair]));
+  setUnit(u);
   ctx.save();
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
@@ -112,6 +116,21 @@ export function renderFrame(
   // Onde há texto de componentes neste quadro: as legendas desviam para não ficar por cima.
   const busy: Rect[] = [];
   let fullscreenOn = false;
+
+  // Mídia de contexto: por cima do vídeo falado, por baixo dos componentes e das legendas.
+  if (options.getBrollFrame)
+    for (const track of [...project.tracks].reverse()) {
+      if (track.kind !== "broll") continue;
+      for (const c of track.clips) {
+        if (c.type !== "broll" || t < c.start || t >= c.start + c.duration) continue;
+        const local = t - c.start;
+        const src = options.getBrollFrame(c, local);
+        if (!src) continue;
+        const card = drawBroll(ctx, src, c, local, width, height, u, safe, vertical);
+        if (card) busy.push(card);
+      }
+    }
+
   // Trilhas são ordenadas de cima para baixo; desenha de baixo para cima.
   for (const track of [...project.tracks].reverse()) {
     if (track.kind !== "overlay") continue;
@@ -201,6 +220,61 @@ export function renderFrame(
   if (project.captions.enabled && !fullscreenOn) drawCaptions(ctx, project, t, u, safe, options, busy);
   if (options.guides) drawGuides(ctx, width, height, safe, u);
   ctx.restore();
+}
+
+/**
+ * Desenha a mídia de contexto preenchendo sua área (recorta o que sobra), com
+ * um avanço lento para a imagem não ficar parada. Devolve a área do cartão,
+ * quando é um, para as legendas desviarem.
+ */
+function drawBroll(ctx: Ctx2D, src: FrameSource, clip: BrollClip, local: number, W: number, H: number, u: number, safe: SafeArea, vertical: boolean): Rect | null {
+  const edge = Math.min(0.2, clip.duration / 4);
+  const alpha = clamp01(Math.min(local / edge, (clip.duration - local) / edge));
+  const push = 1 + 0.05 * clamp01(local / clip.duration);
+  const cover = (x: number, y: number, w: number, h: number) => {
+    const s = Math.max(w / src.width, h / src.height) * push;
+    const dw = src.width * s;
+    const dh = src.height * s;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src.image, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  };
+  ctx.save();
+  if (clip.layout === "full") {
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H);
+    ctx.clip();
+    cover(0, 0, W, H);
+    ctx.restore();
+    return null;
+  }
+  // Cartão: no vertical ocupa a parte de cima; no horizontal, o lado direito.
+  const w = vertical ? W - safe.left * 2 : W * 0.42;
+  const h = vertical ? Math.min(H * 0.34, (w * 3) / 4) : (w * 9) / 16;
+  const x = vertical ? safe.left : W - safe.right - w;
+  const y = vertical ? safe.top : (H - h) / 2;
+  const e = EASE.snap(stage(local, 0, 0.45));
+  ctx.globalAlpha = Math.min(alpha * 1.4, 1) * clamp01(e * 1.6);
+  ctx.translate(0, -40 * u * (1 - e));
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 40 * u;
+  ctx.shadowOffsetY = 14 * u;
+  ctx.fillStyle = "#000";
+  roundRect(ctx, x, y, w, h, 28 * u);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  roundRect(ctx, x, y, w, h, 28 * u);
+  ctx.clip();
+  cover(x, y, w, h);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.5;
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.lineWidth = 2 * u;
+  roundRect(ctx, x, y, w, h, 28 * u);
+  ctx.stroke();
+  ctx.restore();
+  return { x, y, w, h };
 }
 
 /** Há, em `t`, algum componente que precisa do recorte do apresentador? */

@@ -15,7 +15,7 @@ import {
   QUALITY_HIGH,
   WebMOutputFormat,
 } from "mediabunny";
-import { mainClips, projectDuration, type Project } from "@videoeditor/core";
+import { mainClips, projectDuration, type BrollClip, type Project } from "@videoeditor/core";
 import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
 import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
@@ -94,6 +94,60 @@ export async function exportInBrowser(
       inputs.set(clip.assetId, { input, sink: new CanvasSink(track, { poolSize: 2 }) });
     }
 
+    // Mídia de contexto: um leitor por clip, que avança junto com a timeline.
+    const brolls = project.tracks.flatMap((t) => t.clips).filter((c): c is BrollClip => c.type === "broll");
+    const readers = new Map<string, { frames?: AsyncGenerator<{ canvas: HTMLCanvasElement | OffscreenCanvas; timestamp: number }, void, unknown>; current: FrameSource | null; next: { src: FrameSource; at: number } | null; done: boolean }>();
+    const stills = new Map<string, FrameSource>();
+    for (const c of brolls) {
+      const asset = project.assets[c.assetId];
+      const blob = mediaBlob(c.assetId);
+      if (!asset || !blob) continue;
+      if (asset.kind === "image") {
+        if (!stills.has(c.assetId)) {
+          const bmp = await createImageBitmap(blob).catch(() => null);
+          if (bmp) stills.set(c.assetId, { image: bmp, width: bmp.width, height: bmp.height });
+        }
+        continue;
+      }
+      let entry = inputs.get(`broll:${c.assetId}`);
+      if (!entry) {
+        const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+        const track = await input.getPrimaryVideoTrack();
+        if (!track || !(await track.canDecode())) {
+          input.dispose();
+          continue;
+        }
+        entry = { input, sink: new CanvasSink(track, { poolSize: 3 }) };
+        inputs.set(`broll:${c.assetId}`, entry);
+      }
+      readers.set(c.id, { frames: entry.sink.canvases(c.sourceStart, c.sourceStart + c.duration + 0.1), current: null, next: null, done: false });
+    }
+    const brollAt = async (t: number) => {
+      const out = new Map<string, FrameSource>();
+      for (const c of brolls) {
+        if (t < c.start || t >= c.start + c.duration) continue;
+        const still = stills.get(c.assetId);
+        if (still) {
+          out.set(c.id, still);
+          continue;
+        }
+        const r = readers.get(c.id);
+        if (!r?.frames) continue;
+        const want = c.sourceStart + (t - c.start);
+        // Avança até o quadro cujo tempo já chegou.
+        while (!r.done && (!r.next || r.next.at <= want)) {
+          if (r.next) r.current = r.next.src;
+          const step = await r.frames.next();
+          if (step.done) r.done = true;
+          else r.next = { src: { image: step.value.canvas, width: step.value.canvas.width, height: step.value.canvas.height }, at: step.value.timestamp };
+        }
+        if (r.done && r.next && r.next.at <= want) r.current = r.next.src;
+        const shown = r.current ?? r.next?.src;
+        if (shown) out.set(c.id, shown);
+      }
+      return out;
+    };
+
     await output.start();
     const audioDone = audioSource && audioBuffer ? audioSource.add(audioBuffer) : Promise.resolve();
 
@@ -113,7 +167,9 @@ export async function exportInBrowser(
         if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };
         const t = frame / fps;
         const sourceTime = sourceTimes[frame - first] ?? clip.sourceStart;
+        const context = brolls.length ? await brollAt(t) : null;
         renderFrame(ctx, project, t, () => last, {
+          getBrollFrame: context ? (c) => context.get(c.id) ?? null : undefined,
           // Segmentação só nos quadros dos trechos que pedem; as máscaras vistas no preview vêm do cache.
           getPersonMask: depth.some((r) => t >= r.start && t < r.end)
             ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height)

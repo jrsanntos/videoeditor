@@ -1,4 +1,4 @@
-import type { Clip, ComponentClip, Project, ZoomClip } from "./schema";
+import type { BrollClip, Clip, ComponentClip, Project, ZoomClip } from "./schema";
 import { clipEnd, mainClips, projectDuration, r3, timelineWords, type TimelineWord } from "./timeline";
 
 /**
@@ -91,14 +91,17 @@ const BUCKET = 5;
 function visuals(project: Project) {
   const zooms: ZoomClip[] = [];
   const components: ComponentClip[] = [];
+  const brolls: BrollClip[] = [];
   for (const t of project.tracks)
     for (const c of t.clips) {
       if (c.type === "zoom") zooms.push(c);
       else if (c.type === "component") components.push(c);
+      else if (c.type === "broll") brolls.push(c);
     }
   zooms.sort((a, b) => a.start - b.start);
   components.sort((a, b) => a.start - b.start);
-  return { zooms, components };
+  brolls.sort((a, b) => a.start - b.start);
+  return { zooms, components, brolls };
 }
 
 /** "w12–w30 (4.2–11.8s)": o agente trabalha por palavra, então todo trecho vem ancorado nelas. */
@@ -110,7 +113,7 @@ function span(words: TimelineWord[], start: number, end: number): string {
 
 export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_PACING): PacingAudit {
   const duration = mainClips(project).reduce((m, c) => Math.max(m, clipEnd(c)), 0) || projectDuration(project);
-  const { zooms, components } = visuals(project);
+  const { zooms, components, brolls } = visuals(project);
   const words = timelineWords(project);
   const issues: PacingIssue[] = [];
   const minutes = Math.max(duration / 60, 0.25);
@@ -127,7 +130,8 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
   }
 
   // Trechos parados: intervalos que nenhum zoom nem componente cobre.
-  const covered = [...zooms, ...components].map((c) => ({ start: c.start, end: clipEnd(c) })).sort((a, b) => a.start - b.start);
+  // Mídia de contexto também é mudança visual: cobre o trecho e conta na densidade.
+  const covered = [...zooms, ...components, ...brolls].map((c) => ({ start: c.start, end: clipEnd(c) })).sort((a, b) => a.start - b.start);
   let cursor = 0;
   let longestStatic = 0;
   const gaps: { start: number; end: number }[] = [];
@@ -147,7 +151,7 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
   }
 
   if (profile.edges && duration > 4) {
-    const firstVisual = Math.min(zooms[0]?.start ?? Infinity, components[0]?.start ?? Infinity);
+    const firstVisual = Math.min(zooms[0]?.start ?? Infinity, components[0]?.start ?? Infinity, brolls[0]?.start ?? Infinity);
     if (firstVisual > 1.5)
       issues.push({
         severity: "erro",
@@ -160,7 +164,12 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
   }
 
   // Densidade: qualquer janela de 5 s.
-  const starts = [...zooms, ...components].map((c) => c.start).sort((a, b) => a - b);
+  const starts = [...zooms, ...components, ...brolls].map((c) => c.start).sort((a, b) => a - b);
+  // Mídia de contexto em tela cheia por cima de uma cena de tela cheia: uma esconde a outra.
+  for (const b of brolls)
+    for (const c of components)
+      if (b.layout === "full" && isFullscreen(c) && b.start < clipEnd(c) - 0.05 && c.start < clipEnd(b) - 0.05)
+        issues.push({ severity: "erro", code: "sobreposicao", clipIds: [b.id, c.id], message: `A mídia de contexto ${b.id} e a cena de tela cheia ${c.id} estão na tela ao mesmo tempo: uma esconde a outra. Mova ou remova uma delas.` });
   let flaggedUntil = -1;
   starts.forEach((s, i) => {
     if (s < flaggedUntil) return;
@@ -168,7 +177,7 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
     while (i + n < starts.length && starts[i + n]! < s + BUCKET) n++;
     if (n > profile.maxPer5s) {
       flaggedUntil = s + BUCKET;
-      const crowd = [...zooms, ...components].filter((c) => c.start >= s && c.start < s + BUCKET).sort((a, b) => a.start - b.start);
+      const crowd = [...zooms, ...components, ...brolls].filter((c) => c.start >= s && c.start < s + BUCKET).sort((a, b) => a.start - b.start);
       issues.push({
         severity: "erro",
         code: "densidade",
@@ -266,16 +275,18 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
 
 /** O que está na tela, em ordem, com os ids: é como o agente "assiste" ao que acabou de montar. */
 export function visualsReport(project: Project): string {
-  const { zooms, components } = visuals(project);
+  const { zooms, components, brolls } = visuals(project);
   const words = timelineWords(project);
-  const all = [...zooms, ...components].sort((a, b) => a.start - b.start);
+  const all = [...zooms, ...components, ...brolls].sort((a, b) => a.start - b.start);
   if (!all.length) return "Na tela agora: nenhum zoom nem componente.";
   return [
     "Na tela agora (id | trecho | o quê):",
     ...all.map((c) =>
       c.type === "zoom"
         ? `${c.id} | ${span(words, c.start, clipEnd(c))} | zoom ${c.scale}x ${c.mode === "creep" ? "avanço lento" : c.ease === 0 ? "punch-in" : "suave"}${Math.abs(c.panX) >= 0.05 ? ` pan ${c.panX}` : ""}`
-        : `${c.id} | ${span(words, c.start, clipEnd(c))} | ${c.component}${isFullscreen(c) ? " (tela cheia)" : ""}`,
+        : c.type === "broll"
+          ? `${c.id} | ${span(words, c.start, clipEnd(c))} | mídia de contexto ${c.assetId} (${c.layout === "full" ? "tela cheia" : "cartão"})`
+          : `${c.id} | ${span(words, c.start, clipEnd(c))} | ${c.component}${isFullscreen(c) ? " (tela cheia)" : ""}`,
     ),
   ].join("\n");
 }

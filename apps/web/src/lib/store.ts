@@ -24,8 +24,8 @@ export type EditPlan = {
 
 /** Tamanho dos painéis do editor, em pixels. */
 export type Layout = { left: number; right: number; bottom: number };
-export const DEFAULT_LAYOUT: Layout = { left: 288, right: 344, bottom: 290 };
-const LAYOUT_LIMITS: Record<keyof Layout, [number, number]> = { left: [220, 480], right: [280, 560], bottom: [170, 620] };
+export const DEFAULT_LAYOUT: Layout = { left: 344, right: 344, bottom: 300 };
+const LAYOUT_LIMITS: Record<keyof Layout, [number, number]> = { left: [290, 520], right: [280, 560], bottom: [170, 620] };
 
 export type ChatMessage = {
   id: string;
@@ -60,6 +60,8 @@ type State = {
   aiFocus: number;
   /** Saldo do ledger no servidor; atualizado por /api/me e pelas respostas das ações pagas. */
   credits: number;
+  /** Conta de administrador: usa a plataforma sem consumir créditos. */
+  unlimited: boolean;
   user: SessionUser | null;
   chat: ChatMessage[];
   busy: string | null;
@@ -120,6 +122,7 @@ export const useEditor = create<State>((set, get) => ({
   tour: null,
   aiFocus: 0,
   credits: 0,
+  unlimited: false,
   user: null,
   chat: [],
   busy: null,

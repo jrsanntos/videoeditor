@@ -12,7 +12,7 @@ import { Icon, ResizeHandle } from "./ui";
 const LABEL = 78;
 const PAD = LABEL + 12;
 const MIN_LEN = 0.2;
-const ROW: Record<Track["kind"] | "captions", number> = { overlay: 34, fx: 34, main: 60, captions: 32 };
+const ROW: Record<Track["kind"] | "captions", number> = { overlay: 34, broll: 40, fx: 34, main: 60, captions: 32 };
 
 type DragMode = "move" | "left" | "right";
 type Drag = { clipId: string; mode: DragMode; dx: number };
@@ -46,6 +46,7 @@ export function Timeline() {
   const aiFocus = useEditor((s) => s.aiFocus);
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
+  const hover = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [captionDrag, setCaptionDrag] = useState<{ id: string; dx: number } | null>(null);
   /** Depois de um clique simples, o botão de dividir aparece no cursor. */
@@ -200,6 +201,19 @@ export function Timeline() {
           className="relative min-h-full select-none"
           style={{ width, minWidth: "100%" }}
           onPointerDown={onAreaDown}
+          onPointerMove={(e) => {
+            // Linha-guia sob o ponteiro, com o tempo: mostra onde o clique vai cair. Direto no DOM, sem redesenhar a timeline.
+            const el = hover.current;
+            if (!el || !inner.current) return;
+            const x = e.clientX - inner.current.getBoundingClientRect().left;
+            const t = (x - PAD) / pxPerSec;
+            const show = t >= 0 && t <= duration && e.buttons === 0;
+            el.style.opacity = show ? "1" : "0";
+            el.style.transform = `translateX(${x}px)`;
+            el.dataset.time = formatTime(Math.max(0, t));
+            (el.firstElementChild as HTMLElement).textContent = formatTime(Math.max(0, t));
+          }}
+          onPointerLeave={() => hover.current && (hover.current.style.opacity = "0")}
           onDoubleClick={() => {
             // Duplo clique: desfaz a seleção e volta ao normal.
             const s = useEditor.getState();
@@ -279,6 +293,9 @@ export function Timeline() {
               <RangeActions left={PAD + range.end * pxPerSec + 8} />
             </>
           )}
+          <div ref={hover} className="pointer-events-none absolute bottom-0 left-0 top-0 z-20 w-px bg-white/25 opacity-0 transition-opacity">
+            <span className="absolute left-1.5 top-1 rounded bg-ink-700 px-1 py-px font-mono text-[9.5px] text-zinc-200 shadow" />
+          </div>
           <Playhead pxPerSec={pxPerSec} splitHint={splitHint && !range} onSplit={() => (splitAtPlayhead(), setSplitHint(false))} />
         </div>
       </div>
@@ -290,6 +307,7 @@ const round = (n: number) => Math.round(n * 1000) / 1000;
 
 const TRACK_STYLE: Record<Track["kind"] | "captions", { icon: React.ReactNode; color: string }> = {
   overlay: { icon: <Icon.layers size={12} />, color: "text-emerald-300" },
+  broll: { icon: <Icon.film size={12} />, color: "text-rose-300" },
   fx: { icon: <Icon.zoomIn size={12} />, color: "text-amber-300" },
   main: { icon: <Icon.film size={12} />, color: "text-brand-300" },
   captions: { icon: <Icon.captions size={12} />, color: "text-sky-300" },
@@ -340,24 +358,31 @@ function preview(project: Project, clip: Clip, drag: Drag): { start: number; dur
     const d = Math.max(MIN_LEN - clip.duration, Math.min(dx, max - (clip.sourceStart + clip.duration)));
     return { start: clip.start, duration: clip.duration + d };
   }
+  // Vídeo de contexto não estica além do material que existe.
+  const cap = clip.type === "broll" && project.assets[clip.assetId]?.kind !== "image" ? (project.assets[clip.assetId]?.duration ?? Infinity) - clip.sourceStart : Infinity;
   if (mode === "move") return { start: Math.max(0, clip.start + dx), duration: clip.duration };
   if (mode === "left") {
     const d = Math.max(-clip.start, Math.min(dx, clip.duration - MIN_LEN));
     return { start: clip.start + d, duration: clip.duration - d };
   }
-  return { start: clip.start, duration: Math.max(MIN_LEN, clip.duration + dx) };
+  return { start: clip.start, duration: Math.min(cap, Math.max(MIN_LEN, clip.duration + dx)) };
 }
 
 const STYLES: Record<Clip["type"], string> = {
   media: "bg-gradient-to-b from-brand-500/35 to-brand-600/20 border-brand-400/50 text-brand-300",
   zoom: "bg-amber-400/20 border-amber-300/50 text-amber-100 hover:bg-amber-400/30",
   component: "bg-emerald-400/20 border-emerald-300/50 text-emerald-100 hover:bg-emerald-400/30",
+  broll: "bg-rose-400/20 border-rose-300/50 text-rose-100 hover:bg-rose-400/30",
 };
 
 function ClipBox(props: { clip: Clip; project: Project; left: number; width: number; pxPerSec: number; selected: boolean; onDrag: (e: React.PointerEvent, mode: DragMode) => void }) {
   const { clip, project } = props;
   const label =
-    clip.type === "media" ? (project.assets[clip.assetId]?.name ?? "vídeo") : clip.type === "zoom" ? `Zoom ${clip.scale}×` : (COMPONENTS[clip.component]?.name ?? clip.component);
+    clip.type === "media" || clip.type === "broll"
+      ? (project.assets[clip.assetId]?.name ?? "vídeo")
+      : clip.type === "zoom"
+        ? `Zoom ${clip.scale}×`
+        : (COMPONENTS[clip.component]?.name ?? clip.component);
   return (
     <div
       data-testid={`clip-${clip.type}`}

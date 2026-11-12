@@ -75,6 +75,15 @@ export function addAssetToProject(project: Project, asset: Asset): Project {
   return next;
 }
 
+/** Registra uma mídia de contexto no projeto (sem colocá-la na timeline). */
+export function addContextAsset(project: Project, asset: Asset): Project {
+  const next = structuredClone(project);
+  next.assets[asset.id] = { ...asset, role: "context" };
+  return next;
+}
+
+export const contextAssets = (project: Project): Asset[] => Object.values(project.assets).filter((a) => a.role === "context");
+
 export function getTrack(project: Project, kind: TrackKind): Track {
   const t = project.tracks.find((t) => t.kind === kind);
   if (!t) throw new Error(`Trilha "${kind}" não existe no projeto`);

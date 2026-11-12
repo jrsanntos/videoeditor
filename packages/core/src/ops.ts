@@ -3,6 +3,7 @@ import { BrandKitSchema, CaptionStyleSchema, FORMATS, type Clip, type Project, t
 import {
   MIN_CLIP,
   clipEnd,
+  contextAssets,
   findClip,
   getTrack,
   mainClips,
@@ -141,6 +142,18 @@ const AddComponent = z
     params: componentParams,
   })
   .describe("Insere um componente de motion design do catálogo sobre o vídeo.");
+const AddBroll = z
+  .object({
+    op: z.literal("add_broll"),
+    assetId: z.string().describe("id de uma mídia de contexto listada no projeto"),
+    start: z.number().min(0).optional().describe("início em tempo de timeline; alternativa a atWord"),
+    atWord: atWord.optional(),
+    duration: z.number().positive().optional(),
+    untilWord: untilWord.optional(),
+    sourceStart: z.number().min(0).default(0).describe("de que segundo da mídia começar"),
+    layout: z.enum(["full", "card"]).default("full").describe("full: cobre o quadro inteiro. card: cartão na metade de cima, apresentador visível embaixo"),
+  })
+  .describe("Põe uma mídia de contexto (b-roll) por cima do vídeo num trecho; a fala continua tocando. Use 2 a 5 s, onde a fala se refere ao que a mídia mostra.");
 const UpdateClip = z
   .object({
     op: z.literal("update_clip"),
@@ -159,6 +172,8 @@ const UpdateClip = z
     panY: z.number().min(-0.5).max(0.5).optional(),
     params: z.record(z.string(), z.unknown()).optional(),
     style: ClipStyle.optional(),
+    layout: z.enum(["full", "card"]).optional(),
+    sourceStart: z.number().min(0).optional(),
   })
   .describe(
     "Altera um clip existente. Início/duração valem para zoom e componentes; params é mesclado aos params atuais do componente; volume vale para vídeo.",
@@ -209,6 +224,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
   TrimClip,
   AddZoom,
   AddComponent,
+  AddBroll,
   UpdateClip,
   SetCaptions,
   EditWord,
@@ -230,6 +246,7 @@ export const AgentOperationSchema = z.discriminatedUnion("op", [
   RemoveSilences.omit({ range: true }),
   AddZoom.omit({ start: true }).extend({ atWord }),
   AddComponent.omit({ start: true }).extend({ atWord }),
+  AddBroll.omit({ start: true }).extend({ atWord }),
   UpdateClip.omit({ start: true, style: true }),
   DeleteClip,
   SetCaptions,
@@ -411,6 +428,19 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       overlayTrackFor(p, start, duration).clips.push(clip);
       return `componente ${op.component} (${clip.id}) em ${fmt(start)} por ${fmt(duration)}`;
     }
+    case "add_broll": {
+      const asset = p.assets[op.assetId];
+      if (!asset || asset.role !== "context")
+        throw new Error(`mídia de contexto ${op.assetId} não existe. Disponíveis: ${contextAssets(p).map((a) => a.id).join(", ") || "nenhuma"}`);
+      const still = asset.kind === "image";
+      const span = resolveSpan(p, { ...op, duration: op.duration ?? (op.untilWord ? undefined : Math.min(4, still ? 4 : asset.duration)) });
+      const sourceStart = still ? 0 : Math.min(op.sourceStart, Math.max(0, asset.duration - MIN_CLIP));
+      // Vídeo de contexto não se repete: a duração para no fim do material.
+      const fit = fitToMain(p, span.start, still ? span.duration : Math.min(span.duration, asset.duration - sourceStart));
+      const id = newId("broll");
+      brollTrackFor(p, fit.start, fit.duration).clips.push({ id, type: "broll", assetId: asset.id, start: fit.start, duration: fit.duration, sourceStart: r3(sourceStart), layout: op.layout });
+      return `mídia de contexto "${asset.name}" (${id}) em ${fmt(fit.start)} por ${fmt(fit.duration)}`;
+    }
     case "update_clip": {
       const { clip } = mustFind(p, op.clipId);
       if (clip.type === "media") {
@@ -424,7 +454,15 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         clip.start = span.start;
         clip.duration = span.duration;
       }
-      if (clip.type === "zoom") {
+      if (clip.type === "broll") {
+        const asset = p.assets[clip.assetId];
+        if (op.layout) clip.layout = op.layout;
+        if (op.sourceStart !== undefined) clip.sourceStart = r3(op.sourceStart);
+        if (asset && asset.kind !== "image") {
+          clip.sourceStart = r3(Math.min(clip.sourceStart, Math.max(0, asset.duration - MIN_CLIP)));
+          clip.duration = r3(Math.min(clip.duration, asset.duration - clip.sourceStart));
+        }
+      } else if (clip.type === "zoom") {
         if (op.scale !== undefined) clip.scale = op.scale;
         if (op.x !== undefined) clip.x = op.x;
         if (op.y !== undefined) clip.y = op.y;
@@ -599,6 +637,18 @@ function overlayTrackFor(p: Project, start: number, duration: number) {
   return track;
 }
 
+/** Trilha de mídia de contexto com espaço livre no trecho; criada (acima do zoom) quando não há. */
+function brollTrackFor(p: Project, start: number, duration: number) {
+  const end = start + duration;
+  const free = p.tracks.find((t) => t.kind === "broll" && t.clips.every((c) => clipEnd(c) <= start || c.start >= end));
+  if (free) return free;
+  const n = p.tracks.filter((t) => t.kind === "broll").length + 1;
+  const track = { id: newId("trk"), kind: "broll" as const, name: n > 1 ? `Contexto ${n}` : "Contexto", clips: [] };
+  const at = p.tracks.findIndex((t) => t.kind === "fx");
+  p.tracks.splice(at < 0 ? p.tracks.length : at, 0, track);
+  return track;
+}
+
 /** Abre `d` segundos em `at`, empurrando tudo que começa dali em diante (exceto `exceptId`). */
 function insertTime(p: Project, at: number, d: number, exceptId?: string) {
   for (const t of p.tracks)
@@ -646,7 +696,7 @@ function removeRanges(p: Project, ranges: TimeRange[]) {
         } else {
           const cut = r3(re - cs);
           const trimmed = { ...c, start: rs, duration: r3(ce - re) };
-          if (trimmed.type === "media") trimmed.sourceStart = r3(trimmed.sourceStart + cut);
+          if (trimmed.type === "media" || trimmed.type === "broll") trimmed.sourceStart = r3(trimmed.sourceStart + cut);
           if (trimmed.type === "component") trimmed.params = shiftTimedParams(trimmed.params, 0, cut);
           next.push(trimmed);
         }

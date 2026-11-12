@@ -13,6 +13,8 @@ export async function GET() {
       brandLimit: PLANS[user.plan].brandKits,
       user: { id: user.id, name: user.name, email: user.email, role: user.role, plan: user.plan, planName: PLANS[user.plan]?.name },
       credits: user.credits_plan + user.credits_extra,
+      // Só administradores: usam sem consumir créditos.
+      unlimited: user.role === "admin",
       billing: {
         creditsPlan: user.credits_plan,
         creditsExtra: user.credits_extra,

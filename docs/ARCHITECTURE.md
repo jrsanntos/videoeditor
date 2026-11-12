@@ -124,6 +124,16 @@ Uma edição completa (skill, modelo, "edite o vídeo") não é mais uma chamada
 
 No renderer, as legendas somem durante cenas de tela cheia e desviam do texto de outros componentes; sons de destaque têm intervalo global mínimo de 5 s (`sounds.ts`).
 
+Depois de uma edição completa há ainda uma **revisão visual**: o navegador captura do preview os quadros em que há componente ou mídia de contexto na tela e os envia ao agente (`review` em `/api/agent`, com um passe de 10 minutos devolvido pela edição; sem custo). Ele corrige texto ilegível, cortado ou sobreposto. A legibilidade da ênfase também é garantida no renderer (`text.ts`): em corpo pequeno ela sai na fonte sem serifa em peso forte; em corpo grande, na serifada engrossada.
+
+## Mídia de contexto (b-roll)
+
+Assets com `role: "context"` (enviados pelo usuário ou baixados de Pexels/Pixabay pelas rotas `/api/stock/*`, com as chaves no servidor) entram na timeline como clips `broll` numa trilha própria: cobrem o quadro (`full`) ou aparecem num cartão (`card`), sempre com o áudio da fala. O agente os usa com `add_broll`, guiado pelo nome e pela descrição de cada mídia; o auditor de ritmo conta b-roll como mudança visual.
+
+## Créditos de administrador
+
+Contas com papel `admin` não têm o saldo checado nem debitado (`hasUnlimitedCredits` em `server/billing.ts`); o custo real continua em `usage_events`. Nenhum plano dá créditos ilimitados.
+
 ## Edição direta no preview
 
 Componentes informam ao compositor onde cada texto foi desenhado (`region`). O Player usa isso para selecionar, arrastar (posição por clip em `clip.style`, ou por texto quando o componente declara `positions`) e reescrever o texto em cima do vídeo. Legendas são derivadas das palavras; `edit_caption` reescreve, esconde (`hidden`) ou desloca (`shift`) sem alterar a fala.
