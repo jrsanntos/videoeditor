@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clientIp, rateLimit } from "@/server/ratelimit";
 import { createUser, errorResponse, HttpError, startSession } from "@/server/users";
 
 export const runtime = "nodejs";
@@ -13,7 +14,9 @@ export async function POST(req: Request) {
   try {
     const parsed = Body.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw new HttpError(400, parsed.error.issues[0]?.message ?? "Dados inválidos.");
-    const user = createUser(parsed.data);
+    // Depois da validação: erro de digitação no formulário não consome o limite de contas por IP.
+    await rateLimit("signupIp", clientIp(req));
+    const user = await createUser(parsed.data);
     await startSession(user.id);
     return Response.json({ ok: true });
   } catch (e) {

@@ -27,12 +27,16 @@ Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Plano de execução em
 | --- | --- |
 | `packages/core` | Schema do Timeline State (zod), operações de edição, mapeamento de tempo/transcrição, detecção de silêncio, tabela de créditos e planos, contexto compacto para o agente. Sem dependência de DOM. |
 | `packages/renderer` | `renderFrame` (compositor Canvas 2D), legendas e a biblioteca de componentes de motion design paramétricos. |
-| `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs, contas, painel de administração (`/admin`) e as rotas `/api/agent`, `/api/transcribe`, `/api/auth/*` e `/api/admin/*`. |
-| `apps/web/src/server` | Camada de servidor: banco SQLite (`node:sqlite`), sessões, ledger de créditos, custo de IA, configurações cifradas e modelos de edição. |
+| `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs, contas, painel de administração (`/admin`) e planos e créditos (`/planos`) e as rotas `/api/agent`, `/api/transcribe`, `/api/auth/*`, `/api/billing/*`, `/api/stripe/webhook` e `/api/admin/*`. |
+| `apps/web/src/server` | Camada de servidor: banco Postgres (migrações em `schema.ts`), sessões, recuperação de senha, limite de requisições, ledger de créditos, cobrança pelo Stripe, custo de IA, configurações cifradas e modelos de edição. |
 
 ## Rodando
 
-Requer Node 22+ e pnpm 10+.
+Requer Node 22+, pnpm 10+ e um Postgres 14+ (o `docker-compose.yml` sobe um local).
+
+```bash
+docker compose up -d
+```
 
 ```bash
 pnpm install
@@ -60,7 +64,20 @@ Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenv
 | --- | --- |
 | `ADMIN_EMAILS` | E-mails que viram admin (em produção, a única forma) |
 | `APP_SECRET` | Cifra das chaves de API salvas pelo painel |
-| `DATA_DIR` | Pasta do banco SQLite (padrão `apps/web/.data`) |
+| `DATABASE_URL` | Conexão com o Postgres (obrigatória). As tabelas são criadas na primeira requisição. |
+| `DATABASE_POOL_MAX` | Conexões por instância (padrão 10) |
+| `APP_URL` | Endereço público, para links de e-mail e retornos do Stripe (obrigatória em produção) |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Envio do e-mail de recuperação de senha. Sem elas, em desenvolvimento o link sai no terminal |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP` | Cobrança. Sem elas, `/planos` mostra os planos como "em breve" |
+
+### Configurando o Stripe
+
+1. Crie três preços em BRL: dois recorrentes mensais (Creator R$ 127, Pro R$ 347) e um avulso (pacote de 500 créditos, R$ 79). Copie os ids `price_…` para as variáveis acima (ou para o painel `/admin`).
+2. Crie um endpoint de webhook para `{APP_URL}/api/stripe/webhook` com os eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`. Copie o segredo `whsec_…`.
+3. Ative o Portal do Cliente com os dois planos como produtos permitidos para troca. Para o upgrade liberar os créditos do plano maior na hora, configure a troca para cobrar a diferença imediatamente.
+4. Os meios de pagamento (cartão, Pix no pacote avulso, boleto) são os habilitados no Dashboard.
+
+Em desenvolvimento: `stripe listen --forward-to localhost:3000/api/stripe/webhook`.
 
 Sem nenhuma chave já funcionam: upload, preview, edição manual na timeline, remoção de silêncios (análise de áudio local), zooms, componentes de motion e exportação MP4 no navegador.
 
@@ -76,6 +93,8 @@ pnpm typecheck
 
 Funciona e foi verificado de ponta a ponta em Chromium: upload → remoção local de silêncios → split/corte de trecho/undo → componentes e zoom → reprodução através dos cortes → persistência após recarregar → legendas → exportação H.264 no navegador.
 
-Implementado mas **ainda não exercitado contra as APIs reais** (faltavam chaves no ambiente de desenvolvimento): o loop do agente em `/api/agent` e a transcrição em `/api/transcribe`.
+Contas, limite de requisições, recuperação de senha, renovação mensal e os webhooks de cobrança foram verificados contra um Postgres 16 real, com a API do Stripe simulada (eventos assinados, repetidos e fora de ordem).
 
-Ainda não existe: contas/autenticação, cobrança, armazenamento em nuvem, render em nuvem. A carteira de créditos exibida é local e serve só para demonstrar o fluxo. Ver o roadmap.
+Implementado mas **ainda não exercitado contra as APIs reais** (faltavam chaves no ambiente de desenvolvimento): o loop do agente em `/api/agent`, a transcrição em `/api/transcribe`, o Checkout/Portal do Stripe e o envio de e-mail pelo Resend.
+
+Ainda não existe: projetos e armazenamento em nuvem, render em nuvem. Ver o roadmap.

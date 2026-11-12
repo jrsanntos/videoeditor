@@ -85,10 +85,10 @@ export async function POST(req: Request) {
     if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
     const { project, selection, message, history } = parsed.data;
     // Mínimo para começar; cenas de motion são conferidas antes de cada inserção.
-    assertCredits(user.id, PRICING.agentEdit);
-    const client = anthropicClient();
-    const model = agentModel();
-    const available = balance(user.id);
+    await assertCredits(user.id, PRICING.agentEdit);
+    const client = await anthropicClient();
+    const model = await agentModel();
+    const available = await balance(user.id);
 
     let working = project;
     const log: string[] = [];
@@ -103,9 +103,9 @@ export async function POST(req: Request) {
       },
     ];
 
-    const finish = (finalText: string) => {
+    const finish = async (finalText: string) => {
       const credits = log.length ? creditCost({ type: "agent", motionScenes }) : 0;
-      recordUsage({
+      await recordUsage({
         userId: user.id,
         kind: "agent",
         provider: "anthropic",
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
         credits,
       });
       // Só cobra quando a timeline realmente mudou.
-      const newBalance = credits ? charge(user.id, credits, "pedido ao agente") : available;
+      const newBalance = credits ? await charge(user.id, credits, "pedido ao agente") : available;
       return Response.json({
         message: finalText || (log.length ? "Edição aplicada." : "Não fiz alterações."),
         project: working,
@@ -218,7 +218,7 @@ export async function POST(req: Request) {
     } catch (e) {
       // Tokens já gastos antes da falha também são despesa.
       if (usage.input || usage.output)
-        recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits: 0 });
+        await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits: 0 });
       throw anthropicError(e) ?? e;
     }
   } catch (e) {

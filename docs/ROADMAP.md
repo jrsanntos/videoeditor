@@ -34,16 +34,20 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 
 ## Fase 3 — SaaS
 
-- [x] Autenticação (e-mail e senha, sessão httpOnly) e banco no servidor (SQLite embutido, camada isolada para migrar a Postgres)
+- [x] Autenticação (e-mail e senha, sessão httpOnly) e banco no servidor (Postgres, com migrações versionadas)
 - [x] Ledger de créditos no servidor, custo real de IA por chamada
 - [x] Painel de administração: usuários (créditos, plano, papel, banimento), financeiro (receitas, despesas, custo de IA), chaves de API cifradas, auditoria
 - [x] Modelos de edição extraídos de vídeos de exemplo e reaplicáveis por todos os usuários
 - [ ] Projetos na nuvem (JSON da edição no banco; storage S3-compatível para brutos)
-- [ ] Renovação mensal automática dos créditos do plano; top-ups; Stripe + Pix (hoje receitas são lançadas à mão)
-- [ ] Recuperação de senha e verificação de e-mail
+- [x] Cobrança automática pelo Stripe: assinaturas Creator/Pro, pacote avulso de créditos, Portal do Cliente, receitas lançadas pelo webhook
+- [x] Renovação mensal dos créditos do plano (pela fatura paga para assinantes; sob demanda para o Free), sem acúmulo; créditos extras preservados
+- [x] Recuperação de senha por e-mail
+- [x] Limite de requisições no login, no cadastro e na recuperação de senha
+- [ ] Verificação de e-mail no cadastro
+- [ ] Estorno e contestação no Stripe (hoje não removem créditos); validade de 90 dias dos pacotes avulsos
 - [ ] Travas do plano Free: 3 min de upload, marca d'água, 720p
 - [ ] Storage lifecycle: exclusão automática dos brutos após 15/30 dias de inatividade, mantendo o JSON; armazenamento prolongado como add-on
-- [ ] Rate limiting e teto de gasto de IA por usuário
+- [ ] Limite de requisições nas rotas de IA e teto de gasto de IA por usuário
 - [ ] Telemetria de custo real por operação para calibrar a tabela de créditos
 
 ## Fase 4 — Monetização de precisão

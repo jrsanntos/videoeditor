@@ -1,25 +1,96 @@
 import "server-only";
-import { db, now, tx } from "./db";
-import { HttpError } from "./users";
+import { nextRenewal, PLANS, renewedPlanCredits, splitDebit, type CreditBucket, type PlanId } from "@videoeditor/core";
+import { db, tx } from "./db";
+import { HttpError } from "./errors";
 import { getSetting } from "./settings";
 
-/** Saldo = soma do ledger. */
-export function balance(userId: string): number {
-  const row = db().prepare("SELECT COALESCE(SUM(delta), 0) AS total FROM credit_ledger WHERE user_id = ?").get(userId) as {
-    total: number;
-  };
-  return Number(row.total);
+/**
+ * Créditos. O ledger (credit_ledger) é o registro contábil e nunca é
+ * sobrescrito; users.credits_plan/credits_extra são o saldo materializado,
+ * sempre alterado na mesma transação que a linha do ledger.
+ */
+
+type Balances = { plan: PlanId; credits_plan: number; credits_extra: number; credits_renew_at: string };
+
+/** Lê a conta com bloqueio de linha: débitos e renovações concorrentes entram em fila. */
+async function lockUser(userId: string): Promise<Balances> {
+  const row = await db.one<Balances>(
+    "SELECT plan, credits_plan, credits_extra, credits_renew_at FROM users WHERE id = $1 FOR UPDATE",
+    [userId],
+  );
+  if (!row) throw new HttpError(404, "Usuário não encontrado.");
+  return row;
 }
 
-export function addCredits(userId: string, delta: number, reason: string, actorId?: string) {
-  db()
-    .prepare("INSERT INTO credit_ledger (user_id, delta, reason, actor_id, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(userId, Math.trunc(delta), reason, actorId ?? null, now());
+async function ledger(userId: string, delta: number, bucket: CreditBucket, reason: string, actorId?: string | null, ref?: string | null) {
+  if (delta === 0) return;
+  await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason, actor_id, ref) VALUES ($1, $2, $3, $4, $5, $6)", [
+    userId,
+    delta,
+    bucket,
+    reason,
+    actorId ?? null,
+    ref ?? null,
+  ]);
+}
+
+export async function balance(userId: string): Promise<number> {
+  const row = await db.one<{ total: number }>("SELECT credits_plan + credits_extra AS total FROM users WHERE id = $1", [userId]);
+  return row?.total ?? 0;
+}
+
+/**
+ * Soma créditos a um dos saldos. Com `ref`, é idempotente: a segunda chamada
+ * com a mesma referência não credita nada e devolve false.
+ */
+export async function grantCredits(
+  userId: string,
+  amount: number,
+  bucket: CreditBucket,
+  reason: string,
+  opts: { actorId?: string; ref?: string } = {},
+): Promise<boolean> {
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error("grantCredits: quantidade inválida");
+  return tx(async () => {
+    const inserted = await db.run(
+      `INSERT INTO credit_ledger (user_id, delta, bucket, reason, actor_id, ref) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (ref) WHERE ref IS NOT NULL DO NOTHING`,
+      [userId, amount, bucket, reason, opts.actorId ?? null, opts.ref ?? null],
+    );
+    if (!inserted) return false;
+    await db.run(`UPDATE users SET ${bucket === "plan" ? "credits_plan = credits_plan" : "credits_extra = credits_extra"} + $2 WHERE id = $1`, [
+      userId,
+      amount,
+    ]);
+    return true;
+  });
+}
+
+/** Debita `amount` (plano primeiro, depois extra) e devolve o novo saldo total. */
+async function debit(userId: string, amount: number, reason: string, actorId?: string): Promise<number> {
+  return tx(async () => {
+    const u = await lockUser(userId);
+    const part = splitDebit(u.credits_plan, u.credits_extra, amount);
+    await ledger(userId, -part.plan, "plan", reason, actorId);
+    await ledger(userId, -part.extra, "extra", reason, actorId);
+    await db.run("UPDATE users SET credits_plan = credits_plan - $2, credits_extra = credits_extra - $3 WHERE id = $1", [
+      userId,
+      part.plan,
+      part.extra,
+    ]);
+    return u.credits_plan + u.credits_extra - amount;
+  });
+}
+
+/** Ajuste manual pelo painel: positivo entra como crédito extra; negativo é debitado como um consumo. */
+export async function adjustCredits(userId: string, delta: number, reason: string, actorId: string) {
+  if (delta > 0) await grantCredits(userId, delta, "extra", reason, { actorId });
+  else if (delta < 0) await debit(userId, -delta, reason, actorId);
 }
 
 /** Falha cedo, antes de gastar com provedores, se o saldo não cobre a ação. */
-export function assertCredits(userId: string, needed: number) {
-  const have = balance(userId);
+export async function assertCredits(userId: string, needed: number) {
+  const have = await balance(userId);
   if (have < needed)
     throw new HttpError(402, `Créditos insuficientes: esta ação custa ${needed} e você tem ${have}.`);
 }
@@ -29,10 +100,62 @@ export function assertCredits(userId: string, needed: number) {
  * a checagem é feita antes com assertCredits; numa corrida rara o saldo pode
  * ficar negativo e bloqueia a próxima ação.
  */
-export function charge(userId: string, amount: number, reason: string): number {
-  return tx(() => {
-    if (amount > 0) addCredits(userId, -amount, reason);
-    return balance(userId);
+export async function charge(userId: string, amount: number, reason: string): Promise<number> {
+  return amount > 0 ? debit(userId, amount, reason) : balance(userId);
+}
+
+/**
+ * Renovação: o saldo do plano volta ao valor mensal de `plan` (o que sobrou do
+ * ciclo anterior expira; top-ups ficam intactos) e a próxima renovação é
+ * agendada para `renewAt`. Com `ref` (fatura do Stripe) é idempotente.
+ */
+export async function resetPlanCredits(
+  userId: string,
+  plan: PlanId,
+  renewAt: Date,
+  opts: { ref?: string; actorId?: string } = {},
+): Promise<boolean> {
+  return tx(async () => {
+    const u = await lockUser(userId);
+    if (opts.ref && (await db.one("SELECT 1 FROM credit_ledger WHERE ref = $1", [opts.ref]))) return false;
+    const monthly = PLANS[plan].monthlyCredits;
+    const next = renewedPlanCredits(u.credits_plan, monthly);
+    const expired = Math.max(u.credits_plan, 0);
+    const reason = `renovação do plano ${PLANS[plan].name}: ${monthly} créditos${expired ? ` (${expired} não usados expiraram)` : ""}`;
+    // delta 0 (saldo já cheio) ainda precisa da linha quando há ref, para marcar a fatura como processada.
+    if (next !== u.credits_plan || opts.ref)
+      await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason, actor_id, ref) VALUES ($1, $2, 'plan', $3, $4, $5)", [
+        userId,
+        next - u.credits_plan,
+        reason,
+        opts.actorId ?? null,
+        opts.ref ?? null,
+      ]);
+    await db.run("UPDATE users SET credits_plan = $2, credits_cycle_grant = $3, credits_renew_at = $4 WHERE id = $1", [
+      userId,
+      next,
+      monthly,
+      renewAt.toISOString(),
+    ]);
+    return true;
+  });
+}
+
+/**
+ * Renovação mensal de quem não tem assinatura no Stripe (plano Free e planos
+ * definidos à mão pelo admin). É feita sob demanda, quando a conta é usada
+ * depois do vencimento — sem cron. Assinantes renovam pela fatura paga (webhook).
+ */
+export async function renewIfDue(userId: string): Promise<boolean> {
+  return tx(async () => {
+    // Revalida sob bloqueio: duas requisições simultâneas renovam uma vez só.
+    const u = await db.one<Balances>(
+      `SELECT plan, credits_plan, credits_extra, credits_renew_at FROM users
+       WHERE id = $1 AND stripe_subscription_id IS NULL AND credits_renew_at <= now() FOR UPDATE`,
+      [userId],
+    );
+    if (!u) return false;
+    return resetPlanCredits(userId, u.plan, nextRenewal(new Date(u.credits_renew_at), new Date()));
   });
 }
 
@@ -59,7 +182,7 @@ export function anthropicCostUSD(model: string, u: TokenUsage): number {
 
 export const groqCostUSD = (audioSeconds: number) => audioSeconds * GROQ_USD_PER_SECOND;
 
-export function recordUsage(e: {
+export async function recordUsage(e: {
   userId: string | null;
   kind: "agent" | "transcribe" | "template_extract";
   provider: "anthropic" | "groq";
@@ -69,12 +192,10 @@ export function recordUsage(e: {
   costUSD: number;
   credits: number;
 }) {
-  db()
-    .prepare(
-      `INSERT INTO usage_events (user_id, kind, provider, model, input_tokens, output_tokens, cache_read_tokens,
-        cache_write_tokens, audio_seconds, cost_usd, credits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  await db.run(
+    `INSERT INTO usage_events (user_id, kind, provider, model, input_tokens, output_tokens, cache_read_tokens,
+      cache_write_tokens, audio_seconds, cost_usd, credits) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [
       e.userId,
       e.kind,
       e.provider,
@@ -86,12 +207,12 @@ export function recordUsage(e: {
       e.audioSeconds ?? 0,
       e.costUSD,
       e.credits,
-      now(),
-    );
+    ],
+  );
 }
 
 /** Cotação usada para converter o custo dos provedores (US$) em R$. Editável no painel. */
-export function usdToBrl(): number {
-  const v = Number(getSetting("USD_BRL"));
+export async function usdToBrl(): Promise<number> {
+  const v = Number(await getSetting("USD_BRL"));
   return Number.isFinite(v) && v > 0 ? v : 5.4;
 }

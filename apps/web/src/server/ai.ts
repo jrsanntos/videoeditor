@@ -2,16 +2,16 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Transcript } from "@videoeditor/core";
 import { getSetting } from "./settings";
-import { HttpError } from "./users";
+import { HttpError } from "./errors";
 
 /** Limite do endpoint de transcrição por arquivo. 16 kHz mono WAV ≈ 1,9 MB/min → ~13 min. */
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
-export const agentModel = () => getSetting("AGENT_MODEL") || "claude-sonnet-5-5";
+export const agentModel = async () => (await getSetting("AGENT_MODEL")) || "claude-sonnet-5-5";
 
 /** Cliente Anthropic com a chave do painel (ou do ambiente). */
-export function anthropicClient(): Anthropic {
-  const apiKey = getSetting("ANTHROPIC_API_KEY");
+export async function anthropicClient(): Promise<Anthropic> {
+  const apiKey = await getSetting("ANTHROPIC_API_KEY");
   if (!apiKey)
     throw new HttpError(
       503,
@@ -43,7 +43,7 @@ type GroqVerbose = {
 
 /** Transcrição com timestamps por palavra via Groq Whisper. */
 export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcript; seconds: number }> {
-  const key = getSetting("GROQ_API_KEY");
+  const key = await getSetting("GROQ_API_KEY");
   if (!key)
     throw new HttpError(
       503,

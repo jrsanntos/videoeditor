@@ -101,3 +101,43 @@ export const PLANS: Record<
 };
 
 export const TOPUPS = [{ credits: 500, priceBRL: 79, expiresInDays: 90 }] as const;
+
+/**
+ * Dois saldos por conta:
+ * - "plan": créditos do plano; não acumulam — a cada renovação mensal voltam ao valor do plano.
+ * - "extra": top-ups e créditos concedidos; sobrevivem às renovações.
+ * O consumo sai primeiro do saldo do plano (que expira antes) e depois do extra.
+ */
+export type CreditBucket = "plan" | "extra";
+
+/**
+ * Divide um débito entre os dois saldos. Se nenhum cobre (corrida rara entre
+ * checagem e cobrança), o resto vai para o saldo do plano, que fica negativo.
+ */
+export function splitDebit(plan: number, extra: number, amount: number): { plan: number; extra: number } {
+  const fromPlan = Math.min(Math.max(plan, 0), amount);
+  const fromExtra = Math.min(Math.max(extra, 0), amount - fromPlan);
+  return { plan: amount - fromExtra, extra: fromExtra };
+}
+
+/** Saldo do plano após a renovação: volta ao valor mensal; dívida (saldo negativo) é descontada. */
+export function renewedPlanCredits(current: number, monthly: number): number {
+  return monthly + Math.min(current, 0);
+}
+
+function addMonthsUTC(d: Date, months: number): Date {
+  const r = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()));
+  const lastDay = new Date(Date.UTC(r.getUTCFullYear(), r.getUTCMonth() + 1, 0)).getUTCDate();
+  r.setUTCDate(Math.min(d.getUTCDate(), lastDay));
+  return r;
+}
+
+/**
+ * Próxima renovação depois de `now`, mantendo o dia do mês de `anchor`
+ * (31 vira o último dia nos meses curtos). Meses perdidos não acumulam.
+ */
+export function nextRenewal(anchor: Date, now: Date): Date {
+  const months = Math.max(1, (now.getUTCFullYear() - anchor.getUTCFullYear()) * 12 + now.getUTCMonth() - anchor.getUTCMonth());
+  const next = addMonthsUTC(anchor, months);
+  return next > now ? next : addMonthsUTC(anchor, months + 1);
+}

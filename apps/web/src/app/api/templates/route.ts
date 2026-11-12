@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     await requireUser();
-    return Response.json({ templates: listTemplates({ publishedOnly: true }) });
+    return Response.json({ templates: await listTemplates({ publishedOnly: true }) });
   } catch (e) {
     return errorResponse(e);
   }

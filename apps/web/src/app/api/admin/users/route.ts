@@ -9,7 +9,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const filter = url.searchParams.get("filter");
     return Response.json(
-      listUsers({
+      await listUsers({
         q: url.searchParams.get("q")?.trim() || undefined,
         filter: filter === "banned" || filter === "admins" ? filter : "all",
         limit: Math.min(200, Number(url.searchParams.get("limit")) || 50),

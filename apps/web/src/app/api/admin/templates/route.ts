@@ -10,7 +10,7 @@ const MAX_FRAMES = 16;
 export async function GET() {
   try {
     await requireAdmin();
-    return Response.json({ templates: listTemplates() });
+    return Response.json({ templates: await listTemplates() });
   } catch (e) {
     return errorResponse(e);
   }
@@ -54,7 +54,7 @@ export async function POST(req: Request) {
       },
       admin.id,
     );
-    logAdmin(admin.id, "extract_template", template.id, { source: meta.data.name });
+    await logAdmin(admin.id, "extract_template", template.id, { source: meta.data.name });
     return Response.json({ template });
   } catch (e) {
     return errorResponse(e);

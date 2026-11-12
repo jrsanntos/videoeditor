@@ -11,6 +11,9 @@ import {
   shiftTimedParams,
   createProject,
   creditCost,
+  nextRenewal,
+  renewedPlanCredits,
+  splitDebit,
   getTrack,
   mainClips,
   OperationError,
@@ -201,6 +204,30 @@ describe("agente e créditos", () => {
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
     expect(creditCost({ type: "browser_export" })).toBe(0);
+  });
+
+  it("débito consome o saldo do plano antes do extra", () => {
+    expect(splitDebit(30, 500, 10)).toEqual({ plan: 10, extra: 0 });
+    expect(splitDebit(4, 500, 10)).toEqual({ plan: 4, extra: 6 });
+    expect(splitDebit(0, 500, 10)).toEqual({ plan: 0, extra: 10 });
+    // Nenhum saldo cobre: o resto fica como dívida no saldo do plano.
+    expect(splitDebit(3, 2, 10)).toEqual({ plan: 8, extra: 2 });
+    expect(splitDebit(-5, 0, 10)).toEqual({ plan: 10, extra: 0 });
+  });
+
+  it("renovação repõe o saldo do plano sem acumular e desconta dívida", () => {
+    expect(renewedPlanCredits(120, 1000)).toBe(1000);
+    expect(renewedPlanCredits(0, 30)).toBe(30);
+    expect(renewedPlanCredits(-8, 30)).toBe(22);
+  });
+
+  it("próxima renovação mantém o dia do mês e não acumula meses perdidos", () => {
+    const iso = (a: string, n: string) => nextRenewal(new Date(a), new Date(n)).toISOString();
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-01-15T10:00:00.000Z")).toBe("2026-02-15T10:00:00.000Z");
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-02-20T00:00:00.000Z")).toBe("2026-03-15T10:00:00.000Z");
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-06-14T00:00:00.000Z")).toBe("2026-06-15T10:00:00.000Z");
+    expect(iso("2026-01-31T10:00:00.000Z", "2026-02-01T00:00:00.000Z")).toBe("2026-02-28T10:00:00.000Z");
+    expect(iso("2026-11-30T10:00:00.000Z", "2026-12-31T00:00:00.000Z")).toBe("2027-01-30T10:00:00.000Z");
   });
 });
 

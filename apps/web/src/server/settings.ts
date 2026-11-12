@@ -1,5 +1,5 @@
 import "server-only";
-import { db, now } from "./db";
+import { db } from "./db";
 import { decrypt, encrypt } from "./crypto";
 
 /**
@@ -15,20 +15,21 @@ export const SETTINGS = {
   GROQ_API_KEY: { label: "Groq (transcrição)", secret: true, env: ["GROQ_API_KEY"] },
   AGENT_MODEL: { label: "Modelo do agente", secret: false, env: ["AGENT_MODEL"] },
   USD_BRL: { label: "Cotação US$ → R$ (para despesas)", secret: false, env: [] as string[] },
+  STRIPE_SECRET_KEY: { label: "Stripe: chave secreta (sk_…)", secret: true, env: ["STRIPE_SECRET_KEY"] },
+  STRIPE_WEBHOOK_SECRET: { label: "Stripe: segredo do webhook (whsec_…)", secret: true, env: ["STRIPE_WEBHOOK_SECRET"] },
+  STRIPE_PRICE_CREATOR: { label: "Stripe: preço mensal do plano Creator (price_…)", secret: false, env: ["STRIPE_PRICE_CREATOR"] },
+  STRIPE_PRICE_PRO: { label: "Stripe: preço mensal do plano Pro (price_…)", secret: false, env: ["STRIPE_PRICE_PRO"] },
+  STRIPE_PRICE_TOPUP: { label: "Stripe: preço avulso do pacote de créditos (price_…)", secret: false, env: ["STRIPE_PRICE_TOPUP"] },
+  RESEND_API_KEY: { label: "Resend (envio de e-mails)", secret: true, env: ["RESEND_API_KEY"] },
+  EMAIL_FROM: { label: "Remetente dos e-mails", secret: false, env: ["EMAIL_FROM"] },
 } as const;
 export type SettingKey = keyof typeof SETTINGS;
 
 export const isSettingKey = (k: string): k is SettingKey => k in SETTINGS;
 
-type Row = { value: string; encrypted: number; updated_at: string };
+type Row = { key: SettingKey; value: string; encrypted: boolean; updated_at: string };
 
-function readRow(key: SettingKey): Row | undefined {
-  return db().prepare("SELECT value, encrypted, updated_at FROM settings WHERE key = ?").get(key) as Row | undefined;
-}
-
-/** Valor efetivo: banco primeiro, depois as variáveis de ambiente. */
-export function getSetting(key: SettingKey): string | undefined {
-  const row = readRow(key);
+function effective(key: SettingKey, row: Row | undefined): string | undefined {
   if (row) {
     try {
       return row.encrypted ? decrypt(row.value) : row.value;
@@ -40,27 +41,41 @@ export function getSetting(key: SettingKey): string | undefined {
   return undefined;
 }
 
-export function setSetting(key: SettingKey, value: string | null, actorId: string) {
+/** Valor efetivo: banco primeiro, depois as variáveis de ambiente. */
+export async function getSetting(key: SettingKey): Promise<string | undefined> {
+  const row = await db.one<Row>("SELECT key, value, encrypted, updated_at FROM settings WHERE key = $1", [key]);
+  return effective(key, row);
+}
+
+/** Várias configurações numa única ida ao banco. */
+export async function getSettings<K extends SettingKey>(keys: readonly K[]): Promise<Record<K, string | undefined>> {
+  const rows = await db.query<Row>("SELECT key, value, encrypted, updated_at FROM settings WHERE key = ANY($1)", [keys]);
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  return Object.fromEntries(keys.map((k) => [k, effective(k, byKey.get(k))])) as Record<K, string | undefined>;
+}
+
+export async function setSetting(key: SettingKey, value: string | null, actorId: string) {
   if (value === null || value.trim() === "") {
-    db().prepare("DELETE FROM settings WHERE key = ?").run(key);
+    await db.run("DELETE FROM settings WHERE key = $1", [key]);
     return;
   }
   const secret = SETTINGS[key].secret;
-  db()
-    .prepare(
-      `INSERT INTO settings (key, value, encrypted, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, encrypted = excluded.encrypted,
+  await db.run(
+    `INSERT INTO settings (key, value, encrypted, updated_by, updated_at) VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, encrypted = excluded.encrypted,
        updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-    )
-    .run(key, secret ? encrypt(value.trim()) : value.trim(), secret ? 1 : 0, actorId, now());
+    [key, secret ? encrypt(value.trim()) : value.trim(), secret, actorId],
+  );
 }
 
 /** Visão para o painel: nunca devolve o segredo, só os 4 últimos caracteres. */
-export function describeSettings() {
+export async function describeSettings() {
+  const rows = await db.query<Row>("SELECT key, value, encrypted, updated_at FROM settings");
+  const byKey = new Map(rows.map((r) => [r.key, r]));
   return (Object.keys(SETTINGS) as SettingKey[]).map((key) => {
     const def = SETTINGS[key];
-    const row = readRow(key);
-    const value = getSetting(key);
+    const row = byKey.get(key);
+    const value = effective(key, row);
     const source = row ? "painel" : value ? "ambiente" : "não definida";
     return {
       key,

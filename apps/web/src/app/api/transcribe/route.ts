@@ -19,11 +19,11 @@ export async function POST(req: Request) {
     if (!(file instanceof Blob)) throw new HttpError(400, "Áudio ausente.");
     if (!Number.isFinite(duration) || duration <= 0) throw new HttpError(400, "Duração do vídeo ausente.");
     // A duração informada só serve para a checagem prévia; a cobrança usa a medida pelo provedor.
-    assertCredits(user.id, creditCost({ type: "ingest", durationSec: duration }));
+    await assertCredits(user.id, creditCost({ type: "ingest", durationSec: duration }));
 
     const { transcript, seconds } = await transcribeAudio(file);
     const credits = creditCost({ type: "ingest", durationSec: seconds });
-    recordUsage({
+    await recordUsage({
       userId: user.id,
       kind: "transcribe",
       provider: "groq",
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
       costUSD: groqCostUSD(seconds),
       credits,
     });
-    const balance = charge(user.id, credits, `transcrição (${Math.round(seconds)}s)`);
+    const balance = await charge(user.id, credits, `transcrição (${Math.round(seconds)}s)`);
     return Response.json({ transcript, credits, balance });
   } catch (e) {
     return errorResponse(e);

@@ -5,10 +5,10 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { EditTemplateSchema, type EditTemplate, type Transcript } from "@videoeditor/core";
 import { catalogForAgent, COMPONENTS } from "@videoeditor/renderer";
-import { db, now } from "./db";
+import { db } from "./db";
 import { agentModel, anthropicClient, anthropicError, transcribeAudio } from "./ai";
 import { anthropicCostUSD, groqCostUSD, recordUsage } from "./billing";
-import { HttpError } from "./users";
+import { HttpError } from "./errors";
 
 export type TemplateRecord = {
   id: string;
@@ -24,7 +24,7 @@ export type TemplateRecord = {
 type Row = {
   id: string;
   status: "draft" | "published";
-  data: string;
+  data: EditTemplate;
   source_name: string;
   source_duration: number;
   thumbnail: string | null;
@@ -35,7 +35,7 @@ type Row = {
 const toRecord = (r: Row): TemplateRecord => ({
   id: r.id,
   status: r.status,
-  data: JSON.parse(r.data) as EditTemplate,
+  data: r.data,
   sourceName: r.source_name,
   sourceDuration: r.source_duration,
   thumbnail: r.thumbnail,
@@ -43,32 +43,32 @@ const toRecord = (r: Row): TemplateRecord => ({
   updatedAt: r.updated_at,
 });
 
-export function listTemplates(opts: { publishedOnly?: boolean } = {}): TemplateRecord[] {
-  const rows = db()
-    .prepare(
-      `SELECT * FROM templates ${opts.publishedOnly ? "WHERE status = 'published'" : ""} ORDER BY updated_at DESC`,
-    )
-    .all() as Row[];
+export async function listTemplates(opts: { publishedOnly?: boolean } = {}): Promise<TemplateRecord[]> {
+  const rows = await db.query<Row>(
+    `SELECT * FROM templates ${opts.publishedOnly ? "WHERE status = 'published'" : ""} ORDER BY updated_at DESC`,
+  );
   return rows.map(toRecord);
 }
 
-export function getTemplate(id: string): TemplateRecord | null {
-  const row = db().prepare("SELECT * FROM templates WHERE id = ?").get(id) as Row | undefined;
+export async function getTemplate(id: string): Promise<TemplateRecord | null> {
+  const row = await db.one<Row>("SELECT * FROM templates WHERE id = $1", [id]);
   return row ? toRecord(row) : null;
 }
 
-export function updateTemplate(id: string, patch: { status?: "draft" | "published"; data?: EditTemplate }) {
-  const current = getTemplate(id);
+export async function updateTemplate(id: string, patch: { status?: "draft" | "published"; data?: EditTemplate }) {
+  const current = await getTemplate(id);
   if (!current) throw new HttpError(404, "Modelo não encontrado.");
   const data = patch.data ? EditTemplateSchema.parse(sanitize(patch.data)) : current.data;
-  db()
-    .prepare("UPDATE templates SET status = ?, data = ?, updated_at = ? WHERE id = ?")
-    .run(patch.status ?? current.status, JSON.stringify(data), now(), id);
-  return getTemplate(id)!;
+  await db.run("UPDATE templates SET status = $2, data = $3, updated_at = now() WHERE id = $1", [
+    id,
+    patch.status ?? current.status,
+    JSON.stringify(data),
+  ]);
+  return (await getTemplate(id))!;
 }
 
-export function deleteTemplate(id: string) {
-  db().prepare("DELETE FROM templates WHERE id = ?").run(id);
+export async function deleteTemplate(id: string) {
+  await db.run("DELETE FROM templates WHERE id = $1", [id]);
 }
 
 /** Remove componentes que não existem no catálogo (o modelo nunca pode quebrar o editor). */
@@ -149,13 +149,13 @@ export type ExtractionInput = {
 
 export async function extractTemplate(input: ExtractionInput, actorId: string): Promise<TemplateRecord> {
   if (!input.frames.length) throw new HttpError(400, "Nenhum quadro do vídeo foi enviado.");
-  const client = anthropicClient();
+  const client = await anthropicClient();
 
   let transcript: Transcript | null = null;
   try {
     const t = await transcribeAudio(input.audio);
     transcript = t.transcript;
-    recordUsage({
+    await recordUsage({
       userId: actorId,
       kind: "template_extract",
       provider: "groq",
@@ -189,7 +189,7 @@ export async function extractTemplate(input: ExtractionInput, actorId: string): 
       : "Transcrição: o vídeo não tem fala detectável.",
   });
 
-  const model = agentModel();
+  const model = await agentModel();
   let parsed: z.infer<typeof ExtractionSchema> | null;
   try {
     const response = await client.messages.parse({
@@ -206,7 +206,7 @@ export async function extractTemplate(input: ExtractionInput, actorId: string): 
       cacheRead: response.usage.cache_read_input_tokens ?? 0,
       cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
     };
-    recordUsage({
+    await recordUsage({
       userId: actorId,
       kind: "template_extract",
       provider: "anthropic",
@@ -226,12 +226,10 @@ export async function extractTemplate(input: ExtractionInput, actorId: string): 
   const mid = input.frames[Math.floor(input.frames.length / 2)]!;
   const thumbnail = `data:image/jpeg;base64,${Buffer.from(await mid.image.arrayBuffer()).toString("base64")}`;
   const id = `tpl_${crypto.randomUUID()}`;
-  const ts = now();
-  db()
-    .prepare(
-      `INSERT INTO templates (id, status, data, source_name, source_duration, thumbnail, created_by, created_at, updated_at)
-       VALUES (?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(id, JSON.stringify(data), input.sourceName, input.duration, thumbnail, actorId, ts, ts);
-  return getTemplate(id)!;
+  await db.run(
+    `INSERT INTO templates (id, status, data, source_name, source_duration, thumbnail, created_by)
+     VALUES ($1, 'draft', $2, $3, $4, $5, $6)`,
+    [id, JSON.stringify(data), input.sourceName, input.duration, thumbnail, actorId],
+  );
+  return (await getTemplate(id))!;
 }

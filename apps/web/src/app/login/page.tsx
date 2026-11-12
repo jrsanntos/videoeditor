@@ -6,7 +6,8 @@ export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Entrar — videoeditor" };
 
-export default async function LoginPage() {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ senha?: string }> }) {
   if (await currentUser()) redirect("/");
-  return <LoginForm />;
+  const { senha } = await searchParams;
+  return <LoginForm notice={senha === "redefinida" ? "Senha alterada. Entre com a nova senha." : undefined} />;
 }

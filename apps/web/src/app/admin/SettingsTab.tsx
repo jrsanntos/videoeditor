@@ -12,6 +12,12 @@ type Setting = {
   updatedAt: string | null;
 };
 
+const PLACEHOLDERS: Record<string, string> = {
+  AGENT_MODEL: "claude-sonnet-5-5",
+  USD_BRL: "5.40",
+  EMAIL_FROM: "videoeditor <nao-responda@seudominio.com>",
+};
+
 export function SettingsTab() {
   const { data, error, setData } = useApi<{ settings: Setting[] }>("/api/admin/settings");
   return (
@@ -70,7 +76,7 @@ function SettingRow({ setting, onSaved }: { setting: Setting; onSaved: (s: Setti
           className={`${input} min-w-0 flex-1 font-mono`}
           type={setting.secret ? "password" : "text"}
           autoComplete="off"
-          placeholder={setting.secret ? "Cole a nova chave" : setting.key === "AGENT_MODEL" ? "claude-sonnet-5-5" : "5.40"}
+          placeholder={setting.secret ? "Cole a nova chave" : (PLACEHOLDERS[setting.key] ?? "price_…")}
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />

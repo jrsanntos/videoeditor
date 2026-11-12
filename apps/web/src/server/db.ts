@@ -1,143 +1,131 @@
 import "server-only";
-import fs from "node:fs";
-import path from "node:path";
-import type { DatabaseSync as DB } from "node:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
+import pg from "pg";
+import { MIGRATIONS } from "./schema";
 
 /**
- * Banco do servidor: SQLite embutido no Node (node:sqlite), sem dependência
- * nativa. Um arquivo em DATA_DIR (padrão apps/web/.data). Todo acesso passa
- * pelos módulos de src/server, então trocar por Postgres depois é local.
+ * Banco do servidor: Postgres (DATABASE_URL). Todo acesso passa por `db`, que
+ * usa o pool ou, dentro de `tx`, a conexão da transação corrente — quem é
+ * chamado dentro de uma transação participa dela sem receber nada por parâmetro.
  */
 
-// Caminho de dados em runtime: fora do rastreamento de arquivos do bundler.
-export const DATA_DIR = path.resolve(/*turbopackIgnore: true*/ process.env.DATA_DIR || path.join(process.cwd(), ".data"));
+type Params = readonly unknown[];
+type Queryable = { query: (text: string, params?: unknown[]) => Promise<pg.QueryResult> };
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  email TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-  plan TEXT NOT NULL DEFAULT 'free',
-  banned_at TEXT,
-  ban_reason TEXT,
-  created_at TEXT NOT NULL,
-  last_seen_at TEXT
-);
+// bigint (COUNT/SUM de inteiros) e numeric viram number; timestamptz vira string ISO,
+// o formato que o resto da aplicação e a interface já usam.
+const NUMERIC_OIDS = new Set([pg.types.builtins.INT8, pg.types.builtins.NUMERIC]);
+const types: pg.CustomTypesConfig = {
+  getTypeParser: ((oid: number, format?: "text" | "binary") => {
+    if (format !== "binary") {
+      if (NUMERIC_OIDS.has(oid)) return Number;
+      if (oid === pg.types.builtins.TIMESTAMPTZ) {
+        const parse = pg.types.getTypeParser(oid) as (v: string) => Date;
+        return (v: string) => parse(v).toISOString();
+      }
+    }
+    return pg.types.getTypeParser(oid, format as "text");
+  }) as pg.CustomTypesConfig["getTypeParser"],
+};
 
-CREATE TABLE IF NOT EXISTS sessions (
-  token_hash TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+const g = globalThis as unknown as { __vePool?: pg.Pool; __veReady?: Promise<void> };
+const scope = new AsyncLocalStorage<pg.PoolClient>();
 
--- Ledger de créditos: o saldo é a soma; nada é sobrescrito.
-CREATE TABLE IF NOT EXISTS credit_ledger (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  delta INTEGER NOT NULL,
-  reason TEXT NOT NULL,
-  actor_id TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ledger_user ON credit_ledger(user_id);
-
--- Custo real de cada chamada de IA (despesa automática).
-CREATE TABLE IF NOT EXISTS usage_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-  kind TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  model TEXT,
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  audio_seconds REAL NOT NULL DEFAULT 0,
-  cost_usd REAL NOT NULL,
-  credits INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS usage_created ON usage_events(created_at);
-
-CREATE TABLE IF NOT EXISTS payments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-  amount_brl REAL NOT NULL,
-  description TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  actor_id TEXT,
-  paid_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS expenses (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  category TEXT NOT NULL,
-  description TEXT NOT NULL,
-  amount_brl REAL NOT NULL,
-  actor_id TEXT,
-  spent_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  encrypted INTEGER NOT NULL DEFAULT 0,
-  updated_by TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS templates (
-  id TEXT PRIMARY KEY,
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published')),
-  data TEXT NOT NULL,
-  source_name TEXT NOT NULL,
-  source_duration REAL NOT NULL,
-  thumbnail TEXT,
-  created_by TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS admin_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  actor_id TEXT NOT NULL,
-  action TEXT NOT NULL,
-  target TEXT,
-  detail TEXT,
-  created_at TEXT NOT NULL
-);
-`;
-
-const g = globalThis as unknown as { __veDb?: DB };
-
-export function db(): DB {
-  if (g.__veDb) return g.__veDb;
-  // getBuiltinModule evita que o bundler tente resolver node:sqlite.
-  const { DatabaseSync } = process.getBuiltinModule("node:sqlite") as typeof import("node:sqlite");
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  const conn = new DatabaseSync(path.join(DATA_DIR, "videoeditor.db"));
-  conn.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  conn.exec(SCHEMA);
-  g.__veDb = conn;
-  return conn;
+function pool(): pg.Pool {
+  if (g.__vePool) return g.__vePool;
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString)
+    throw new Error("DATABASE_URL não definida. Aponte para um Postgres (veja apps/web/.env.example e docker-compose.yml).");
+  const created = new pg.Pool({
+    connectionString,
+    types,
+    // Em serverless, use a URL do pooler do provedor (PgBouncer) e um máximo baixo por instância.
+    max: Number(process.env.DATABASE_POOL_MAX) || 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    query_timeout: 30_000,
+    application_name: "videoeditor-web",
+  });
+  // Erro numa conexão ociosa (queda do banco, failover) não pode derrubar o processo.
+  created.on("error", (e) => console.error("postgres: erro em conexão ociosa", e));
+  g.__vePool = created;
+  return created;
 }
 
-/** Executa `fn` numa transação (BEGIN IMMEDIATE evita corrida no débito de créditos). */
-export function tx<T>(fn: () => T): T {
-  const conn = db();
-  conn.exec("BEGIN IMMEDIATE");
+async function migrate() {
+  const client = await pool().connect();
   try {
-    const out = fn();
-    conn.exec("COMMIT");
+    await client.query("BEGIN");
+    // Várias instâncias subindo juntas: só uma aplica as migrações por vez.
+    await client.query("SELECT pg_advisory_xact_lock(727274001)");
+    await client.query(
+      "CREATE TABLE IF NOT EXISTS schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())",
+    );
+    const done = new Set((await client.query("SELECT id FROM schema_migrations")).rows.map((r: { id: string }) => r.id));
+    for (const m of MIGRATIONS) {
+      if (done.has(m.id)) continue;
+      await client.query(m.sql);
+      await client.query("INSERT INTO schema_migrations (id) VALUES ($1)", [m.id]);
+      console.log(`postgres: migração ${m.id} aplicada`);
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Garante o schema antes da primeira consulta do processo. Uma falha é tentada de novo na próxima chamada. */
+function ready(): Promise<void> {
+  g.__veReady ??= migrate().catch((e) => {
+    g.__veReady = undefined;
+    throw e;
+  });
+  return g.__veReady;
+}
+
+async function target(): Promise<Queryable> {
+  const client = scope.getStore();
+  if (client) return client;
+  await ready();
+  return pool();
+}
+
+export const db = {
+  /** Todas as linhas. */
+  async query<T = Record<string, unknown>>(text: string, params: Params = []): Promise<T[]> {
+    return (await (await target()).query(text, params as unknown[])).rows as T[];
+  },
+  /** Primeira linha, ou undefined. */
+  async one<T = Record<string, unknown>>(text: string, params: Params = []): Promise<T | undefined> {
+    return (await (await target()).query(text, params as unknown[])).rows[0] as T | undefined;
+  },
+  /** Número de linhas afetadas. */
+  async run(text: string, params: Params = []): Promise<number> {
+    return (await (await target()).query(text, params as unknown[])).rowCount ?? 0;
+  },
+};
+
+/** Executa `fn` numa transação. Chamadas aninhadas entram na transação já aberta. */
+export async function tx<T>(fn: () => Promise<T>): Promise<T> {
+  if (scope.getStore()) return fn();
+  await ready();
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    const out = await scope.run(client, fn);
+    await client.query("COMMIT");
+    client.release();
     return out;
   } catch (e) {
-    conn.exec("ROLLBACK");
+    // Conexão em estado duvidoso é descartada em vez de voltar ao pool.
+    const rolledBack = await client.query("ROLLBACK").then(
+      () => true,
+      () => false,
+    );
+    client.release(!rolledBack);
     throw e;
   }
 }

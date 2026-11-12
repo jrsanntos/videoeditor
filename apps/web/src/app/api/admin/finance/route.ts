@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { deleteFinanceEntry, financeSummary, recordExpense, recordPayment } from "@/server/admin";
-import { db } from "@/server/db";
-import { errorResponse, HttpError, logAdmin, normalizeEmail, requireAdmin } from "@/server/users";
+import { errorResponse, findUserIdByEmail, HttpError, logAdmin, requireAdmin } from "@/server/users";
 
 export const runtime = "nodejs";
 
@@ -18,7 +17,7 @@ export async function GET(req: Request) {
     // `to` é inclusivo para quem usa o painel.
     const end = new Date(`${to}T00:00:00Z`);
     end.setUTCDate(end.getUTCDate() + 1);
-    return Response.json({ from, to, ...financeSummary(`${from}T00:00:00.000Z`, end.toISOString()) });
+    return Response.json({ from, to, ...(await financeSummary(`${from}T00:00:00.000Z`, end.toISOString())) });
   } catch (e) {
     return errorResponse(e);
   }
@@ -51,15 +50,14 @@ export async function POST(req: Request) {
     if (e.kind === "payment") {
       let userId: string | null = null;
       if (e.userEmail?.trim()) {
-        const row = db().prepare("SELECT id FROM users WHERE email = ?").get(normalizeEmail(e.userEmail)) as { id: string } | undefined;
-        if (!row) throw new HttpError(404, "Nenhum usuário com este e-mail.");
-        userId = row.id;
+        userId = await findUserIdByEmail(e.userEmail);
+        if (!userId) throw new HttpError(404, "Nenhum usuário com este e-mail.");
       }
-      recordPayment(admin.id, { userId, amountBRL: e.amountBRL, description: e.description, paidAt: at });
+      await recordPayment(admin.id, { userId, amountBRL: e.amountBRL, description: e.description, paidAt: at });
     } else {
-      recordExpense(admin.id, { category: e.category, description: e.description, amountBRL: e.amountBRL, spentAt: at });
+      await recordExpense(admin.id, { category: e.category, description: e.description, amountBRL: e.amountBRL, spentAt: at });
     }
-    logAdmin(admin.id, `add_${e.kind}`, undefined, e);
+    await logAdmin(admin.id, `add_${e.kind}`, undefined, e);
     return Response.json({ ok: true });
   } catch (e) {
     return errorResponse(e);
@@ -73,7 +71,7 @@ export async function DELETE(req: Request) {
     const kind = url.searchParams.get("kind");
     const id = Number(url.searchParams.get("id"));
     if ((kind !== "payment" && kind !== "expense") || !Number.isInteger(id)) throw new HttpError(400, "Lançamento inválido.");
-    deleteFinanceEntry(admin.id, kind, id);
+    await deleteFinanceEntry(admin.id, kind, id);
     return Response.json({ ok: true });
   } catch (e) {
     return errorResponse(e);

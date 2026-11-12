@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     await requireAdmin();
-    return Response.json({ settings: describeSettings() });
+    return Response.json({ settings: await describeSettings() });
   } catch (e) {
     return errorResponse(e);
   }
@@ -22,10 +22,10 @@ export async function PUT(req: Request) {
     if (!parsed.success || !isSettingKey(parsed.data.key)) throw new HttpError(400, "Configuração inválida.");
     const { key, value } = parsed.data;
     if (key === "USD_BRL" && value !== null && !(Number(value) > 0)) throw new HttpError(400, "Cotação inválida.");
-    setSetting(key, value, admin.id);
+    await setSetting(key, value, admin.id);
     // Nunca registra o valor de um segredo no log.
-    logAdmin(admin.id, value ? "set_setting" : "clear_setting", key);
-    return Response.json({ settings: describeSettings() });
+    await logAdmin(admin.id, value ? "set_setting" : "clear_setting", key);
+    return Response.json({ settings: await describeSettings() });
   } catch (e) {
     return errorResponse(e);
   }

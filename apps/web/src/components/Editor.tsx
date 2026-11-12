@@ -140,9 +140,9 @@ function TopBar() {
         </button>
       </div>
       <div className="ml-auto flex items-center gap-3">
-        <span className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-300" title="Saldo de créditos da sua conta">
+        <a href="/planos" className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-600" title="Saldo de créditos da sua conta. Clique para ver planos e comprar créditos.">
           <b className="text-amber-300" data-testid="credits">{credits}</b> créditos
-        </span>
+        </a>
         <button
           className={btn}
           onClick={() => {
@@ -179,6 +179,9 @@ function UserMenu() {
             <div className="truncate text-xs text-zinc-500">{user.email}</div>
             <div className="mt-1 text-xs text-zinc-400">Plano {user.planName ?? user.plan}</div>
           </div>
+          <a href="/planos" className="block rounded-lg px-3 py-2 text-zinc-200 hover:bg-zinc-800">
+            Planos e créditos
+          </a>
           {user.role === "admin" && (
             <a href="/admin" className="block rounded-lg px-3 py-2 text-zinc-200 hover:bg-zinc-800">
               Painel de administração
