@@ -17,7 +17,7 @@ import {
 } from "mediabunny";
 import { mainClips, projectDuration, type Project } from "@videoeditor/core";
 import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
-import { loadBrandFonts } from "./fonts";
+import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
 import { scheduleSfx } from "./sfx";
@@ -66,7 +66,7 @@ export async function exportInBrowser(
   output.addVideoTrack(videoSource, { frameRate: fps });
 
   // Fontes do Brand Kit e, se algum título usa profundidade, o modelo de segmentação.
-  await loadBrandFonts(project.brand);
+  await loadProjectFonts(project);
   const depth = personIntervals(project);
   if (depth.length) await ensureSegmenter();
 
@@ -99,6 +99,8 @@ export async function exportInBrowser(
 
     const totalFrames = Math.max(1, Math.round(duration * fps));
     let frame = 0;
+    // Último quadro decodificado: se o primeiro quadro de um clip demorar, a emenda repete o anterior em vez de sair preta.
+    let last: FrameSource | null = null;
     for (const clip of clips) {
       const end = clip.start + clip.duration;
       const first = frame;
@@ -106,7 +108,6 @@ export async function exportInBrowser(
       for (let i = first; i < totalFrames && i / fps < end; i++)
         sourceTimes.push(clip.sourceStart + Math.max(0, i / fps - clip.start));
       const { sink } = inputs.get(clip.assetId)!;
-      let last: FrameSource | null = null;
       for await (const wrapped of sink.canvasesAtTimestamps(sourceTimes)) {
         if (signal?.aborted) throw new DOMException("Exportação cancelada", "AbortError");
         if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };

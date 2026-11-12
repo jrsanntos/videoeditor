@@ -14,6 +14,15 @@ export const WordSchema = z.object({
   text: z.string(),
   start: z.number(),
   end: z.number(),
+  /**
+   * Energia da voz nesta palavra, em dB relativos à mediana do apresentador
+   * (medida no navegador). Positivo = dita com mais força: ênfase real.
+   */
+  energy: z.number().optional(),
+  /** Some só da legenda; a fala e a transcrição continuam. */
+  hidden: z.boolean().optional(),
+  /** Deslocamento (s) da legenda desta palavra na timeline. */
+  shift: z.number().min(-5).max(5).optional(),
 });
 export type Word = z.infer<typeof WordSchema>;
 
@@ -33,6 +42,25 @@ export const AssetSchema = z.object({
   height: z.number().optional(),
   hasAudio: z.boolean().default(true),
   transcript: TranscriptSchema.optional(),
+  /**
+   * Onde o apresentador está no quadro de ORIGEM (frações 0–1), medido no
+   * navegador por segmentação em alguns quadros. É o que permite ao agente e
+   * ao compositor posicionar zooms e textos sem cobrir o rosto.
+   */
+  subject: z
+    .array(
+      z.object({
+        t: z.number(),
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+        /** Centro estimado do rosto. */
+        faceX: z.number(),
+        faceY: z.number(),
+      }),
+    )
+    .optional(),
 });
 export type Asset = z.infer<typeof AssetSchema>;
 
@@ -80,6 +108,19 @@ export const ComponentClipSchema = z.object({
   /** id de um componente da biblioteca pré-validada (@videoeditor/renderer). */
   component: z.string(),
   params: z.record(z.string(), z.unknown()),
+  /** Ajustes visuais deste clip, feitos pelo usuário no editor de motion. */
+  style: z
+    .object({
+      /** Deslocamento em fração da largura/altura do quadro. */
+      dx: z.number().min(-1).max(1).default(0),
+      dy: z.number().min(-1).max(1).default(0),
+      scale: z.number().min(0.3).max(3).default(1),
+      primaryColor: z.string().optional(),
+      textColor: z.string().optional(),
+      backgroundColor: z.string().optional(),
+      fontPair: z.string().optional(),
+    })
+    .optional(),
 });
 export type ComponentClip = z.infer<typeof ComponentClipSchema>;
 
@@ -113,6 +154,8 @@ export const CaptionStyleSchema = z.object({
   color: z.string().default("#ffffff"),
   highlightColor: z.string().default("#facc15"),
   fontScale: z.number().min(0.5).max(2).default(1),
+  /** Altura do centro da legenda (0 topo, 1 base). Quando definida, vale no lugar de `position`. */
+  y: z.number().min(0.05).max(0.95).optional(),
 });
 export type CaptionStyle = z.infer<typeof CaptionStyleSchema>;
 
@@ -122,6 +165,10 @@ const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "cor em hexadecimal, ex.: #0B0
 export const FONT_PAIRS = {
   "inter-instrument": { name: "Inter + Instrument Serif", sans: "Inter", serif: "Instrument Serif" },
   "montserrat-playfair": { name: "Montserrat + Playfair Display", sans: "Montserrat", serif: "Playfair Display" },
+  "poppins-playfair": { name: "Poppins + Playfair Display", sans: "Poppins", serif: "Playfair Display" },
+  "bebas-instrument": { name: "Bebas Neue + Instrument Serif", sans: "Bebas Neue", serif: "Instrument Serif" },
+  "anton-playfair": { name: "Anton + Playfair Display", sans: "Anton", serif: "Playfair Display" },
+  "oswald-instrument": { name: "Oswald + Instrument Serif", sans: "Oswald", serif: "Instrument Serif" },
 } as const;
 export type FontPairId = keyof typeof FONT_PAIRS;
 
@@ -134,9 +181,11 @@ export const BrandKitSchema = z.object({
   secondaryColor: hex.default("#38BDF8").describe("cor de apoio"),
   backgroundColor: hex.default("#0B0F19").describe("fundo das cenas de tela cheia"),
   textColor: hex.default("#F8FAFC"),
-  fontPair: z.enum(["inter-instrument", "montserrat-playfair"]).default("inter-instrument"),
+  fontPair: z.enum(Object.keys(FONT_PAIRS) as [FontPairId, ...FontPairId[]]).default("inter-instrument"),
   displayName: z.string().max(40).default("").describe("nome exibido na tarja (ex.: Dra. Ana Silva)"),
   credential: z.string().max(60).default("").describe("registro ou cargo (ex.: CRM 12345, Personal Trainer)"),
+  /** Desligado: nenhuma tarja de nome/cargo aparece no vídeo, e o agente não cria uma. */
+  showLowerThird: z.boolean().default(true),
 });
 export type BrandKit = z.infer<typeof BrandKitSchema>;
 export const defaultBrandKit = (): BrandKit => BrandKitSchema.parse({});

@@ -16,10 +16,23 @@ export type SavedBrand = { id: string; name: string; brand: BrandKit };
 
 export type SessionUser = { id: string; name: string; email: string; role: "user" | "admin"; plan: string; planName?: string };
 
+export type EditPlan = {
+  diagnostico: string;
+  cortes: string;
+  capitulos: { papel: string; fromWord: string; toWord: string; energia: string; tratamento: string; zooms: number; componentes: number }[];
+};
+
+/** Tamanho dos painéis do editor, em pixels. */
+export type Layout = { left: number; right: number; bottom: number };
+export const DEFAULT_LAYOUT: Layout = { left: 288, right: 344, bottom: 290 };
+const LAYOUT_LIMITS: Record<keyof Layout, [number, number]> = { left: [220, 480], right: [280, 560], bottom: [170, 620] };
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Plano de edição do agente (diagnóstico + mapa de ritmo). */
+  plan?: EditPlan;
   log?: string[];
   credits?: number;
   error?: boolean;
@@ -36,8 +49,15 @@ type State = {
   time: number;
   playing: boolean;
   selectedClipId: string | null;
+  /** Legenda selecionada: os ids das palavras que a formam. */
+  selectedCaption: string[] | null;
   range: TimeRange | null;
   pxPerSec: number;
+  layout: Layout;
+  /** Passo atual do guia inicial; null = fechado. */
+  tour: number | null;
+  /** Muda a cada vez que um trecho é enviado da timeline ao Diretor de IA (dispara o efeito visual). */
+  aiFocus: number;
   /** Saldo do ledger no servidor; atualizado por /api/me e pelas respostas das ações pagas. */
   credits: number;
   user: SessionUser | null;
@@ -56,6 +76,12 @@ type State = {
   seek: (t: number) => void;
   setPlaying: (p: boolean) => void;
   select: (clipId: string | null) => void;
+  selectCaption: (wordIds: string[] | null) => void;
+  resize: (panel: keyof Layout, deltaPx: number) => void;
+  resetLayout: (panel: keyof Layout) => void;
+  setTour: (step: number | null) => void;
+  /** Leva o trecho selecionado ao Diretor de IA. */
+  focusAI: () => void;
   setRange: (r: TimeRange | null) => void;
   setPxPerSec: (n: number) => void;
   setCredits: (n: number) => void;
@@ -66,6 +92,17 @@ type State = {
 
 const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
+const LAYOUT_KEY = "ve:layout";
+export const TOUR_KEY = "ve:tour-done";
+
+const clampLayout = (panel: keyof Layout, v: number) => Math.round(Math.min(LAYOUT_LIMITS[panel][1], Math.max(LAYOUT_LIMITS[panel][0], v)));
+const saveLayout = (layout: Layout) => {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // sem armazenamento: o tamanho vale só para esta sessão
+  }
+};
 
 export const useEditor = create<State>((set, get) => ({
   brands: [],
@@ -76,8 +113,12 @@ export const useEditor = create<State>((set, get) => ({
   time: 0,
   playing: false,
   selectedClipId: null,
+  selectedCaption: null,
   range: null,
   pxPerSec: 60,
+  layout: DEFAULT_LAYOUT,
+  tour: null,
+  aiFocus: 0,
   credits: 0,
   user: null,
   chat: [],
@@ -94,6 +135,7 @@ export const useEditor = create<State>((set, get) => ({
         future: [],
         time: Math.min(s.time, duration),
         selectedClipId: null,
+        selectedCaption: null,
         range: opts?.history ? null : s.range,
       };
     }),
@@ -122,14 +164,14 @@ export const useEditor = create<State>((set, get) => ({
     set((s) => {
       const prev = s.past[s.past.length - 1];
       if (!prev || !s.project) return s;
-      return { project: prev, past: s.past.slice(0, -1), future: [s.project, ...s.future], selectedClipId: null };
+      return { project: prev, past: s.past.slice(0, -1), future: [s.project, ...s.future], selectedClipId: null, selectedCaption: null, time: Math.min(s.time, projectDuration(prev)) };
     }),
 
   redo: () =>
     set((s) => {
       const next = s.future[0];
       if (!next || !s.project) return s;
-      return { project: next, past: [...s.past, s.project], future: s.future.slice(1), selectedClipId: null };
+      return { project: next, past: [...s.past, s.project], future: s.future.slice(1), selectedClipId: null, selectedCaption: null, time: Math.min(s.time, projectDuration(next)) };
     }),
 
   seek: (t) => {
@@ -137,7 +179,31 @@ export const useEditor = create<State>((set, get) => ({
     set({ time: Math.max(0, Math.min(t, p ? projectDuration(p) : 0)) });
   },
   setPlaying: (playing) => set({ playing }),
-  select: (selectedClipId) => set({ selectedClipId }),
+  select: (selectedClipId) => set({ selectedClipId, selectedCaption: null }),
+  selectCaption: (selectedCaption) => set({ selectedCaption, selectedClipId: null }),
+  resize: (panel, delta) =>
+    set((s) => {
+      const layout = { ...s.layout, [panel]: clampLayout(panel, s.layout[panel] + delta) };
+      saveLayout(layout);
+      return { layout };
+    }),
+  resetLayout: (panel) =>
+    set((s) => {
+      const layout = { ...s.layout, [panel]: DEFAULT_LAYOUT[panel] };
+      saveLayout(layout);
+      return { layout };
+    }),
+  setTour: (tour) => {
+    if (tour === null) {
+      try {
+        localStorage.setItem(TOUR_KEY, "1");
+      } catch {
+        // segue sem lembrar
+      }
+    }
+    set({ tour });
+  },
+  focusAI: () => set((s) => ({ aiFocus: s.aiFocus + 1 })),
   setRange: (range) => set({ range }),
   setPxPerSec: (pxPerSec) => set({ pxPerSec }),
   setCredits: (credits) => set({ credits }),
@@ -156,6 +222,19 @@ export function hydrateEditor() {
     }
   } catch {
     // estado salvo corrompido: começa do zero
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null") as Partial<Layout> | null;
+    if (saved)
+      useEditor.setState({
+        layout: {
+          left: clampLayout("left", Number(saved.left) || DEFAULT_LAYOUT.left),
+          right: clampLayout("right", Number(saved.right) || DEFAULT_LAYOUT.right),
+          bottom: clampLayout("bottom", Number(saved.bottom) || DEFAULT_LAYOUT.bottom),
+        },
+      });
+  } catch {
+    // layout salvo inválido: usa o padrão
   }
   let lastProject = useEditor.getState().project;
   return useEditor.subscribe((s) => {

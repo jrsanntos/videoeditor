@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrandKitSchema, CaptionStyleSchema, FORMATS, type Clip, type Project, type TimeRange } from "./schema";
+import { BrandKitSchema, CaptionStyleSchema, FORMATS, type Clip, type Project, type TimeRange, type Word } from "./schema";
 import {
   MIN_CLIP,
   clipEnd,
@@ -12,6 +12,7 @@ import {
   r3,
   sortTrack,
   sourceRangesToTimeline,
+  subjectAt,
   timelineWord,
   timelineWords,
   wordCutRange,
@@ -87,13 +88,13 @@ const TrimClip = z
   );
 const zoomFields = {
   scale: z.number().min(1).max(4).default(1.25),
-  x: z.number().min(0).max(1).default(0.5),
-  y: z.number().min(0).max(1).default(0.4),
+  x: z.number().min(0).max(1).optional().describe("foco horizontal; omita para centrar no rosto do apresentador"),
+  y: z.number().min(0).max(1).optional().describe("foco vertical; omita para centrar no rosto do apresentador"),
   ease: z.number().min(0).default(0.25),
   mode: z
     .enum(["hold", "creep"])
     .default("hold")
-    .describe("hold: entra, segura e sai. creep: avanço lento e contínuo de 1 até scale durante o clip inteiro (use scale 1.06–1.12, 3–6 s)"),
+    .describe("hold: entra, segura e sai. creep: avanço lento e contínuo de 1 até scale durante o clip inteiro (use scale 1.12–1.18, 3–6 s)"),
   panX: z
     .number()
     .min(-0.5)
@@ -117,6 +118,18 @@ const componentParams = z
   .describe(
     "params do componente. Onde o componente aceita um instante `at` (segundos desde o início dele), você pode mandar `atWord` com o id da palavra: o instante é calculado na aplicação.",
   );
+const ClipStyle = z
+  .object({
+    dx: z.number().min(-1).max(1),
+    dy: z.number().min(-1).max(1),
+    scale: z.number().min(0.3).max(3),
+    primaryColor: z.string().nullable(),
+    textColor: z.string().nullable(),
+    backgroundColor: z.string().nullable(),
+    fontPair: z.string().nullable(),
+  })
+  .partial()
+  .describe("ajustes visuais do clip: posição, tamanho, cores e fonte. null volta ao Brand Kit");
 const AddComponent = z
   .object({
     op: z.literal("add_component"),
@@ -145,6 +158,7 @@ const UpdateClip = z
     panX: z.number().min(-0.5).max(0.5).optional(),
     panY: z.number().min(-0.5).max(0.5).optional(),
     params: z.record(z.string(), z.unknown()).optional(),
+    style: ClipStyle.optional(),
   })
   .describe(
     "Altera um clip existente. Início/duração valem para zoom e componentes; params é mesclado aos params atuais do componente; volume vale para vídeo.",
@@ -163,6 +177,15 @@ const EditWord = z
     text: z.string().describe("novo texto; string vazia oculta a palavra da legenda"),
   })
   .describe("Corrige o texto de uma palavra da transcrição/legenda.");
+const EditCaption = z
+  .object({
+    op: z.literal("edit_caption"),
+    wordIds: z.array(z.string()).min(1).describe("palavras que formam a legenda, em ordem"),
+    text: z.string().optional().describe("novo texto da legenda inteira"),
+    hidden: z.boolean().optional().describe("true tira esta legenda do vídeo (a fala continua)"),
+    shift: z.number().min(-5).max(5).optional().describe("adianta (−) ou atrasa (+) a legenda, em segundos"),
+  })
+  .describe("Edita uma legenda na timeline: reescreve, esconde ou desloca no tempo.");
 const SetBrand = z
   .object({ op: z.literal("set_brand"), brand: BrandKitSchema.partial() })
   .describe("Altera o Brand Kit do projeto (cores, par de fontes, nome e credencial).");
@@ -189,6 +212,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
   UpdateClip,
   SetCaptions,
   EditWord,
+  EditCaption,
   SetBrand,
   SetFormat,
 ]);
@@ -206,7 +230,7 @@ export const AgentOperationSchema = z.discriminatedUnion("op", [
   RemoveSilences.omit({ range: true }),
   AddZoom.omit({ start: true }).extend({ atWord }),
   AddComponent.omit({ start: true }).extend({ atWord }),
-  UpdateClip.omit({ start: true }),
+  UpdateClip.omit({ start: true, style: true }),
   DeleteClip,
   SetCaptions,
   EditWord,
@@ -353,20 +377,23 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
     case "add_zoom": {
       const span = resolveSpan(p, op);
       const { start, duration } = fitToMain(p, span.start, span.duration);
+      // Sem foco explícito, o zoom fecha no rosto (quando o vídeo já foi analisado).
+      const face = op.x === undefined || op.y === undefined ? subjectAt(p, start + duration / 2) : null;
+      const zoomId = newId("zoom");
       getTrack(p, "fx").clips.push({
-        id: newId("zoom"),
+        id: zoomId,
         type: "zoom",
         start,
         duration,
         scale: op.scale,
-        x: op.x,
-        y: op.y,
+        x: op.x ?? face?.faceX ?? 0.5,
+        y: op.y ?? face?.faceY ?? 0.4,
         ease: Math.min(op.ease, duration / 2),
         mode: op.mode,
         panX: op.panX,
         panY: op.panY,
       });
-      return `zoom ${op.scale}x em ${fmt(start)} por ${fmt(duration)}`;
+      return `zoom ${op.scale}x (${zoomId}) em ${fmt(start)} por ${fmt(duration)}`;
     }
     case "add_component": {
       const span = resolveSpan(p, op);
@@ -406,15 +433,30 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         if (op.panX !== undefined) clip.panX = op.panX;
         if (op.panY !== undefined) clip.panY = op.panY;
         clip.ease = Math.min(clip.ease, clip.duration / 2);
-      } else if (op.params) {
-        const merged = { ...clip.params, ...resolveTimedParams(p, op.params, clip.start, clip.duration) };
-        clip.params = ctx.validateComponent ? ctx.validateComponent(clip.component, merged) : merged;
+      } else {
+        if (op.params) {
+          const merged = { ...clip.params, ...resolveTimedParams(p, op.params, clip.start, clip.duration) };
+          clip.params = ctx.validateComponent ? ctx.validateComponent(clip.component, merged) : merged;
+        }
+        if (op.style) {
+          const next: Record<string, unknown> = { dx: 0, dy: 0, scale: 1, ...clip.style };
+          for (const [k, v] of Object.entries(op.style)) {
+            if (v === null) delete next[k];
+            else if (v !== undefined) next[k] = v;
+          }
+          clip.style = next as typeof clip.style;
+        }
       }
       return `clip ${clip.id} atualizado`;
     }
     case "set_captions": {
       if (op.enabled !== undefined) p.captions.enabled = op.enabled;
-      if (op.style) p.captions.style = CaptionStyleSchema.parse({ ...p.captions.style, ...op.style });
+      if (op.style) {
+        const merged = { ...p.captions.style, ...op.style };
+        // Escolher topo/centro/base desfaz a posição arrastada à mão.
+        if (op.style.position && op.style.y === undefined) delete merged.y;
+        p.captions.style = CaptionStyleSchema.parse(merged);
+      }
       return `legendas ${p.captions.enabled ? "ligadas" : "desligadas"}`;
     }
     case "set_format": {
@@ -430,6 +472,33 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
     case "set_brand": {
       p.brand = BrandKitSchema.parse({ ...p.brand, ...op.brand });
       return "brand kit atualizado";
+    }
+    case "edit_caption": {
+      const found: Word[] = [];
+      for (const id of op.wordIds) {
+        let hit: Word | undefined;
+        for (const asset of Object.values(p.assets)) hit ??= asset.transcript?.words.find((w) => w.id === id);
+        if (!hit) throw new Error(`palavra ${id} não encontrada`);
+        found.push(hit);
+      }
+      if (op.text !== undefined) {
+        // Redistribui o texto novo pelas palavras: o que sobra fica na última; o que falta esvazia.
+        const tokens = op.text.trim().split(/\s+/).filter(Boolean);
+        found.forEach((w, i) => {
+          w.text = i < found.length - 1 ? (tokens[i] ?? "") : tokens.slice(i).join(" ");
+        });
+      }
+      for (const w of found) {
+        if (op.hidden !== undefined) {
+          if (op.hidden) w.hidden = true;
+          else delete w.hidden;
+        }
+        if (op.shift !== undefined) {
+          if (Math.abs(op.shift) < 0.005) delete w.shift;
+          else w.shift = r3(op.shift);
+        }
+      }
+      return op.hidden ? "legenda removida" : "legenda atualizada";
     }
     case "edit_word": {
       for (const asset of Object.values(p.assets)) {

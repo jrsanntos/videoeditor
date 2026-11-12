@@ -65,7 +65,7 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
     <div className="mx-auto max-w-4xl p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-white">Planos e créditos</h1>
-        <a href="/" className="text-sm text-zinc-400 hover:text-zinc-200">
+        <a href="/app" className="text-sm text-zinc-400 hover:text-zinc-200">
           ← Voltar ao editor
         </a>
       </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AuthShell, ErrorNote, field, link, submitBtn, useSubmit } from "../login/AuthShell";
+import { AuthShell, card, ErrorNote, field, link, submitBtn, useSubmit } from "../login/AuthShell";
 
 export function ForgotForm() {
   const [sent, setSent] = useState(false);
@@ -15,7 +15,7 @@ export function ForgotForm() {
   if (sent)
     return (
       <AuthShell subtitle="Confira seu e-mail." footer={back}>
-        <p className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950 p-5 text-sm leading-relaxed text-zinc-300" role="status">
+        <p className={`${card} text-sm leading-relaxed text-zinc-300`} role="status">
           Se existe uma conta com esse e-mail, enviamos um link para criar uma nova senha. Ele vale por 1 hora. Não chegou? Veja a caixa de spam.
         </p>
       </AuthShell>
@@ -24,7 +24,7 @@ export function ForgotForm() {
   return (
     <AuthShell subtitle="Informe seu e-mail e enviamos um link para criar uma nova senha." footer={back}>
       <form
-        className="mt-6 space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-5"
+        className={card}
         onSubmit={(e) => {
           e.preventDefault();
           void submit(Object.fromEntries(new FormData(e.currentTarget)));

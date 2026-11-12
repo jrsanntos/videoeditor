@@ -112,3 +112,22 @@ O saldo vive no servidor, num ledger (`credit_ledger`): cada cadastro, concessã
 - **Contas**: e-mail e senha (scrypt assíncrono), sessão em cookie httpOnly com token aleatório (só o hash fica no banco). Contas suspensas perdem as sessões na hora e não entram de novo. Admins vêm de `ADMIN_EMAILS`; em desenvolvimento, sem essa variável, a primeira conta vira admin.
 - **Painel `/admin`**: visão geral (usuários, ativos, receita, resultado, auditoria), usuários (busca, créditos, plano com pagamento, papel, banimento, extrato e uso de IA), financeiro (receitas e despesas lançadas, custo de IA automático convertido pela cotação, série de 12 meses), chaves de API (cifradas com AES-256-GCM usando `APP_SECRET`; têm prioridade sobre o ambiente) e modelos. Toda ação vai para `admin_log`.
 - **Modelos de edição** (`EditTemplate`, em `packages/core/src/template.ts`): o admin envia um vídeo de exemplo já editado; o navegador extrai 12 quadros, o áudio e as pausas (o vídeo não sobe), o servidor transcreve e pede ao Claude, com saída estruturada, o estilo como modelo (legendas, política de pausas, densidade de zoom, componentes e gatilhos, receita). O admin revisa e publica. No editor, aplicar um modelo roda a parte determinística no navegador (legendas, 0 crédito) e manda a receita ao agente.
+
+## Direção de edição: assistir → planejar → executar → revisar
+
+Uma edição completa (skill, modelo, "edite o vídeo") não é mais uma chamada que cospe operações:
+
+1. **Assistir.** O contexto do agente (`packages/core/src/agent-context.ts`) traz, além da transcrição, a energia da voz por palavra (dB sobre a mediana do apresentador, medida no navegador em `apps/web/src/lib/analysis.ts`), a velocidade da fala por frase e o enquadramento do apresentador (caixa e rosto, por segmentação). A rota também recebe até três quadros JPEG do vídeo.
+2. **Planejar.** A primeira chamada obrigatória é `plan_edit`: diagnóstico + mapa de ritmo por capítulo (gancho, desenvolvimento, virada, clímax, CTA) com orçamento de zooms e componentes. `edit_timeline` é recusada antes do plano.
+3. **Executar.** Cada `edit_timeline` devolve o que está na tela (ids dos clips) e a auditoria de ritmo.
+4. **Revisar.** `auditPacing` (`packages/core/src/pacing.ts`) mede a timeline contra o `PacingProfile` da skill: gancho e fecho tratados, trecho parado máximo, densidade por janela de 5 s, distância entre componentes, telas cheias seguidas, zooms sobrepostos ou imperceptíveis, punch-ins repetidos, mínimos e máximos por minuto. Erros voltam ao agente (até duas passagens); o que ainda colidir é podado por `enforcePacing`.
+
+No renderer, as legendas somem durante cenas de tela cheia e desviam do texto de outros componentes; sons de destaque têm intervalo global mínimo de 5 s (`sounds.ts`).
+
+## Edição direta no preview
+
+Componentes informam ao compositor onde cada texto foi desenhado (`region`). O Player usa isso para selecionar, arrastar (posição por clip em `clip.style`, ou por texto quando o componente declara `positions`) e reescrever o texto em cima do vídeo. Legendas são derivadas das palavras; `edit_caption` reescreve, esconde (`hidden`) ou desloca (`shift`) sem alterar a fala.
+
+## Contas
+
+Autenticação própria sobre Postgres (não usa o Supabase Auth, mesmo quando o banco é do Supabase). Com envio de e-mail configurado (`RESEND_API_KEY` + `EMAIL_FROM`) o cadastro cria a conta pendente e só abre sessão depois do link de confirmação (`/api/auth/verify`). `EMAIL_VERIFICATION=required|off` força ou desliga.

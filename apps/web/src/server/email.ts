@@ -28,6 +28,27 @@ export async function sendEmail(msg: { to: string; subject: string; text: string
   return res.ok;
 }
 
+/** Há provedor de e-mail configurado (painel ou ambiente)? */
+export async function emailConfigured(): Promise<boolean> {
+  const cfg = await getSettings(["RESEND_API_KEY", "EMAIL_FROM"]);
+  return Boolean(cfg.RESEND_API_KEY && cfg.EMAIL_FROM);
+}
+
+/**
+ * O cadastro exige confirmar o e-mail?
+ * EMAIL_VERIFICATION=required força (sem provedor de e-mail o cadastro é recusado, com aviso);
+ * =off desliga; sem a variável, vale sempre que há provedor de e-mail configurado.
+ */
+export async function verificationRequired(): Promise<boolean> {
+  const mode = process.env.EMAIL_VERIFICATION?.trim().toLowerCase();
+  if (mode === "off") return false;
+  if (mode === "required") return true;
+  const configured = await emailConfigured();
+  if (!configured && process.env.NODE_ENV === "production")
+    console.error("cadastro SEM confirmação de e-mail: configure RESEND_API_KEY e EMAIL_FROM (painel /admin ou ambiente) para ativá-la");
+  return configured;
+}
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 export function passwordResetEmail(name: string, link: string, minutes: number) {
@@ -39,6 +60,17 @@ export function passwordResetEmail(name: string, link: string, minutes: number) 
 <p style="color:#52525b;font-size:13px">O link vale por ${minutes} minutos e só pode ser usado uma vez. Se não foi você, ignore este e-mail: sua senha continua a mesma.</p>
 </div>`;
   return { subject: "Redefinir sua senha — videoeditor", text, html };
+}
+
+export function verifyEmailMessage(name: string, link: string, hours: number) {
+  const text = `Olá, ${name}.\n\nFalta um passo para ativar sua conta no videoeditor: confirme seu e-mail abrindo o link abaixo (vale por ${hours} horas):\n\n${link}\n\nSe você não criou esta conta, ignore este e-mail.`;
+  const html = `<div style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#18181b;max-width:480px">
+<p>Olá, ${escapeHtml(name)}.</p>
+<p>Falta um passo para ativar sua conta no videoeditor: confirme que este e-mail é seu.</p>
+<p><a href="${escapeHtml(link)}" style="display:inline-block;background:#6548f0;color:#fff;text-decoration:none;padding:11px 20px;border-radius:9px;font-weight:600">Confirmar meu e-mail</a></p>
+<p style="color:#52525b;font-size:13px">O link vale por ${hours} horas. Se você não criou esta conta, ignore este e-mail.</p>
+</div>`;
+  return { subject: "Confirme seu e-mail — videoeditor", text, html };
 }
 
 /**

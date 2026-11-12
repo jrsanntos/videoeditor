@@ -2,16 +2,203 @@
 
 @source "../../../../packages";
 
+@theme {
+  --color-ink-950: #08080b;
+  --color-ink-900: #0d0d12;
+  --color-ink-850: #121218;
+  --color-ink-800: #17171f;
+  --color-ink-700: #20202b;
+  --color-ink-600: #2c2c3a;
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-line-strong: rgba(255, 255, 255, 0.13);
+  --color-brand-300: #b4a5ff;
+  --color-brand-400: #9a86ff;
+  --color-brand-500: #7c63ff;
+  --color-brand-600: #6548f0;
+  --color-sky-brand: #4f9dff;
+  --font-display: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
 html,
 body {
   height: 100%;
-  background: #09090b;
-  color: #e4e4e7;
+  background: #08080b;
+  color: #e7e7ee;
   font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("/fonts/instrument-serif-latin-400-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: #2c2c3a transparent;
+}
+
+::selection {
+  background: rgba(124, 99, 255, 0.45);
+}
+
+/* Botão principal da marca. */
+.btn-brand {
+  background: linear-gradient(135deg, #7c63ff 0%, #4f9dff 100%);
+  color: white;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 8px 24px -8px rgba(124, 99, 255, 0.7);
+  transition:
+    filter 0.15s,
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+.btn-brand:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.26) inset,
+    0 10px 30px -8px rgba(124, 99, 255, 0.9);
+}
+.btn-brand:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.btn-brand:disabled {
+  opacity: 0.45;
+}
+
+.text-gradient {
+  background: linear-gradient(120deg, #c9bdff 0%, #8f7bff 40%, #5aa7ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012));
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Fundo quadriculado sutil do palco do preview. */
+.stage-bg {
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 40%, rgba(124, 99, 255, 0.1), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.045) 1px, transparent 0) 0 0 / 22px 22px,
+    #0a0a0e;
+}
+
+/* O Diretor de IA recebe um trecho vindo da timeline. */
+@keyframes ai-receive {
+  0% {
+    box-shadow: 0 0 0 0 rgba(124, 99, 255, 0.9);
+  }
+  60% {
+    box-shadow: 0 0 0 14px rgba(124, 99, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 99, 255, 0);
+  }
+}
+.ai-receive {
+  animation: ai-receive 0.9s ease-out 2;
+  border-color: #9a86ff !important;
+}
+@keyframes ai-sweep {
+  from {
+    transform: translateX(-100%);
+    opacity: 0.9;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+.ai-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(124, 99, 255, 0.28), transparent);
+  animation: ai-sweep 0.9s ease-out 1;
+}
+
+@keyframes tour-ring {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px #9a86ff,
+      0 0 0 6px rgba(124, 99, 255, 0.35),
+      0 0 0 9999px rgba(4, 4, 8, 0.72);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px #9a86ff,
+      0 0 0 12px rgba(124, 99, 255, 0.12),
+      0 0 0 9999px rgba(4, 4, 8, 0.72);
+  }
+}
+.tour-ring {
+  animation: tour-ring 1.6s ease-in-out infinite;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop-in {
+  animation: pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+.float-slow {
+  animation: float-slow 7s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .float-slow,
+  .tour-ring,
+  .ai-receive,
+  .ai-sweep::after,
+  .shimmer {
+    animation: none;
+  }
+}
+
+input[type="range"] {
+  accent-color: #8f7bff;
 }

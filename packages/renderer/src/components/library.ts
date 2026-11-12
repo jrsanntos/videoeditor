@@ -44,6 +44,12 @@ export type DrawArgs<P> = {
   hasPerson: boolean;
   /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */
   drawPerson: () => void;
+  /**
+   * Informa onde um texto editável foi desenhado (no sistema de coordenadas
+   * atual do contexto). `key` é o caminho do parâmetro: "title", "items.1.text".
+   * É o que permite clicar, arrastar e reescrever o texto direto no vídeo.
+   */
+  region: (key: string, x: number, y: number, w: number, h: number) => void;
 };
 
 export type SfxId = keyof typeof SFX_CATALOG;
@@ -64,6 +70,10 @@ export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   needsPerson?: boolean;
   /** false: fica só no menu manual; o agente não recebe no catálogo. */
   agent?: boolean;
+  /** Rótulos em português dos parâmetros, para o editor visual. */
+  labels?: Record<string, string>;
+  /** Textos que se movem sozinhos: chave da região → parâmetro que guarda o deslocamento {x, y}. */
+  positions?: Record<string, string>;
 };
 
 const define = <S extends z.ZodType>(def: ComponentDef<S>) => def;

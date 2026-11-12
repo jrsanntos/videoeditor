@@ -4,6 +4,8 @@ export class HttpError extends Error {
     message: string,
     /** Segundos até poder tentar de novo (vira o cabeçalho Retry-After). */
     public retryAfter?: number,
+    /** Código estável para a interface reagir (ex.: "email_unverified"). */
+    public code?: string,
   ) {
     super(message);
   }
@@ -13,7 +15,7 @@ export class HttpError extends Error {
 export function errorResponse(e: unknown): Response {
   if (e instanceof HttpError)
     return Response.json(
-      { error: e.message },
+      { error: e.message, ...(e.code ? { code: e.code } : {}) },
       { status: e.status, headers: e.retryAfter ? { "retry-after": String(e.retryAfter) } : undefined },
     );
   console.error(e);
