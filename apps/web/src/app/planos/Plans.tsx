@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PLANS, TOPUPS, type PlanId } from "@videoeditor/core";
+import { formatCredits, PLANS, TOPUPS, type PlanId } from "@videoeditor/core";
 
 type Me = {
   user: { plan: PlanId; planName?: string };
@@ -87,16 +87,16 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
             <div>
               <div className="text-xs text-zinc-500">Saldo</div>
               <div className="text-2xl font-semibold text-amber-300" data-testid="plans-credits">
-                {me.credits} <span className="text-sm font-normal text-zinc-400">créditos</span>
+                {formatCredits(me.credits)} <span className="text-sm font-normal text-zinc-400">créditos</span>
               </div>
             </div>
             <div className="text-sm text-zinc-400">
               <div>
-                <b className="font-medium text-zinc-200">{b.creditsPlan}</b> do plano {me.user.planName}
+                <b className="font-medium text-zinc-200">{formatCredits(b.creditsPlan)}</b> do plano {me.user.planName}
                 {b.cancelAtPeriodEnd ? ` · assinatura termina em ${day(b.renewsAt)}` : ` · renovam em ${day(b.renewsAt)}`}
               </div>
               <div>
-                <b className="font-medium text-zinc-200">{b.creditsExtra}</b> extras, que não expiram na renovação
+                <b className="font-medium text-zinc-200">{formatCredits(b.creditsExtra)}</b> extras, que não expiram na renovação
               </div>
             </div>
             {b.hasPurchases && (

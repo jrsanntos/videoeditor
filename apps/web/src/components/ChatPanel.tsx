@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PRICING, SKILLS, type SkillId } from "@videoeditor/core";
+import { formatCredits, PRICING, SKILLS, type SkillId } from "@videoeditor/core";
 import { askAgent, runSkill } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime } from "./Player";
@@ -67,8 +67,8 @@ export function ChatPanel() {
               </button>
             ))}
             <p className="pt-2 text-[11px] leading-relaxed text-zinc-600">
-              Cada pedido que altera a timeline custa {PRICING.agentEdit} créditos (+{PRICING.motionScene} por cena de motion
-              design). Ajustes manuais são sempre gratuitos.
+              Cada pedido que altera a timeline custa {String(PRICING.agentCommand).replace(".", ",")} crédito, com quantos zooms e componentes ele criar.
+              Ajustes manuais são sempre gratuitos.
             </p>
           </div>
         )}
@@ -87,7 +87,7 @@ export function ChatPanel() {
               {!!m.log?.length && (
                 <details className="mt-2 text-xs text-zinc-400">
                   <summary className="cursor-pointer">
-                    {m.log.length} operações{m.credits ? ` · ${m.credits} créditos` : ""}
+                    {m.log.length} operações{m.credits ? ` · ${formatCredits(m.credits)} crédito${m.credits > 1 ? "s" : ""}` : ""}
                   </summary>
                   <ul className="mt-1 list-disc space-y-0.5 pl-4">
                     {m.log.map((l, i) => (

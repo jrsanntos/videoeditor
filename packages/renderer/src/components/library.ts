@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { BrandKit } from "@videoeditor/core";
+import type { BrandKit, SafeArea } from "@videoeditor/core";
+import { V1_COMPONENTS } from "./v1";
 import {
   type Ctx2D,
   easeOutBack,
@@ -35,7 +36,18 @@ export type DrawArgs<P> = {
   u: number;
   /** Brand Kit do projeto: cores e credencial usados quando o clip não define os seus. */
   brand: BrandKit;
+  /** Margens que textos e tarjas respeitam (interface de Reels/TikTok/Shorts no vertical). */
+  safe: SafeArea;
+  vertical: boolean;
+  /** Há recorte do apresentador para este quadro (segmentação pronta). */
+  hasPerson: boolean;
+  /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */
+  drawPerson: () => void;
 };
+
+export type SfxId = "whoosh" | "tick" | "pop" | "riser";
+/** Efeito sonoro em `at` segundos desde o início do componente. */
+export type SoundCue = { at: number; sfx: SfxId };
 
 export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   id: string;
@@ -45,6 +57,12 @@ export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   schema: S;
   example: z.input<S>;
   draw: (args: DrawArgs<z.output<S>>) => void;
+  /** Efeitos sonoros sincronizados com a animação. */
+  sounds?: (params: z.output<S>, duration: number) => SoundCue[];
+  /** Precisa do recorte do apresentador (segmentação) enquanto está na tela. */
+  needsPerson?: boolean;
+  /** false: fica só no menu manual; o agente não recebe no catálogo. */
+  agent?: boolean;
 };
 
 const define = <S extends z.ZodType>(def: ComponentDef<S>) => def;
@@ -393,8 +411,10 @@ const bulletList = define({
   },
 });
 
+// Os seis da v1.0 são o vocabulário do agente; os anteriores seguem disponíveis no menu manual.
+const LEGACY = [lowerThird, titleCard, barChart, counter, textHighlight, bulletList].map((c) => ({ ...c, agent: false }) as ComponentDef);
 export const COMPONENTS: Record<string, ComponentDef> = Object.fromEntries(
-  [lowerThird, titleCard, barChart, counter, textHighlight, bulletList].map((c) => [c.id, c as ComponentDef]),
+  [...(V1_COMPONENTS as unknown as ComponentDef[]), ...LEGACY].map((c) => [c.id, c]),
 );
 
 /** Valida e normaliza (aplica defaults) os params de um componente. Lança se inválido. */
@@ -402,7 +422,7 @@ export function validateComponent(component: string, params: Record<string, unkn
   const def = COMPONENTS[component];
   if (!def)
     throw new Error(
-      `componente "${component}" não existe. Disponíveis: ${Object.keys(COMPONENTS).join(", ")}`,
+      `componente "${component}" não existe. Disponíveis: ${Object.values(COMPONENTS).filter((c) => c.agent !== false).map((c) => c.id).join(", ")}`,
     );
   const parsed = def.schema.safeParse(params);
   if (!parsed.success) throw new Error(`params inválidos para ${component}: ${z.prettifyError(parsed.error)}`);
@@ -412,6 +432,7 @@ export function validateComponent(component: string, params: Record<string, unkn
 /** Catálogo em texto para o prompt de sistema do agente. */
 export function catalogForAgent(): string {
   return Object.values(COMPONENTS)
+    .filter((c) => c.agent !== false)
     .map(
       (c) =>
         `### ${c.id} — ${c.name}\n${c.description}\nDuração sugerida: ${c.defaultDuration}s\nparams (JSON Schema): ${JSON.stringify(

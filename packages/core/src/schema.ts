@@ -60,6 +60,17 @@ export const ZoomClipSchema = z.object({
   y: z.number().min(0).max(1).default(0.5),
   /** Duração da rampa de entrada/saída, em segundos. 0 = corte seco (punch-in). */
   ease: z.number().min(0).default(0.25),
+  /**
+   * hold: entra em `ease`, segura e sai em `ease`.
+   * creep: avança devagar de 1 até `scale` durante o clip inteiro e volta num corte.
+   */
+  mode: z.enum(["hold", "creep"]).default("hold"),
+  /**
+   * Deslocamento do quadro em fração da largura/altura. panX positivo leva o
+   * apresentador para a direita (abre espaço à esquerda); negativo, o contrário.
+   */
+  panX: z.number().min(-0.5).max(0.5).default(0),
+  panY: z.number().min(-0.5).max(0.5).default(0),
 });
 export type ZoomClip = z.infer<typeof ZoomClipSchema>;
 
@@ -145,7 +156,36 @@ export const ProjectSchema = z.object({
   }),
   // Com default: projetos salvos antes do Brand Kit continuam abrindo.
   brand: BrandKitSchema.default(defaultBrandKit),
+  /** Formato do quadro. Projetos antigos (sem o campo) eram horizontais. */
+  aspectRatio: z.enum(["9:16", "16:9"]).default("16:9"),
+  /**
+   * Reenquadramento: que parte do vídeo de origem fica visível quando ele é
+   * recortado para preencher o quadro (0 = borda esquerda/superior, 1 = direita/inferior).
+   */
+  framing: z.object({ x: z.number().min(0).max(1).default(0.5), y: z.number().min(0).max(1).default(0.5) }).default({ x: 0.5, y: 0.5 }),
+  /** Efeitos sonoros automáticos sincronizados com os movimentos visuais. */
+  sfx: z.object({ enabled: z.boolean().default(true), volume: z.number().min(0).max(2).default(1) }).default({ enabled: true, volume: 1 }),
 });
+
+export type AspectRatio = Project["aspectRatio"];
+export const FORMATS: Record<AspectRatio, { name: string; width: number; height: number }> = {
+  "9:16": { name: "Vertical 9:16 (Reels, TikTok, Shorts)", width: 1080, height: 1920 },
+  "16:9": { name: "Horizontal 16:9 (YouTube, VSL)", width: 1920, height: 1080 },
+};
+
+export type SafeArea = { top: number; right: number; bottom: number; left: number };
+
+/**
+ * Margens, em pixels do quadro, que textos e tarjas devem respeitar. No
+ * vertical cobrem a interface de Reels/TikTok/Shorts: legenda e botões de
+ * ação embaixo e à direita, cabeçalho em cima.
+ */
+export function safeArea(project: { width: number; height: number; aspectRatio: AspectRatio }): SafeArea {
+  const { width: w, height: h } = project;
+  return project.aspectRatio === "9:16"
+    ? { top: Math.round(h * 0.13), right: Math.round(w * 0.14), bottom: Math.round(h * 0.21), left: Math.round(w * 0.06) }
+    : { top: Math.round(h * 0.06), right: Math.round(w * 0.05), bottom: Math.round(h * 0.08), left: Math.round(w * 0.05) };
+}
 export type Project = z.infer<typeof ProjectSchema>;
 
 export type TimeRange = { start: number; end: number };

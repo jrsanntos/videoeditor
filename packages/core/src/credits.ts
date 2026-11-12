@@ -2,6 +2,9 @@
  * Créditos de IA — moeda interna única da plataforma.
  * Regra de ouro: tudo que roda no navegador do usuário custa 0 créditos;
  * só inteligência (LLM/transcrição), mídia generativa e render em nuvem cobram.
+ * Desenhar componentes, zooms e tarjas é Canvas 2D local: não entra na conta.
+ * O consumo de IA segue a duração do vídeo processado (1 crédito por minuto,
+ * cobrado na transcrição) mais meio crédito por comando no chat.
  *
  * Valores iniciais derivados da planilha de unit economics; calibrar com
  * telemetria real de custo antes do lançamento.
@@ -12,10 +15,8 @@ export const CREDIT_PRICE_BRL = 0.15;
 export const PRICING = {
   /** Upload + transcrição + corte bruto: por minuto de vídeo (10 min ≈ 10 créditos). */
   ingestPerMinute: 1,
-  /** Prompt de edição ao agente (cortes, zooms, legendas). */
-  agentEdit: 2,
-  /** Cada cena de motion design criada pelo agente. */
-  motionScene: 15,
+  /** Cada comando ao agente que altera a timeline, com quantos componentes ele criar. */
+  agentCommand: 0.5,
   /** Clipe generativo (b-roll/áudio IA) de ~5s. */
   generativeClip: 40,
   /** Render na nuvem, por minuto exportado. */
@@ -27,7 +28,7 @@ export const PRICING = {
 
 export type CreditAction =
   | { type: "ingest"; durationSec: number }
-  | { type: "agent"; motionScenes: number }
+  | { type: "agent" }
   | { type: "generative"; clips: number }
   | { type: "cloud_export"; durationSec: number }
   | { type: "browser_export" }
@@ -38,7 +39,7 @@ export function creditCost(action: CreditAction): number {
     case "ingest":
       return Math.max(1, Math.ceil((action.durationSec / 60) * PRICING.ingestPerMinute));
     case "agent":
-      return PRICING.agentEdit + action.motionScenes * PRICING.motionScene;
+      return PRICING.agentCommand;
     case "generative":
       return action.clips * PRICING.generativeClip;
     case "cloud_export":
@@ -141,3 +142,6 @@ export function nextRenewal(anchor: Date, now: Date): Date {
   const next = addMonthsUTC(anchor, months);
   return next > now ? next : addMonthsUTC(anchor, months + 1);
 }
+
+/** Créditos para exibição: "396,5", "30". */
+export const formatCredits = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 1 });

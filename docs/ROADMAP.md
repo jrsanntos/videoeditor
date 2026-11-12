@@ -29,15 +29,17 @@ Etapa 2 — agente (feito, exceto avaliação)
 - [x] 4 skills (Viral, Autoridade, VSL, Limpeza): limpeza local grátis + direção para o agente
 - [ ] Conjunto de avaliação com 10–20 vídeos reais (gravações humanas, não voz sintética)
 
-Etapa 3 — renderer (próximo)
+Etapa 3 — renderer (feito)
 
-- [ ] Formato vertical 9:16 com reenquadramento
-- [ ] Câmera com `panX`/`panY`, creep zoom, curvas bezier e motion blur nas transições
-- [ ] Tipografia mista (sem serifa + serifada itálica) com fontes do Brand Kit via `FontFace`; typewriter e split text
-- [ ] Os 6 componentes da v1.0 (`DepthHookTitle`, `KineticPivotCard`, `StepProgressGraphic`, `AcronymOrSplitList`, `ExecutiveLowerThird`, `StatHighlightCounter`); as skills passam a usá-los
-- [ ] Segmentação de pessoa para texto atrás do apresentador (só nos trechos com `DepthHookTitle`, com cache de máscaras)
-- [ ] Efeitos sonoros sincronizados (4 assets) na mixagem
+- [x] Formato vertical 9:16 (1080×1920) como padrão, 16:9 opcional, reenquadramento do vídeo de origem e áreas seguras de Reels/TikTok/Shorts
+- [x] Câmera virtual com `panX`/`panY`, creep zoom, curvas cubic-bezier e motion blur nas transições rápidas
+- [x] Fontes do Brand Kit via `FontFace` (servidas pela aplicação); tipografia mista sem serifa + serifada itálica, máquina de escrever com cursor e texto dividido no gancho
+- [x] Os 6 componentes da v1.0 e o fundo topográfico; catálogo do agente só com eles (os antigos ficam no menu manual)
+- [x] Segmentação de pessoa (MediaPipe, local) só nos trechos com título de profundidade, com cache de máscaras
+- [x] Efeitos sonoros sintetizados (whoosh, tecla, pop, golpe) no preview e na exportação
 - [ ] Preview sem engasgo nos cortes (o export já é preciso por frame)
+- [ ] Testar com gravações reais: segmentação com pessoa em movimento, velocidade de exportação com GPU, mixagem dos efeitos por ouvido
+- [ ] Rever a tabela de créditos com o custo real medido por comando
 
 ## Fase 1 — Agente de verdade
 

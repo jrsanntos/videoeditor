@@ -50,7 +50,7 @@ export async function grantCredits(
   reason: string,
   opts: { actorId?: string; ref?: string } = {},
 ): Promise<boolean> {
-  if (!Number.isInteger(amount) || amount <= 0) throw new Error("grantCredits: quantidade inválida");
+  if (!Number.isInteger(amount * 2) || amount <= 0) throw new Error("grantCredits: quantidade inválida");
   return tx(async () => {
     const inserted = await db.run(
       `INSERT INTO credit_ledger (user_id, delta, bucket, reason, actor_id, ref) VALUES ($1, $2, $3, $4, $5, $6)

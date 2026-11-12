@@ -9,7 +9,7 @@ import type {
   TrackKind,
   Word,
 } from "./schema";
-import { CaptionStyleSchema, defaultBrandKit } from "./schema";
+import { CaptionStyleSchema, defaultBrandKit, FORMATS, type AspectRatio } from "./schema";
 
 export const r3 = (n: number) => Math.round(n * 1000) / 1000;
 export const clipEnd = (c: { start: number; duration: number }) => r3(c.start + c.duration);
@@ -32,13 +32,16 @@ export function createProject(opts: {
   height?: number;
   fps?: number;
   brand?: BrandKit;
+  /** Padrão: vertical 9:16. */
+  aspectRatio?: AspectRatio;
 }): Project {
+  const aspectRatio = opts.aspectRatio ?? "9:16";
   return {
     version: 1,
     id: newId("prj"),
     name: opts.name,
-    width: opts.width ?? 1920,
-    height: opts.height ?? 1080,
+    width: opts.width ?? FORMATS[aspectRatio].width,
+    height: opts.height ?? FORMATS[aspectRatio].height,
     fps: opts.fps ?? 30,
     assets: {},
     tracks: [
@@ -48,6 +51,9 @@ export function createProject(opts: {
     ],
     captions: { enabled: false, style: CaptionStyleSchema.parse({}) },
     brand: opts.brand ?? defaultBrandKit(),
+    aspectRatio,
+    framing: { x: 0.5, y: 0.5 },
+    sfx: { enabled: true, volume: 1 },
   };
 }
 

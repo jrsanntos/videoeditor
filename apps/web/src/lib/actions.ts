@@ -24,8 +24,6 @@ import {
 import { clearMedia, decodeMono, encodeSpeech, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { useEditor, type SessionUser } from "./store";
 
-const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
-
 /** Ingestão: lê metadados localmente e cria o projeto. Nada sobe para o servidor. */
 export async function importVideo(file: File) {
   const { setBusy, setProject, setNotice } = useEditor.getState();
@@ -45,8 +43,8 @@ export async function importVideo(file: File) {
     await storeMedia(asset.id, file);
     const project = createProject({
       name: file.name.replace(/\.[^.]+$/, ""),
-      width: even(meta.width),
-      height: even(meta.height),
+      // Vertical 9:16 é o padrão; o vídeo de origem preenche o quadro e pode ser reenquadrado.
+      aspectRatio: "9:16",
       brand: useEditor.getState().brand ?? undefined,
     });
     useEditor.setState({ chat: [], time: 0, range: null });

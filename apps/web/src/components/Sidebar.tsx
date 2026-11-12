@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, findClip, FONT_PAIRS, mainClips, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
+import { creditCost, findClip, FONT_PAIRS, FORMATS, mainClips, type AspectRatio, type BrandKit, type Clip, type EditTemplate, type FontPairId, type OperationInput } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
 import { applyTemplate, removeRetakesLocally, removeSilencesLocally, saveBrand, transcribe } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
@@ -50,6 +50,8 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+
+      <Frame />
 
       <Brand />
 
@@ -179,6 +181,15 @@ function Inspector({ clip }: { clip: Clip }) {
             <Num label="Foco X" value={clip.x} min={0} max={1} step={0.05} onCommit={(x) => update({ x })} />
             <Num label="Foco Y" value={clip.y} min={0} max={1} step={0.05} onCommit={(y) => update({ y })} />
             <Num label="Suavização (s)" value={clip.ease} min={0} max={2} step={0.05} onCommit={(ease) => update({ ease })} />
+            <Num label="Pan X (− esq. / + dir.)" value={clip.panX} min={-0.5} max={0.5} step={0.02} onCommit={(panX) => update({ panX })} />
+            <Num label="Pan Y" value={clip.panY} min={-0.5} max={0.5} step={0.02} onCommit={(panY) => update({ panY })} />
+            <label className="flex items-center justify-between gap-2 text-xs text-zinc-400">
+              Movimento
+              <select className={`${field} w-32`} value={clip.mode} onChange={(e) => update({ mode: e.target.value as "hold" | "creep" })}>
+                <option value="hold">Entra e segura</option>
+                <option value="creep">Avanço lento</option>
+              </select>
+            </label>
           </>
         )}
         {clip.type === "component" &&
@@ -268,6 +279,66 @@ const SWATCHES: { key: "primaryColor" | "secondaryColor" | "backgroundColor" | "
   { key: "backgroundColor", label: "Fundo" },
   { key: "textColor", label: "Texto" },
 ];
+
+/** Formato do quadro, reenquadramento do vídeo de origem, áreas seguras e efeitos sonoros. */
+function Frame() {
+  const project = useEditor((s) => s.project)!;
+  const guides = useEditor((s) => s.guides);
+  const apply = useEditor((s) => s.apply);
+  const asset = project.assets[mainClips(project)[0]?.assetId ?? ""];
+  // Só há o que reenquadrar quando a origem é mais larga (ou mais alta) que o quadro.
+  const srcRatio = asset?.width && asset.height ? asset.width / asset.height : null;
+  const frameRatio = project.width / project.height;
+  const cropsX = srcRatio !== null && srcRatio > frameRatio + 0.01;
+  const cropsY = srcRatio !== null && srcRatio < frameRatio - 0.01;
+  const check = "flex items-center gap-2 text-xs text-zinc-300";
+
+  return (
+    <div className={section} data-testid="frame">
+      <h3 className={heading}>Quadro</h3>
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          {(Object.keys(FORMATS) as AspectRatio[]).map((ratio) => (
+            <button
+              key={ratio}
+              title={FORMATS[ratio].name}
+              aria-pressed={project.aspectRatio === ratio}
+              className={`rounded-md border px-2 py-1.5 text-xs ${project.aspectRatio === ratio ? "border-indigo-500 bg-indigo-500/15 text-white" : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600"}`}
+              onClick={() => apply([{ op: "set_format", aspectRatio: ratio }])}
+            >
+              {ratio === "9:16" ? "Vertical 9:16" : "Horizontal 16:9"}
+            </button>
+          ))}
+        </div>
+        {(cropsX || cropsY) && (
+          <label className="block text-xs text-zinc-400">
+            Enquadramento ({cropsX ? "esquerda ↔ direita" : "cima ↔ baixo"})
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              className="mt-1 w-full"
+              defaultValue={cropsX ? project.framing.x : project.framing.y}
+              key={`${project.aspectRatio}-${cropsX}`}
+              onPointerUp={(e) => apply([{ op: "set_format", framing: cropsX ? { x: Number(e.currentTarget.value) } : { y: Number(e.currentTarget.value) } }])}
+              onKeyUp={(e) => apply([{ op: "set_format", framing: cropsX ? { x: Number(e.currentTarget.value) } : { y: Number(e.currentTarget.value) } }])}
+              aria-label="Enquadramento do vídeo no quadro"
+            />
+          </label>
+        )}
+        <label className={check}>
+          <input type="checkbox" checked={guides} onChange={(e) => useEditor.setState({ guides: e.target.checked })} />
+          Mostrar áreas seguras {project.aspectRatio === "9:16" ? "(Reels, TikTok, Shorts)" : ""}
+        </label>
+        <label className={check}>
+          <input type="checkbox" checked={project.sfx.enabled} onChange={(e) => apply([{ op: "set_format", sfx: { enabled: e.target.checked } }])} />
+          Efeitos sonoros automáticos
+        </label>
+      </div>
+    </div>
+  );
+}
 
 /** Brand Kit: definido uma vez, salvo na conta e herdado pelos próximos vídeos. */
 function Brand() {

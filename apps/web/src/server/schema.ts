@@ -161,4 +161,16 @@ CREATE TABLE stripe_events (
     id: "002_brand_kit",
     sql: `ALTER TABLE users ADD COLUMN brand_kit jsonb;`,
   },
+  {
+    // Meio crédito por comando no chat: saldos e ledger passam a aceitar uma casa decimal.
+    id: "003_fractional_credits",
+    sql: `
+ALTER TABLE users
+  ALTER COLUMN credits_plan TYPE numeric(12, 1),
+  ALTER COLUMN credits_extra TYPE numeric(12, 1),
+  ALTER COLUMN credits_cycle_grant TYPE numeric(12, 1);
+ALTER TABLE credit_ledger ALTER COLUMN delta TYPE numeric(12, 1);
+ALTER TABLE usage_events ALTER COLUMN credits TYPE numeric(12, 1);
+`,
+  },
 ];

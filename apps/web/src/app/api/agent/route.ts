@@ -81,17 +81,25 @@ Antes de qualquer efeito, limpe a fala. Um vídeo com um take errado no meio est
 ## Como trabalhar
 - Baseie cada decisão na transcrição; não invente trechos que não estão nela.
 - Trabalhe em etapas, uma chamada de edit_timeline por etapa, para o usuário ver a edição sendo montada: (1) limpeza — takes ruins e silêncios; (2) câmera — zooms; (3) motion e legendas. Pule as etapas que o pedido não pede. Pedidos pequenos cabem em uma chamada só.
-- Zooms: nos momentos de ênfase, 2 a 5 segundos, escala entre 1.1 e 1.4. Em vídeo de pessoa falando, o foco é o rosto (y≈0.35–0.4). ease 0 é punch-in seco; ease alto é aproximação lenta. Não empilhe zooms no mesmo instante.
-- Motion design: escolha componentes do catálogo e preencha params com o que a pessoa realmente disse. Comece o componente na palavra em que o assunto é dito.
-- Marca: não passe cores nos params — os componentes herdam o Brand Kit do usuário. A tarja de nome (lower_third) usa o nome e a credencial do Brand Kit quando você omite title/subtitle; se o Brand Kit não tem apresentador e o usuário não disse o nome, não invente: não use a tarja e avise.
-- Cada componente de motion custa créditos ao usuário: use os que fazem diferença, não encha o vídeo.
+- Câmera (add_zoom), sempre com o foco no rosto (y≈0.35–0.4) e sem empilhar dois zooms no mesmo instante:
+  - punch-in seco: ease 0, scale 1.12–1.2, 2 a 4 s, numa ênfase ou troca de frase.
+  - creep zoom: mode "creep", scale 1.06–1.1, 3 a 5 s, numa frase importante dita com calma.
+  - pan lateral: scale 1.3 com panX ±0.12 e ease 0.35, para abrir espaço a um componente lateral. panX negativo leva o apresentador para a ESQUERDA e libera a direita; positivo, o contrário. O zoom deve cobrir todo o tempo do componente.
+- Motion design: escolha componentes do catálogo e preencha params com o que a pessoa realmente disse. Comece o componente na palavra em que o assunto é dito e sincronize os itens com atWord.
+  - Nos textos, marque com *asteriscos* a palavra (uma ou duas) que carrega a emoção ou o ponto: ela sai em serifada itálica na cor de destaque. Não marque frases inteiras.
+  - Cenas de tela cheia (kinetic_pivot_card, step_progress, stat_counter com fullscreen) cobrem o apresentador: use em viradas de raciocínio, com 4 a 6 s, e nunca duas seguidas.
+  - acronym_list fica por cima do vídeo: combine com um pan lateral para o lado oposto.
+  - depth_hook_title é só para o gancho, nos primeiros segundos.
+- Formato: o contexto diz se o vídeo é vertical ou horizontal. No vertical há pouco espaço lateral: textos curtos.
+- Marca: não passe cores nos params — os componentes herdam o Brand Kit do usuário. A tarja (executive_lower_third) usa o nome e a credencial do Brand Kit quando você omite os params; se o Brand Kit não tem apresentador e o usuário não disse o nome, não invente: não use a tarja e avise.
+- Use os componentes que fazem diferença para quem assiste; não encha o vídeo.
 - Legendas: se a transcrição tem um erro evidente numa palavra que vai aparecer na tela (nome próprio, termo técnico, palavra trocada por outra parecida), corrija com edit_word. Só quando o contexto deixa a palavra certa clara.
 - Se houver SELEÇÃO ATIVA, o pedido vale só para aquelas palavras: não altere nada fora delas.
 - Se o pedido depender de transcrição e ela não existir, explique que é preciso transcrever o vídeo primeiro (botão "Transcrever") em vez de chutar.
 - Se o pedido for ambíguo a ponto de arriscar estragar a edição, pergunte antes. Para ajustes de gosto, decida você e conte o que fez.
 
 ## Resposta final
-Depois das edições, responda em português, em 1 a 3 frases curtas e num parágrafo só, dizendo o que mudou (quantos cortes, quanto tempo saiu, o que foi adicionado). Sem markdown, sem ids internos.
+Depois das edições, responda em português, em 1 a 3 frases curtas e num parágrafo só, dizendo o que mudou (quantos cortes, quanto tempo saiu, o que foi adicionado). Sem markdown, sem ids nem nomes internos de componentes, e sem listar o que você decidiu não fazer.
 
 ## Catálogo de componentes de motion design
 ${catalogForAgent()}`;
@@ -109,15 +117,13 @@ export async function POST(req: Request) {
     const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
     const { project, selection, message, history } = parsed.data;
-    // Mínimo para começar; cenas de motion são conferidas antes de cada inserção.
-    await assertCredits(user.id, PRICING.agentEdit);
+    await assertCredits(user.id, PRICING.agentCommand);
     const client = await anthropicClient();
     const model = await agentModel();
     const available = await balance(user.id);
 
     let working = project;
     const log: string[] = [];
-    let motionScenes = 0;
     const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
     const messages: Anthropic.Beta.BetaMessageParam[] = [
@@ -130,7 +136,7 @@ export async function POST(req: Request) {
 
     /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
     const settle = async () => {
-      const credits = log.length ? creditCost({ type: "agent", motionScenes }) : 0;
+      const credits = log.length ? creditCost({ type: "agent" }) : 0;
       if (usage.input || usage.output)
         await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits });
       return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
@@ -200,19 +206,10 @@ export async function POST(req: Request) {
             continue;
           }
           const ops = input.data.operations as OperationInput[];
-          const scenes = ops.filter((o) => o.op === "add_component").length;
-          const cost = creditCost({ type: "agent", motionScenes: motionScenes + scenes });
-          if (scenes && cost > available) {
-            fail(
-              `Créditos insuficientes: com ${motionScenes + scenes} cena(s) de motion o pedido custaria ${cost} créditos e o usuário tem ${available}. Nada desta chamada foi aplicado. Reduza as cenas de motion (cada uma custa ${PRICING.motionScene}) ou faça só os cortes e zooms, e conte isso ao usuário.`,
-            );
-            continue;
-          }
           try {
             const result = applyOperations(working, ops, { validateComponent });
             working = result.project;
             log.push(...result.log);
-            motionScenes += scenes;
             // A timeline do usuário é atualizada agora, sem esperar o agente terminar.
             send({ type: "ops", project: working, log: result.log });
             results.push({

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { PLANS, type PlanId } from "@videoeditor/core";
+import { formatCredits, PLANS, type PlanId } from "@videoeditor/core";
 import type { Me } from "./AdminPanel";
 import { api, Badge, brl, btn, btnDanger, btnPrimary, card, date, dateTime, ErrorBox, input, td, th, usd, useApi } from "./ui";
 
@@ -74,7 +74,7 @@ export function UsersTab({ me }: { me: Me }) {
                   <div className="text-xs text-zinc-500">{u.email}</div>
                 </td>
                 <td className={td}>{PLANS[u.plan]?.name ?? u.plan}</td>
-                <td className={`${td} text-right tabular-nums`}>{u.credits}</td>
+                <td className={`${td} text-right tabular-nums`}>{formatCredits(u.credits)}</td>
                 <td className={`${td} text-right tabular-nums`}>{usd(u.cost_usd)}</td>
                 <td className={`${td} text-right tabular-nums`}>{brl(u.paid_brl)}</td>
                 <td className={`${td} text-xs`}>{dateTime(u.last_seen_at)}</td>
@@ -141,7 +141,7 @@ function UserDrawer({ user, me, onClose, onChanged }: { user: UserRow; me: Me; o
           <div>
             <h2 className="text-lg font-semibold text-white">{user.name}</h2>
             <p className="text-sm text-zinc-400">{user.email}</p>
-            <p className="mt-1 text-xs text-zinc-500">Desde {date(user.created_at)} · {user.spent_credits} créditos usados</p>
+            <p className="mt-1 text-xs text-zinc-500">Desde {date(user.created_at)} · {formatCredits(user.spent_credits)} créditos usados</p>
           </div>
           <button className={btn} onClick={onClose} aria-label="Fechar">
             ✕
@@ -151,7 +151,7 @@ function UserDrawer({ user, me, onClose, onChanged }: { user: UserRow; me: Me; o
         <div className="mt-4 grid grid-cols-3 gap-2 text-center">
           <div className={card}>
             <div className="text-xs text-zinc-500">Saldo</div>
-            <div className="text-lg font-semibold text-amber-300">{user.credits}</div>
+            <div className="text-lg font-semibold text-amber-300">{formatCredits(user.credits)}</div>
           </div>
           <div className={card}>
             <div className="text-xs text-zinc-500">Custo IA</div>

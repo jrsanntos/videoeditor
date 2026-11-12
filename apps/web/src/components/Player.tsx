@@ -2,8 +2,11 @@
 
 import { useEffect, useRef } from "react";
 import { mainClipAt, projectDuration } from "@videoeditor/core";
-import { renderFrame } from "@videoeditor/renderer";
+import { needsPersonAt, renderFrame } from "@videoeditor/renderer";
+import { loadBrandFonts } from "@/lib/fonts";
 import { mediaUrl } from "@/lib/media";
+import { maskKey, personMask } from "@/lib/segmentation";
+import { createSfxPlayer } from "@/lib/sfx";
 import { useEditor } from "@/lib/store";
 
 export const formatTime = (t: number) => {
@@ -20,12 +23,19 @@ export const formatTime = (t: number) => {
 export function Player() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fontPair = useEditor((s) => s.project?.brand.fontPair);
+
+  // O canvas só usa a fonte depois de carregada; o laço de desenho pega a troca no quadro seguinte.
+  useEffect(() => {
+    if (fontPair) void loadBrandFonts({ fontPair });
+  }, [fontPair]);
 
   useEffect(() => {
     let raf = 0;
     let activeClipId: string | null = null;
     let engineTime = -1;
     let lastWall = performance.now();
+    const sfx = createSfxPlayer();
 
     const tick = (now: number) => {
       const s = useEditor.getState();
@@ -77,22 +87,38 @@ export function Player() {
           video.pause();
           useEditor.setState({ playing: false });
         }
+        // Efeitos sonoros: dispara os que caem entre o quadro anterior e este.
+        if (s.playing && engineTime >= 0) sfx.advance(p, engineTime, t);
         if (t !== s.time) useEditor.setState({ time: t });
         engineTime = t;
 
         const ctx = canvas.getContext("2d");
         if (ctx)
-          renderFrame(ctx, p, t, (c) =>
-            video.readyState >= 2 && video.dataset.asset === c.assetId
-              ? { image: video, width: video.videoWidth, height: video.videoHeight }
-              : null,
+          renderFrame(
+            ctx,
+            p,
+            t,
+            (c) =>
+              video.readyState >= 2 && video.dataset.asset === c.assetId
+                ? { image: video, width: video.videoWidth, height: video.videoHeight }
+                : null,
+            {
+              guides: s.guides,
+              // Segmenta só enquanto um título com profundidade está na tela.
+              getPersonMask: needsPersonAt(p, t)
+                ? (c, frame) => personMask(maskKey(c.assetId, video.currentTime, p.fps), frame.image, frame.width, frame.height)
+                : undefined,
+            },
           );
       }
       lastWall = now;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      sfx.close();
+    };
   }, []);
 
   return (

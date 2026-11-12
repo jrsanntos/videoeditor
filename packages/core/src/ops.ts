@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrandKitSchema, CaptionStyleSchema, type Clip, type Project, type TimeRange } from "./schema";
+import { BrandKitSchema, CaptionStyleSchema, FORMATS, type Clip, type Project, type TimeRange } from "./schema";
 import {
   MIN_CLIP,
   clipEnd,
@@ -90,6 +90,17 @@ const zoomFields = {
   x: z.number().min(0).max(1).default(0.5),
   y: z.number().min(0).max(1).default(0.4),
   ease: z.number().min(0).default(0.25),
+  mode: z
+    .enum(["hold", "creep"])
+    .default("hold")
+    .describe("hold: entra, segura e sai. creep: avanço lento e contínuo de 1 até scale durante o clip inteiro (use scale 1.06–1.12, 3–6 s)"),
+  panX: z
+    .number()
+    .min(-0.5)
+    .max(0.5)
+    .default(0)
+    .describe("pan lateral em fração da largura. Positivo leva o apresentador para a DIREITA (abre espaço à esquerda); negativo para a esquerda. Exige scale ≥ 1.2; típico ±0.12 com scale 1.3"),
+  panY: z.number().min(-0.5).max(0.5).default(0),
 };
 const AddZoom = z
   .object({
@@ -130,6 +141,9 @@ const UpdateClip = z
     x: z.number().min(0).max(1).optional(),
     y: z.number().min(0).max(1).optional(),
     ease: z.number().min(0).optional(),
+    mode: z.enum(["hold", "creep"]).optional(),
+    panX: z.number().min(-0.5).max(0.5).optional(),
+    panY: z.number().min(-0.5).max(0.5).optional(),
     params: z.record(z.string(), z.unknown()).optional(),
   })
   .describe(
@@ -153,6 +167,15 @@ const SetBrand = z
   .object({ op: z.literal("set_brand"), brand: BrandKitSchema.partial() })
   .describe("Altera o Brand Kit do projeto (cores, par de fontes, nome e credencial).");
 
+const SetFormat = z
+  .object({
+    op: z.literal("set_format"),
+    aspectRatio: z.enum(["9:16", "16:9"]).optional(),
+    framing: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).partial().optional(),
+    sfx: z.object({ enabled: z.boolean(), volume: z.number().min(0).max(2) }).partial().optional(),
+  })
+  .describe("Muda o formato do quadro (vertical/horizontal), o reenquadramento do vídeo de origem e os efeitos sonoros.");
+
 export const OperationSchema = z.discriminatedUnion("op", [
   RemoveRanges,
   CutWords,
@@ -167,6 +190,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
   SetCaptions,
   EditWord,
   SetBrand,
+  SetFormat,
 ]);
 export type Operation = z.infer<typeof OperationSchema>;
 export type OperationInput = z.input<typeof OperationSchema>;
@@ -338,6 +362,9 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         x: op.x,
         y: op.y,
         ease: Math.min(op.ease, duration / 2),
+        mode: op.mode,
+        panX: op.panX,
+        panY: op.panY,
       });
       return `zoom ${op.scale}x em ${fmt(start)} por ${fmt(duration)}`;
     }
@@ -375,6 +402,9 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         if (op.x !== undefined) clip.x = op.x;
         if (op.y !== undefined) clip.y = op.y;
         if (op.ease !== undefined) clip.ease = op.ease;
+        if (op.mode !== undefined) clip.mode = op.mode;
+        if (op.panX !== undefined) clip.panX = op.panX;
+        if (op.panY !== undefined) clip.panY = op.panY;
         clip.ease = Math.min(clip.ease, clip.duration / 2);
       } else if (op.params) {
         const merged = { ...clip.params, ...resolveTimedParams(p, op.params, clip.start, clip.duration) };
@@ -386,6 +416,16 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       if (op.enabled !== undefined) p.captions.enabled = op.enabled;
       if (op.style) p.captions.style = CaptionStyleSchema.parse({ ...p.captions.style, ...op.style });
       return `legendas ${p.captions.enabled ? "ligadas" : "desligadas"}`;
+    }
+    case "set_format": {
+      if (op.aspectRatio) {
+        p.aspectRatio = op.aspectRatio;
+        p.width = FORMATS[op.aspectRatio].width;
+        p.height = FORMATS[op.aspectRatio].height;
+      }
+      if (op.framing) p.framing = { ...p.framing, ...op.framing };
+      if (op.sfx) p.sfx = { ...p.sfx, ...op.sfx };
+      return `formato ${p.aspectRatio} (${p.width}x${p.height})`;
     }
     case "set_brand": {
       p.brand = BrandKitSchema.parse({ ...p.brand, ...op.brand });

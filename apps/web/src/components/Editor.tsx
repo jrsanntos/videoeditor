@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PRICING, projectDuration } from "@videoeditor/core";
+import { formatCredits, PRICING, projectDuration } from "@videoeditor/core";
 import { closeProject, importVideo, logout, refreshMe } from "@/lib/actions";
 import { downloadBlob, exportInBrowser } from "@/lib/export";
 import { loadMedia } from "@/lib/media";
@@ -141,7 +141,7 @@ function TopBar() {
       </div>
       <div className="ml-auto flex items-center gap-3">
         <a href="/planos" className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-600" title="Saldo de créditos da sua conta. Clique para ver planos e comprar créditos.">
-          <b className="text-amber-300" data-testid="credits">{credits}</b> créditos
+          <b className="text-amber-300" data-testid="credits">{formatCredits(credits)}</b> créditos
         </a>
         <button
           className={btn}

@@ -10,3 +10,5 @@ next-env.d.ts
 apps/web/AGENTS.md
 # Banco local e chave de cifra (apps/web/.data)
 .data
+# Runtime WASM do MediaPipe, copiado de node_modules (scripts/copy-mediapipe.mjs)
+apps/web/public/mediapipe/wasm

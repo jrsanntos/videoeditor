@@ -11,6 +11,7 @@ import {
   findRetakes,
   AgentOperationSchema,
   ProjectSchema,
+  safeArea,
   shiftTimedParams,
   clipEnd,
   createProject,
@@ -204,7 +205,8 @@ describe("agente e créditos", () => {
 
   it("precificação segue a tabela de unit economics", () => {
     expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(10);
-    expect(creditCost({ type: "agent", motionScenes: 1 })).toBe(17);
+    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(2);
+    expect(creditCost({ type: "agent" })).toBe(0.5);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
     expect(creditCost({ type: "browser_export" })).toBe(0);
@@ -355,6 +357,30 @@ describe("takes ruins", () => {
     const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 12, hasAudio: true, transcript: { words } });
     const { project } = applyOperations(p, [{ op: "remove_retakes" }]);
     expect(timelineWords(project).map((w) => w.text).join(" ")).toBe("Olá. o segredo do sucesso. Você precisa de foco. Você precisa de método.");
+  });
+});
+
+describe("formato e áreas seguras", () => {
+  it("projeto novo é vertical 1080×1920; projeto antigo sem o campo continua horizontal", () => {
+    const p = createProject({ name: "x" });
+    expect([p.aspectRatio, p.width, p.height]).toEqual(["9:16", 1080, 1920]);
+    const { aspectRatio: _a, framing: _f, sfx: _s, ...old } = createProject({ name: "x", aspectRatio: "16:9" });
+    expect(ProjectSchema.parse(old)).toMatchObject({ aspectRatio: "16:9", framing: { x: 0.5, y: 0.5 }, sfx: { enabled: true } });
+  });
+
+  it("set_format troca as dimensões e preserva a edição", () => {
+    const { project } = applyOperations(fixture(), [{ op: "add_zoom", start: 1, duration: 2 }, { op: "set_format", aspectRatio: "16:9", framing: { x: 0.3 } }]);
+    expect([project.width, project.height, project.framing.x, project.framing.y]).toEqual([1920, 1080, 0.3, 0.5]);
+    expect(getTrack(project, "fx").clips).toHaveLength(1);
+  });
+
+  it("no vertical as margens cobrem a interface dos apps: mais embaixo e à direita", () => {
+    const v = safeArea(createProject({ name: "v" }));
+    const h = safeArea(createProject({ name: "h", aspectRatio: "16:9" }));
+    expect(v.bottom).toBeGreaterThan(v.top);
+    expect(v.right).toBeGreaterThan(v.left);
+    expect(v.bottom / 1920).toBeGreaterThan(0.2);
+    expect(h.bottom / 1080).toBeLessThan(0.1);
   });
 });
 

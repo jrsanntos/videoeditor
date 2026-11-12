@@ -31,9 +31,9 @@ export const SKILLS: Record<SkillId, Skill> = {
     ],
     direction: `Estilo viral de alta retenção.
 - Corte tudo que não empurra o vídeo para a frente: takes ruins que sobraram, enrolação, frases de aquecimento antes do gancho.
-- Gancho: nos 3 primeiros segundos, destaque a promessa do vídeo com um componente de texto de impacto.
-- Câmera: alterne o enquadramento a cada 3–6 s. Use punch-in seco (ease 0, escala 1.15–1.3) nas ênfases e nas trocas de frase; nunca deixe mais de 8 s sem mudança visual.
-- Motion: a cada ideia nova, um componente (lista quando enumerar, contador quando citar número, destaque de texto na frase-chave). Sincronize cada item com a palavra em que é dito.`,
+- Gancho: abra com depth_hook_title sobre a primeira frase (título de 1 a 3 palavras com a promessa do vídeo, mais os textos laterais).
+- Câmera: alterne o enquadramento a cada 3–6 s — punch-in seco nas ênfases e trocas de frase, pan lateral quando houver lista. Nunca deixe mais de 8 s sem mudança visual.
+- Motion: uma cena de tela cheia a cada virada de raciocínio (kinetic_pivot_card para problema → solução; step_progress para etapas ou evolução), acronym_list quando enumerar, stat_counter quando citar número. Sincronize cada item com a palavra em que é dito.`,
   },
   autoridade: {
     id: "autoridade",
@@ -47,9 +47,9 @@ export const SKILLS: Record<SkillId, Skill> = {
     ],
     direction: `Estilo de autoridade executiva: sobriedade acima de tudo.
 - Preserve as pausas de raciocínio; corte só erros de gravação e silêncios longos que sobraram.
-- Abra com a tarja de nome e credencial (lower_third, sem params de nome: ela usa o Brand Kit) sobre a primeira frase.
-- Câmera: poucos zooms, lentos e suaves (escala 1.06–1.12, ease 1.5 ou mais, 4–6 s) nas frases mais importantes. Nada de punch-in seco.
-- Motion: no máximo um componente por minuto, só para organizar a explicação (lista de pontos, um número relevante). Sem efeitos chamativos.`,
+- Abra com a tarja de nome e credencial (executive_lower_third, sem params: ela usa o Brand Kit) sobre a primeira frase.
+- Câmera: poucos movimentos, só creep zoom (mode creep, escala 1.06–1.1, 4–5 s) nas frases mais importantes. Nada de punch-in seco.
+- Motion: no máximo um componente a cada 40 s, só para organizar a explicação — acronym_list para os pontos de uma lei, diagnóstico ou estratégia (com pan lateral suave), stat_counter para um número relevante. Sem cenas de tela cheia e sem depth_hook_title.`,
   },
   vsl: {
     id: "vsl",
@@ -63,9 +63,9 @@ export const SKILLS: Record<SkillId, Skill> = {
     ],
     direction: `Estilo direct response (VSL): cada segundo precisa vender.
 - Cortes rápidos: tire hesitações e qualquer trecho que repita o que já foi dito.
-- Sempre que a pessoa citar um número, prazo, preço ou resultado, mostre-o com contador (counter) ou gráfico, sincronizado com a palavra.
-- Destaque em texto as dores e os benefícios centrais (text_highlight), no momento em que são ditos.
-- Câmera: punch-in seco nas promessas e na chamada para ação; zoom lento nas histórias.`,
+- Sempre que a pessoa citar um número, prazo, preço ou resultado, mostre-o com stat_counter na palavra exata; o número mais forte do vídeo vai em tela cheia.
+- Dores e benefícios centrais: kinetic_pivot_card (a dor na primeira frase, o benefício na conclusão) ou acronym_list quando forem vários.
+- Câmera: punch-in seco nas promessas e na chamada para ação; creep zoom nas histórias.`,
   },
   limpeza: {
     id: "limpeza",

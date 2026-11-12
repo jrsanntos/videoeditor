@@ -16,8 +16,11 @@ import {
   WebMOutputFormat,
 } from "mediabunny";
 import { mainClips, projectDuration, type Project } from "@videoeditor/core";
-import { renderFrame, type FrameSource } from "@videoeditor/renderer";
+import { personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
+import { loadBrandFonts } from "./fonts";
 import { mediaBlob } from "./media";
+import { ensureSegmenter, maskKey, personMask } from "./segmentation";
+import { scheduleSfx } from "./sfx";
 
 /**
  * Exportação local via WebCodecs: decodifica, compõe e codifica o vídeo final
@@ -51,6 +54,11 @@ export async function exportInBrowser(
   const output = new Output({ format, target: new BufferTarget() });
   const videoSource = new CanvasSource(canvas, { codec: videoCodec, bitrate: QUALITY_HIGH });
   output.addVideoTrack(videoSource, { frameRate: fps });
+
+  // Fontes do Brand Kit e, se algum título usa profundidade, o modelo de segmentação.
+  await loadBrandFonts(project.brand);
+  const depth = personIntervals(project);
+  if (depth.length) await ensureSegmenter();
 
   const audioBuffer = await mixAudio(project, duration);
   const audioCodec = audioBuffer
@@ -93,7 +101,13 @@ export async function exportInBrowser(
         if (signal?.aborted) throw new DOMException("Exportação cancelada", "AbortError");
         if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };
         const t = frame / fps;
-        renderFrame(ctx, project, t, () => last);
+        const sourceTime = sourceTimes[frame - first] ?? clip.sourceStart;
+        renderFrame(ctx, project, t, () => last, {
+          // Segmentação só nos quadros dos trechos que pedem; as máscaras vistas no preview vêm do cache.
+          getPersonMask: depth.some((r) => t >= r.start && t < r.end)
+            ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height)
+            : undefined,
+        });
         await videoSource.add(t, 1 / fps);
         frame++;
         if (frame % 5 === 0) onProgress(frame / totalFrames);
@@ -135,7 +149,7 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
   } finally {
     void ac.close();
   }
-  if (![...decoded.values()].some(Boolean)) return null;
+  if (![...decoded.values()].some(Boolean) && !soundEvents(project).length) return null;
 
   const off = new OfflineAudioContext(2, Math.ceil(duration * RATE), RATE);
   for (const clip of clips) {
@@ -153,6 +167,8 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
     src.connect(gain).connect(off.destination);
     src.start(clip.start, clip.sourceStart, clip.duration);
   }
+  // Efeitos sonoros nos mesmos instantes do preview.
+  scheduleSfx(off, project);
   return off.startRendering();
 }
 

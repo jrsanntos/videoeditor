@@ -40,7 +40,14 @@ Propriedades que importam:
 
 ## 4. Renderizador único (`packages/renderer`)
 
-`renderFrame(ctx, project, t, getFrame)` desenha o quadro do instante `t` em um Canvas 2D: vídeo de origem (com zoom) → componentes → legendas. É função pura de (estado, tempo, frame de origem).
+`renderFrame(ctx, project, t, getFrame, options)` desenha o quadro do instante `t` em um Canvas 2D: vídeo de origem pela câmera virtual → componentes → legendas. É função pura de (estado, tempo, frame de origem).
+
+- **Formato**: `project.aspectRatio` é `9:16` (1080×1920, padrão) ou `16:9`. O vídeo de origem sempre preenche o quadro; `project.framing` escolhe a parte visível quando há recorte. `safeArea(project)` dá as margens que legendas e componentes respeitam (no vertical, a interface dos apps embaixo e à direita). A unidade de layout `u` vale 1px quando o lado menor tem 1080.
+- **Câmera** (`camera.ts`): `cameraAt` devolve o retângulo onde o vídeo é desenhado. Um clip de zoom tem escala, ponto focal, `panX`/`panY` e modo `hold` (entra, segura, sai) ou `creep` (avanço contínuo). O resultado é preso às bordas, então nunca aparece faixa preta. A velocidade entre dois quadros decide o motion blur: `ctx.filter` onde existe, senão um rastro de três amostras.
+- **Curvas** (`draw.ts`): `cubicBezier` e as curvas da casa (`EASE.snap`, `swift`, `glide`). `enter()` aplica deslocamento, opacidade e desfoque proporcional à velocidade na entrada de elementos.
+- **Tipografia** (`text.ts`): `layoutRich`/`drawRich` medem palavra a palavra e misturam a sem serifa com a serifada itálica nas palavras marcadas com `*asteriscos*`; `typewriter` dá o texto digitado com cursor. As fontes vêm do par do Brand Kit, carregadas pela FontFace API a partir de `public/fonts`.
+- **Texto atrás da pessoa**: o compositor monta o recorte do apresentador (vídeo × máscara) numa tela auxiliar e o componente o redesenha por cima do texto. A máscara vem de `options.getPersonMask`, pedida só enquanto um componente com `needsPerson` está na tela. No navegador ela é do MediaPipe Selfie Segmentation (modelo e WASM servidos pela aplicação), com cache por quadro de origem. Sem máscara, o título vai para cima da cabeça.
+- **Som** (`sounds.ts`): `soundEvents(project)` deriva do estado os efeitos (whoosh em movimento rápido de câmera e giro de texto, teclas na digitação, pop em itens de lista, golpe grave nas cenas de tela cheia) e `synthSfx` sintetiza cada um em código, de forma determinística. O preview dispara os eventos pelo relógio da timeline; a exportação agenda os mesmos eventos na mixagem.
 
 O mesmo código serve:
 
@@ -52,11 +59,11 @@ O mesmo código serve:
 
 Remotion renderiza DOM/React, e DOM não vira vídeo no navegador do cliente sem um Chromium no servidor — o que mataria a exportação local gratuita, uma das travas de caixa do modelo. Além disso, a licença do Remotion é paga para empresas acima de três pessoas. Com Canvas 2D, preview e export são literalmente a mesma função. O custo é que componentes são escritos como funções de desenho em vez de JSX/CSS; para uma biblioteca paramétrica fechada isso é aceitável.
 
-## 5. Biblioteca de componentes (`packages/renderer/src/components/library.ts`)
+## 5. Biblioteca de componentes (`packages/renderer/src/components`)
 
-Cada componente é `{ id, descrição, schema zod dos params, exemplo, draw(params, t) }`. O agente **escolhe um id e preenche params**; nunca escreve código de animação. Consequências: ~80% menos tokens por cena, zero bug visual gerado por LLM, e comandos comuns cabem em modelos mais baratos.
+Componentes são funções puras de (params, tempo) em Canvas 2D, com schema zod. O agente escolhe um id e preenche params; nunca escreve código de animação.
 
-Hoje: `lower_third`, `title_card`, `bar_chart`, `counter`, `text_highlight`, `bullet_list`. Meta: 50–100. O catálogo enviado ao agente é gerado a partir dos próprios schemas (`catalogForAgent`), então adicionar um componente o expõe à IA, ao inspetor e à validação de uma vez.
+Os seis da v1.0 (`v1.ts`) são o catálogo do agente: `depth_hook_title`, `kinetic_pivot_card`, `step_progress`, `acronym_list`, `executive_lower_third` e `stat_counter`. Todos herdam cores, fontes e credencial do Brand Kit, respeitam as áreas seguras e declaram seus efeitos sonoros. As cenas de tela cheia usam o fundo topográfico (`background.ts`). Os componentes anteriores (`library.ts`) continuam válidos e aparecem só no menu manual.
 
 ## 6. Agente (`apps/web/src/app/api/agent/route.ts`)
 
@@ -81,7 +88,7 @@ Limitações conhecidas desta abordagem, tratadas no roadmap: `decodeAudioData` 
 
 ## 8. Créditos (`packages/core/src/credits.ts`)
 
-Moeda interna única. Tudo que roda no navegador custa 0; cobram inteligência, mídia generativa e render em nuvem. A tabela de preços e os planos vivem em código, junto de `creditCost(action)`, para que servidor e UI usem a mesma fonte. O agente só cobra quando a timeline realmente mudou.
+Moeda interna única. Tudo que roda no navegador custa 0 — inclusive desenhar componentes, zooms e tarjas; cobram inteligência, mídia generativa e render em nuvem. O consumo de IA segue a duração do vídeo: 1 crédito por minuto (arredondado para cima) na transcrição, mais 0,5 crédito por comando no chat que altere a timeline. Saldos aceitam uma casa decimal. A tabela de preços e os planos vivem em código, junto de `creditCost(action)`, para que servidor e UI usem a mesma fonte. O agente só cobra quando a timeline realmente mudou.
 
 O saldo vive no servidor, num ledger (`credit_ledger`): cada cadastro, concessão, renovação e cobrança é uma linha que nunca é sobrescrita. O saldo é materializado em `users` (lido em O(1), alterado sempre na mesma transação do ledger, com bloqueio de linha) e dividido em dois: créditos **do plano**, que não acumulam e voltam ao valor mensal a cada renovação, e créditos **extras** (pacotes avulsos e concessões), que sobrevivem às renovações. O consumo sai primeiro do plano. As rotas pagas conferem o saldo antes de chamar o provedor (`assertCredits`) e cobram depois do resultado (`charge`); o agente confere de novo antes de cada cena de motion, para nunca passar do saldo. Cada chamada de IA grava o custo real (tokens, segundos de áudio) em `usage_events`, que alimenta o financeiro.
 

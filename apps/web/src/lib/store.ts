@@ -39,6 +39,8 @@ type State = {
   user: SessionUser | null;
   chat: ChatMessage[];
   busy: string | null;
+  /** Mostra as áreas seguras por cima do preview (nunca entra na exportação). */
+  guides: boolean;
   notice: string | null;
 
   /** history: true empilha o estado atual para desfazer; "keep" troca o projeto sem mexer no histórico (atualizações ao vivo do agente). */
@@ -75,6 +77,7 @@ export const useEditor = create<State>((set, get) => ({
   user: null,
   chat: [],
   busy: null,
+  guides: false,
   notice: null,
 
   setProject: (project, opts) =>
