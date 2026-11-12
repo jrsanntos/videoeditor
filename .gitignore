@@ -6,3 +6,5 @@ dist
 .env.local
 .DS_Store
 next-env.d.ts
+# Gerado pelo next dev
+apps/web/AGENTS.md
