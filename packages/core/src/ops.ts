@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CaptionStyleSchema, type Clip, type Project, type TimeRange } from "./schema";
+import { BrandKitSchema, CaptionStyleSchema, FORMATS, type Clip, type Project, type TimeRange } from "./schema";
 import {
   MIN_CLIP,
   clipEnd,
@@ -11,8 +11,12 @@ import {
   projectDuration,
   r3,
   sortTrack,
+  sourceRangesToTimeline,
+  timelineWord,
   timelineWords,
+  wordCutRange,
 } from "./timeline";
+import { findRetakes } from "./retakes";
 import { silencesFromWords } from "./silence";
 
 /**
@@ -26,92 +30,187 @@ const RangeSchema = z.object({
   end: z.number().min(0).describe("fim em segundos (tempo de timeline)"),
 });
 
+/**
+ * Âncoras por palavra. Um id de palavra aponta para um instante do vídeo
+ * BRUTO, que não muda com cortes: o core traduz para tempo de timeline na
+ * hora de aplicar. É o que impede zooms e componentes de ficarem deslocados
+ * (ripple shift) e torna a ordem das operações irrelevante.
+ */
+const atWord = z.string().describe("id da palavra em que começa (ex.: w42)");
+const untilWord = z.string().describe("id da palavra em que termina, inclusive; alternativa a duration");
+const WordSpanSchema = z.object({
+  from: z.string().describe("id da primeira palavra a cortar"),
+  to: z.string().describe("id da última palavra a cortar (inclusive); igual a from para cortar uma palavra só"),
+});
+
+const RemoveRanges = z
+  .object({ op: z.literal("remove_ranges"), ranges: z.array(RangeSchema).min(1) })
+  .describe(
+    "Corta trechos da timeline e fecha o buraco (ripple) em todas as trilhas. Todas as faixas se referem à timeline ANTES desta operação.",
+  );
+const CutWords = z
+  .object({ op: z.literal("cut_words"), cuts: z.array(WordSpanSchema).min(1) })
+  .describe(
+    "Corta trechos de fala por palavra e fecha o buraco (ripple). Cada corte remove de `from` a `to` inclusive e cai sempre no intervalo entre palavras. É a forma de tirar erros, repetições e trechos indesejados.",
+  );
+const RemoveRetakes = z
+  .object({
+    op: z.literal("remove_retakes"),
+    minConfidence: z.enum(["alta", "media"]).default("alta").describe("alta = só erros quase certos; media inclui os duvidosos"),
+  })
+  .describe("Remove de forma determinística os takes ruins detectados na transcrição (retomadas, gaguejos, avisos de erro), mantendo o último take.");
+const RemoveSilences = z
+  .object({
+    op: z.literal("remove_silences"),
+    minSilence: z.number().min(0.15).default(0.5).describe("pausa mínima (s) para cortar"),
+    padding: z.number().min(0).default(0.1).describe("respiro (s) mantido em cada lado da fala"),
+    range: RangeSchema.optional().describe("limita a detecção a este trecho"),
+    fromWord: z.string().optional().describe("limita a detecção: a partir desta palavra"),
+    toWord: z.string().optional().describe("limita a detecção: até esta palavra"),
+  })
+  .describe("Detecta pausas entre palavras da transcrição e as remove de forma determinística.");
+const Split = z
+  .object({ op: z.literal("split"), time: z.number().min(0) })
+  .describe("Divide o clip de vídeo principal no tempo indicado.");
+const DeleteClip = z
+  .object({ op: z.literal("delete_clip"), clipId: z.string() })
+  .describe("Remove um clip. Na trilha principal o buraco é fechado (ripple).");
+const TrimClip = z
+  .object({
+    op: z.literal("trim_clip"),
+    clipId: z.string(),
+    sourceStart: z.number().min(0).optional(),
+    sourceEnd: z.number().min(0).optional(),
+  })
+  .describe(
+    "Ajusta o ponto de entrada/saída (tempo de ORIGEM) de um clip de vídeo principal, encurtando ou recuperando material. O restante da timeline acompanha.",
+  );
+const zoomFields = {
+  scale: z.number().min(1).max(4).default(1.25),
+  x: z.number().min(0).max(1).default(0.5),
+  y: z.number().min(0).max(1).default(0.4),
+  ease: z.number().min(0).default(0.25),
+  mode: z
+    .enum(["hold", "creep"])
+    .default("hold")
+    .describe("hold: entra, segura e sai. creep: avanço lento e contínuo de 1 até scale durante o clip inteiro (use scale 1.06–1.12, 3–6 s)"),
+  panX: z
+    .number()
+    .min(-0.5)
+    .max(0.5)
+    .default(0)
+    .describe("pan lateral em fração da largura. Positivo leva o apresentador para a DIREITA (abre espaço à esquerda); negativo para a esquerda. Exige scale ≥ 1.2; típico ±0.12 com scale 1.3"),
+  panY: z.number().min(-0.5).max(0.5).default(0),
+};
+const AddZoom = z
+  .object({
+    op: z.literal("add_zoom"),
+    start: z.number().min(0).optional().describe("início em tempo de timeline; alternativa a atWord"),
+    atWord: atWord.optional(),
+    duration: z.number().positive().optional(),
+    untilWord: untilWord.optional(),
+    ...zoomFields,
+  })
+  .describe("Zoom no vídeo principal. ease=0 gera punch-in seco; ease>0 gera zoom suave.");
+const componentParams = z
+  .record(z.string(), z.unknown())
+  .describe(
+    "params do componente. Onde o componente aceita um instante `at` (segundos desde o início dele), você pode mandar `atWord` com o id da palavra: o instante é calculado na aplicação.",
+  );
+const AddComponent = z
+  .object({
+    op: z.literal("add_component"),
+    component: z.string().describe("id de um componente do catálogo"),
+    start: z.number().min(0).optional().describe("início em tempo de timeline; alternativa a atWord"),
+    atWord: atWord.optional(),
+    duration: z.number().positive().optional(),
+    untilWord: untilWord.optional(),
+    params: componentParams,
+  })
+  .describe("Insere um componente de motion design do catálogo sobre o vídeo.");
+const UpdateClip = z
+  .object({
+    op: z.literal("update_clip"),
+    clipId: z.string(),
+    start: z.number().min(0).optional(),
+    atWord: atWord.optional(),
+    duration: z.number().positive().optional(),
+    untilWord: untilWord.optional(),
+    volume: z.number().min(0).max(2).optional(),
+    scale: z.number().min(1).max(4).optional(),
+    x: z.number().min(0).max(1).optional(),
+    y: z.number().min(0).max(1).optional(),
+    ease: z.number().min(0).optional(),
+    mode: z.enum(["hold", "creep"]).optional(),
+    panX: z.number().min(-0.5).max(0.5).optional(),
+    panY: z.number().min(-0.5).max(0.5).optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
+  })
+  .describe(
+    "Altera um clip existente. Início/duração valem para zoom e componentes; params é mesclado aos params atuais do componente; volume vale para vídeo.",
+  );
+const SetCaptions = z
+  .object({
+    op: z.literal("set_captions"),
+    enabled: z.boolean().optional(),
+    style: CaptionStyleSchema.partial().optional(),
+  })
+  .describe("Liga/desliga e estiliza as legendas automáticas (geradas a partir da transcrição).");
+const EditWord = z
+  .object({
+    op: z.literal("edit_word"),
+    wordId: z.string(),
+    text: z.string().describe("novo texto; string vazia oculta a palavra da legenda"),
+  })
+  .describe("Corrige o texto de uma palavra da transcrição/legenda.");
+const SetBrand = z
+  .object({ op: z.literal("set_brand"), brand: BrandKitSchema.partial() })
+  .describe("Altera o Brand Kit do projeto (cores, par de fontes, nome e credencial).");
+
+const SetFormat = z
+  .object({
+    op: z.literal("set_format"),
+    aspectRatio: z.enum(["9:16", "16:9"]).optional(),
+    framing: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).partial().optional(),
+    sfx: z.object({ enabled: z.boolean(), volume: z.number().min(0).max(2) }).partial().optional(),
+  })
+  .describe("Muda o formato do quadro (vertical/horizontal), o reenquadramento do vídeo de origem e os efeitos sonoros.");
+
 export const OperationSchema = z.discriminatedUnion("op", [
-  z
-    .object({
-      op: z.literal("remove_ranges"),
-      ranges: z.array(RangeSchema).min(1),
-    })
-    .describe(
-      "Corta trechos da timeline e fecha o buraco (ripple) em todas as trilhas. Todas as faixas se referem à timeline ANTES desta operação.",
-    ),
-  z
-    .object({
-      op: z.literal("remove_silences"),
-      minSilence: z.number().min(0.15).default(0.5).describe("pausa mínima (s) para cortar"),
-      padding: z.number().min(0).default(0.1).describe("respiro (s) mantido em cada lado da fala"),
-      range: RangeSchema.optional().describe("limita a detecção a este trecho"),
-    })
-    .describe("Detecta pausas entre palavras da transcrição e as remove de forma determinística."),
-  z
-    .object({ op: z.literal("split"), time: z.number().min(0) })
-    .describe("Divide o clip de vídeo principal no tempo indicado."),
-  z
-    .object({ op: z.literal("delete_clip"), clipId: z.string() })
-    .describe("Remove um clip. Na trilha principal o buraco é fechado (ripple)."),
-  z
-    .object({
-      op: z.literal("trim_clip"),
-      clipId: z.string(),
-      sourceStart: z.number().min(0).optional(),
-      sourceEnd: z.number().min(0).optional(),
-    })
-    .describe(
-      "Ajusta o ponto de entrada/saída (tempo de ORIGEM) de um clip de vídeo principal, encurtando ou recuperando material. O restante da timeline acompanha.",
-    ),
-  z
-    .object({
-      op: z.literal("add_zoom"),
-      start: z.number().min(0),
-      duration: z.number().positive(),
-      scale: z.number().min(1).max(4).default(1.25),
-      x: z.number().min(0).max(1).default(0.5),
-      y: z.number().min(0).max(1).default(0.4),
-      ease: z.number().min(0).default(0.25),
-    })
-    .describe("Zoom no vídeo principal. ease=0 gera punch-in seco; ease>0 gera zoom suave."),
-  z
-    .object({
-      op: z.literal("add_component"),
-      component: z.string().describe("id de um componente do catálogo"),
-      start: z.number().min(0),
-      duration: z.number().positive(),
-      params: z.record(z.string(), z.unknown()),
-    })
-    .describe("Insere um componente de motion design do catálogo sobre o vídeo."),
-  z
-    .object({
-      op: z.literal("update_clip"),
-      clipId: z.string(),
-      start: z.number().min(0).optional(),
-      duration: z.number().positive().optional(),
-      volume: z.number().min(0).max(2).optional(),
-      scale: z.number().min(1).max(4).optional(),
-      x: z.number().min(0).max(1).optional(),
-      y: z.number().min(0).max(1).optional(),
-      ease: z.number().min(0).optional(),
-      params: z.record(z.string(), z.unknown()).optional(),
-    })
-    .describe(
-      "Altera um clip existente. start/duration valem para zoom e componentes; params é mesclado aos params atuais do componente; volume vale para vídeo.",
-    ),
-  z
-    .object({
-      op: z.literal("set_captions"),
-      enabled: z.boolean().optional(),
-      style: CaptionStyleSchema.partial().optional(),
-    })
-    .describe("Liga/desliga e estiliza as legendas automáticas (geradas a partir da transcrição)."),
-  z
-    .object({
-      op: z.literal("edit_word"),
-      wordId: z.string(),
-      text: z.string().describe("novo texto; string vazia oculta a palavra da legenda"),
-    })
-    .describe("Corrige o texto de uma palavra da transcrição/legenda."),
+  RemoveRanges,
+  CutWords,
+  RemoveRetakes,
+  RemoveSilences,
+  Split,
+  DeleteClip,
+  TrimClip,
+  AddZoom,
+  AddComponent,
+  UpdateClip,
+  SetCaptions,
+  EditWord,
+  SetBrand,
+  SetFormat,
 ]);
 export type Operation = z.infer<typeof OperationSchema>;
 export type OperationInput = z.input<typeof OperationSchema>;
+
+/**
+ * Vocabulário do agente: as mesmas operações, só com referências estáveis
+ * (palavra/clip). Tempo de timeline fica de fora — ele muda a cada corte e é
+ * a origem dos erros de sincronia.
+ */
+export const AgentOperationSchema = z.discriminatedUnion("op", [
+  CutWords,
+  RemoveRetakes,
+  RemoveSilences.omit({ range: true }),
+  AddZoom.omit({ start: true }).extend({ atWord }),
+  AddComponent.omit({ start: true }).extend({ atWord }),
+  UpdateClip.omit({ start: true }),
+  DeleteClip,
+  SetCaptions,
+  EditWord,
+]);
 
 export class OperationError extends Error {
   constructor(
@@ -172,13 +271,23 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       const total = ranges.reduce((s, r) => s + r.end - r.start, 0);
       return `${ranges.length} corte(s), ${fmt(total)} removidos`;
     }
+    case "cut_words":
+      return cutWords(p, op.cuts);
+    case "remove_retakes": {
+      const words = timelineWords(p);
+      if (!words.length) throw new Error("o vídeo ainda não tem transcrição; transcreva antes de remover erros de gravação");
+      const takes = findRetakes(words).filter((r) => op.minConfidence === "media" || r.confidence === "alta");
+      if (!takes.length) return "nenhum take ruim encontrado";
+      return cutWords(p, takes).replace("corte(s)", "take(s) ruim(ns) cortado(s)");
+    }
     case "remove_silences": {
       const words = timelineWords(p);
       if (!words.length)
         throw new Error("o vídeo ainda não tem transcrição; transcreva antes de remover silêncios");
       let ranges = silencesFromWords(words, mainEnd(p), op);
-      if (op.range) {
-        const { start, end } = op.range;
+      if (op.range || op.fromWord || op.toWord) {
+        const start = op.fromWord ? timelineWord(p, op.fromWord, words).start : (op.range?.start ?? 0);
+        const end = op.toWord ? timelineWord(p, op.toWord, words).end : (op.range?.end ?? Infinity);
         ranges = normalizeRanges(
           ranges.map((r) => ({ start: Math.max(r.start, start), end: Math.min(r.end, end) })),
         );
@@ -242,7 +351,8 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       return `clip ajustado para origem ${fmt(newSS)}–${fmt(newSE)}`;
     }
     case "add_zoom": {
-      const { start, duration } = fitToMain(p, op.start, op.duration);
+      const span = resolveSpan(p, op);
+      const { start, duration } = fitToMain(p, span.start, span.duration);
       getTrack(p, "fx").clips.push({
         id: newId("zoom"),
         type: "zoom",
@@ -252,14 +362,17 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         x: op.x,
         y: op.y,
         ease: Math.min(op.ease, duration / 2),
+        mode: op.mode,
+        panX: op.panX,
+        panY: op.panY,
       });
       return `zoom ${op.scale}x em ${fmt(start)} por ${fmt(duration)}`;
     }
     case "add_component": {
-      const params = ctx.validateComponent
-        ? ctx.validateComponent(op.component, op.params)
-        : op.params;
-      const { start, duration } = fitToMain(p, op.start, op.duration);
+      const span = resolveSpan(p, op);
+      const { start, duration } = fitToMain(p, span.start, span.duration);
+      const timed = resolveTimedParams(p, op.params, start, duration);
+      const params = ctx.validateComponent ? ctx.validateComponent(op.component, timed) : timed;
       const clip: Clip = {
         id: newId("cmp"),
         type: "component",
@@ -279,16 +392,22 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         clip.volume = op.volume;
         return `volume do clip ${clip.id} = ${op.volume}`;
       }
-      if (op.start !== undefined) clip.start = r3(op.start);
-      if (op.duration !== undefined) clip.duration = r3(op.duration);
+      if (op.start !== undefined || op.atWord || op.duration !== undefined || op.untilWord) {
+        const span = resolveSpan(p, { start: op.start ?? (op.atWord ? undefined : clip.start), atWord: op.atWord, duration: op.duration ?? (op.untilWord ? undefined : clip.duration), untilWord: op.untilWord });
+        clip.start = span.start;
+        clip.duration = span.duration;
+      }
       if (clip.type === "zoom") {
         if (op.scale !== undefined) clip.scale = op.scale;
         if (op.x !== undefined) clip.x = op.x;
         if (op.y !== undefined) clip.y = op.y;
         if (op.ease !== undefined) clip.ease = op.ease;
+        if (op.mode !== undefined) clip.mode = op.mode;
+        if (op.panX !== undefined) clip.panX = op.panX;
+        if (op.panY !== undefined) clip.panY = op.panY;
         clip.ease = Math.min(clip.ease, clip.duration / 2);
       } else if (op.params) {
-        const merged = { ...clip.params, ...op.params };
+        const merged = { ...clip.params, ...resolveTimedParams(p, op.params, clip.start, clip.duration) };
         clip.params = ctx.validateComponent ? ctx.validateComponent(clip.component, merged) : merged;
       }
       return `clip ${clip.id} atualizado`;
@@ -297,6 +416,20 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       if (op.enabled !== undefined) p.captions.enabled = op.enabled;
       if (op.style) p.captions.style = CaptionStyleSchema.parse({ ...p.captions.style, ...op.style });
       return `legendas ${p.captions.enabled ? "ligadas" : "desligadas"}`;
+    }
+    case "set_format": {
+      if (op.aspectRatio) {
+        p.aspectRatio = op.aspectRatio;
+        p.width = FORMATS[op.aspectRatio].width;
+        p.height = FORMATS[op.aspectRatio].height;
+      }
+      if (op.framing) p.framing = { ...p.framing, ...op.framing };
+      if (op.sfx) p.sfx = { ...p.sfx, ...op.sfx };
+      return `formato ${p.aspectRatio} (${p.width}x${p.height})`;
+    }
+    case "set_brand": {
+      p.brand = BrandKitSchema.parse({ ...p.brand, ...op.brand });
+      return "brand kit atualizado";
     }
     case "edit_word": {
       for (const asset of Object.values(p.assets)) {
@@ -309,6 +442,56 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       throw new Error(`palavra ${op.wordId} não encontrada`);
     }
   }
+}
+
+/** Corta faixas de palavras: traduz para tempo de origem e daí para a timeline atual. */
+function cutWords(p: Project, cuts: { from: string; to: string }[]): string {
+  const ranges: TimeRange[] = [];
+  const texts: string[] = [];
+  for (const cut of cuts) {
+    const { assetId, range, text } = wordCutRange(p, cut.from, cut.to);
+    const onTimeline = sourceRangesToTimeline(p, assetId, [range]);
+    // Trecho já cortado antes: nada a fazer, sem erro (a operação é idempotente).
+    if (!onTimeline.length) continue;
+    ranges.push(...onTimeline);
+    texts.push(`"${text.length > 60 ? `${text.slice(0, 57)}…` : text}"`);
+  }
+  const merged = normalizeRanges(ranges, projectDuration(p));
+  if (!merged.length) return "nada a cortar: esses trechos já não estão na timeline";
+  removeRanges(p, merged);
+  const total = merged.reduce((s, r) => s + r.end - r.start, 0);
+  return `${texts.length} corte(s), ${fmt(total)} removidos: ${texts.join(", ")}`;
+}
+
+/** Início e duração em tempo de timeline a partir de tempo explícito ou de âncoras por palavra. */
+function resolveSpan(
+  p: Project,
+  op: { start?: number; atWord?: string; duration?: number; untilWord?: string },
+): { start: number; duration: number } {
+  const words = op.atWord || op.untilWord ? timelineWords(p) : [];
+  const start = op.atWord ? timelineWord(p, op.atWord, words).start : op.start;
+  if (start === undefined) throw new Error("informe atWord (ou start)");
+  const duration = op.untilWord ? timelineWord(p, op.untilWord, words).end - start : op.duration;
+  if (duration === undefined) throw new Error("informe duration ou untilWord");
+  if (duration < MIN_CLIP) throw new Error("o fim precisa vir depois do início");
+  return { start: r3(start), duration: r3(duration) };
+}
+
+/**
+ * Troca cada `atWord` dentro dos params pelo `at` correspondente (segundos
+ * desde o início do clip), preso à duração do clip.
+ */
+function resolveTimedParams<T>(p: Project, value: T, clipStart: number, clipDuration: number, words?: ReturnType<typeof timelineWords>): T {
+  if (Array.isArray(value)) return value.map((v) => resolveTimedParams(p, v, clipStart, clipDuration, words)) as T;
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (k === "atWord" && typeof v === "string") {
+      words ??= timelineWords(p);
+      out.at = r3(Math.min(Math.max(timelineWord(p, v, words).start - clipStart, 0), clipDuration));
+    } else out[k] = resolveTimedParams(p, v, clipStart, clipDuration, words);
+  }
+  return out as T;
 }
 
 function mustFind(p: Project, clipId: string) {
@@ -384,6 +567,8 @@ function removeRanges(p: Project, ranges: TimeRange[]) {
               duration: r3(ce - re),
               sourceStart: r3(c.sourceStart + (re - cs)),
             });
+          } else if (c.type === "component") {
+            next.push({ ...c, duration: r3(c.duration - len), params: shiftTimedParams(c.params, rs - cs, len) });
           } else {
             next.push({ ...c, duration: r3(c.duration - len) });
           }
@@ -393,10 +578,29 @@ function removeRanges(p: Project, ranges: TimeRange[]) {
           const cut = r3(re - cs);
           const trimmed = { ...c, start: rs, duration: r3(ce - re) };
           if (trimmed.type === "media") trimmed.sourceStart = r3(trimmed.sourceStart + cut);
+          if (trimmed.type === "component") trimmed.params = shiftTimedParams(trimmed.params, 0, cut);
           next.push(trimmed);
         }
       }
       track.clips = next.filter((c) => c.duration >= MIN_CLIP);
     }
   }
+}
+
+/**
+ * Componentes podem marcar instantes internos com `at` (segundos desde o
+ * início do clip — ex.: quando cada barra entra). Um corte dentro do clip
+ * desloca esses instantes junto com a fala: depois do corte, `at` recua
+ * `len`; dentro do corte, vai para o ponto do corte.
+ */
+export function shiftTimedParams<T>(value: T, cutAt: number, len: number): T {
+  if (Array.isArray(value)) return value.map((v) => shiftTimedParams(v, cutAt, len)) as T;
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (k === "at" && typeof v === "number")
+      out[k] = v >= cutAt + len ? r3(v - len) : v > cutAt ? r3(cutAt) : v;
+    else out[k] = shiftTimedParams(v, cutAt, len);
+  }
+  return out as T;
 }

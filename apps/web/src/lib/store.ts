@@ -5,11 +5,16 @@ import {
   applyOperations,
   projectDuration,
   ProjectSchema,
+  type BrandKit,
   type OperationInput,
   type Project,
   type TimeRange,
 } from "@videoeditor/core";
 import { validateComponent } from "@videoeditor/renderer";
+
+export type SavedBrand = { id: string; name: string; brand: BrandKit };
+
+export type SessionUser = { id: string; name: string; email: string; role: "user" | "admin"; plan: string; planName?: string };
 
 export type ChatMessage = {
   id: string;
@@ -21,6 +26,10 @@ export type ChatMessage = {
 };
 
 type State = {
+  /** Brand Kits salvos na conta; o primeiro é o padrão de cada projeto novo. */
+  brands: SavedBrand[];
+  /** Quantos Brand Kits o plano permite salvar. */
+  brandLimit: number;
   project: Project | null;
   past: Project[];
   future: Project[];
@@ -29,13 +38,17 @@ type State = {
   selectedClipId: string | null;
   range: TimeRange | null;
   pxPerSec: number;
-  /** Carteira de demonstração (local). Será substituída pelo ledger do backend. */
+  /** Saldo do ledger no servidor; atualizado por /api/me e pelas respostas das ações pagas. */
   credits: number;
+  user: SessionUser | null;
   chat: ChatMessage[];
   busy: string | null;
+  /** Mostra as áreas seguras por cima do preview (nunca entra na exportação). */
+  guides: boolean;
   notice: string | null;
 
-  setProject: (p: Project | null, opts?: { history?: boolean }) => void;
+  /** history: true empilha o estado atual para desfazer; "keep" troca o projeto sem mexer no histórico (atualizações ao vivo do agente). */
+  setProject: (p: Project | null, opts?: { history?: boolean | "keep" }) => void;
   /** Aplica operações (edição manual = 0 créditos). Retorna mensagem de erro ou null. */
   apply: (ops: OperationInput[]) => string | null;
   undo: () => void;
@@ -45,7 +58,7 @@ type State = {
   select: (clipId: string | null) => void;
   setRange: (r: TimeRange | null) => void;
   setPxPerSec: (n: number) => void;
-  spend: (n: number) => void;
+  setCredits: (n: number) => void;
   pushChat: (m: Omit<ChatMessage, "id">) => void;
   setBusy: (b: string | null) => void;
   setNotice: (n: string | null) => void;
@@ -53,9 +66,10 @@ type State = {
 
 const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
-const CREDITS_KEY = "ve:credits";
 
 export const useEditor = create<State>((set, get) => ({
+  brands: [],
+  brandLimit: 1,
   project: null,
   past: [],
   future: [],
@@ -64,9 +78,11 @@ export const useEditor = create<State>((set, get) => ({
   selectedClipId: null,
   range: null,
   pxPerSec: 60,
-  credits: 30,
+  credits: 0,
+  user: null,
   chat: [],
   busy: null,
+  guides: false,
   notice: null,
 
   setProject: (project, opts) =>
@@ -74,7 +90,7 @@ export const useEditor = create<State>((set, get) => ({
       const duration = project ? projectDuration(project) : 0;
       return {
         project,
-        past: opts?.history && s.project ? [...s.past.slice(-HISTORY_LIMIT), s.project] : opts?.history ? s.past : [],
+        past: opts?.history === true && s.project ? [...s.past.slice(-HISTORY_LIMIT), s.project] : opts?.history ? s.past : [],
         future: [],
         time: Math.min(s.time, duration),
         selectedClipId: null,
@@ -124,7 +140,7 @@ export const useEditor = create<State>((set, get) => ({
   select: (selectedClipId) => set({ selectedClipId }),
   setRange: (range) => set({ range }),
   setPxPerSec: (pxPerSec) => set({ pxPerSec }),
-  spend: (n) => set((s) => ({ credits: Math.max(0, s.credits - n) })),
+  setCredits: (credits) => set({ credits }),
   pushChat: (m) => set((s) => ({ chat: [...s.chat, { ...m, id: crypto.randomUUID() }] })),
   setBusy: (busy) => set({ busy }),
   setNotice: (notice) => set({ notice }),
@@ -138,23 +154,16 @@ export function hydrateEditor() {
       const parsed = ProjectSchema.safeParse(JSON.parse(raw));
       if (parsed.success) useEditor.setState({ project: parsed.data });
     }
-    const credits = Number(localStorage.getItem(CREDITS_KEY));
-    if (localStorage.getItem(CREDITS_KEY) !== null && Number.isFinite(credits)) useEditor.setState({ credits });
   } catch {
     // estado salvo corrompido: começa do zero
   }
   let lastProject = useEditor.getState().project;
-  let lastCredits = useEditor.getState().credits;
   return useEditor.subscribe((s) => {
     try {
       if (s.project !== lastProject) {
         lastProject = s.project;
         if (s.project) localStorage.setItem(PROJECT_KEY, JSON.stringify(s.project));
         else localStorage.removeItem(PROJECT_KEY);
-      }
-      if (s.credits !== lastCredits) {
-        lastCredits = s.credits;
-        localStorage.setItem(CREDITS_KEY, String(s.credits));
       }
     } catch {
       // cota do localStorage excedida: segue só em memória

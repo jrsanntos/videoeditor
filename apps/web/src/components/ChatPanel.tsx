@@ -1,16 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PRICING } from "@videoeditor/core";
-import { askAgent } from "@/lib/actions";
+import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, type SkillId } from "@videoeditor/core";
+import { askAgent, runSkill } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime } from "./Player";
 
 const SUGGESTIONS = [
-  "Remova silêncios e erros de fala",
+  "Revise os erros de gravação e corte os takes ruins",
   "Aplique zoom nos momentos de ênfase",
   "Crie um gráfico animado quando eu citar números",
-  "Adicione uma tarja com meu nome no começo",
 ];
 
 export function ChatPanel() {
@@ -18,6 +17,11 @@ export function ChatPanel() {
   const busy = useEditor((s) => s.busy);
   const range = useEditor((s) => s.range);
   const [text, setText] = useState("");
+  const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
+  // O mesmo cálculo do servidor: o preço mostrado é o cobrado.
+  const fullCost = creditCost({ type: "agent", tier: "full", durationSec: duration });
+  const tier = agentTier(text, !!range);
+  const cost = tier === "full" ? fullCost : PRICING.adjust;
   const end = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -41,6 +45,23 @@ export function ChatPanel() {
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         {chat.length === 0 && (
           <div className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Editar em 1 clique</p>
+            <div className="grid grid-cols-2 gap-2" data-testid="skills">
+              {(Object.keys(SKILLS) as SkillId[]).map((id) => (
+                <button
+                  key={id}
+                  onClick={() => void runSkill(id)}
+                  disabled={!!busy}
+                  title={SKILLS[id].audience}
+                  className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-left hover:border-indigo-500 disabled:opacity-40"
+                >
+                  <span className="block text-xs font-medium text-zinc-100">{SKILLS[id].name}</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-zinc-500">{SKILLS[id].tagline}</span>
+                  <span className="mt-1 block text-[10px] text-amber-400">{formatCredits(fullCost)} créditos</span>
+                </button>
+              ))}
+            </div>
+            <p className="pt-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Ou peça o que quiser</p>
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
@@ -52,8 +73,8 @@ export function ChatPanel() {
               </button>
             ))}
             <p className="pt-2 text-[11px] leading-relaxed text-zinc-600">
-              Cada pedido que altera a timeline custa {PRICING.agentEdit} créditos (+{PRICING.motionScene} por cena de motion
-              design). Ajustes manuais são sempre gratuitos.
+              Edição completa: {formatCredits(fullCost)} créditos neste vídeo, com quantos zooms e componentes a IA criar. Ajuste pontual:{" "}
+              {PRICING.adjust} crédito. Só é cobrado quando a timeline muda; edição manual é sempre gratuita.
             </p>
           </div>
         )}
@@ -72,7 +93,7 @@ export function ChatPanel() {
               {!!m.log?.length && (
                 <details className="mt-2 text-xs text-zinc-400">
                   <summary className="cursor-pointer">
-                    {m.log.length} operações{m.credits ? ` · ${m.credits} créditos` : ""}
+                    {m.log.length} operações{m.credits ? ` · ${formatCredits(m.credits)} crédito${m.credits > 1 ? "s" : ""}` : ""}
                   </summary>
                   <ul className="mt-1 list-disc space-y-0.5 pl-4">
                     {m.log.map((l, i) => (
@@ -118,7 +139,7 @@ export function ChatPanel() {
           disabled={!text.trim() || !!busy}
           className="mt-2 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200 disabled:opacity-40"
         >
-          Enviar
+          {text.trim() ? `Enviar · ${tier === "full" ? "edição completa" : "ajuste"} · ${formatCredits(cost)} ${cost === 1 ? "crédito" : "créditos"}` : "Enviar"}
         </button>
       </form>
     </aside>

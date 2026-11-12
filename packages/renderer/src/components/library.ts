@@ -1,4 +1,7 @@
 import { z } from "zod";
+import type { BrandKit, SafeArea } from "@videoeditor/core";
+import type { SFX_CATALOG } from "../sounds";
+import { V1_COMPONENTS } from "./v1";
 import {
   type Ctx2D,
   easeOutBack,
@@ -32,7 +35,20 @@ export type DrawArgs<P> = {
   height: number;
   /** Unidade de layout: 1u = 1px num quadro de 1080 de altura. */
   u: number;
+  /** Brand Kit do projeto: cores e credencial usados quando o clip não define os seus. */
+  brand: BrandKit;
+  /** Margens que textos e tarjas respeitam (interface de Reels/TikTok/Shorts no vertical). */
+  safe: SafeArea;
+  vertical: boolean;
+  /** Há recorte do apresentador para este quadro (segmentação pronta). */
+  hasPerson: boolean;
+  /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */
+  drawPerson: () => void;
 };
+
+export type SfxId = keyof typeof SFX_CATALOG;
+/** Efeito sonoro em `at` segundos desde o início do componente; `duration` só para sons contínuos (digitação). */
+export type SoundCue = { at: number; sfx: SfxId; duration?: number };
 
 export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   id: string;
@@ -42,11 +58,17 @@ export type ComponentDef<S extends z.ZodType = z.ZodType> = {
   schema: S;
   example: z.input<S>;
   draw: (args: DrawArgs<z.output<S>>) => void;
+  /** Efeitos sonoros sincronizados com a animação. */
+  sounds?: (params: z.output<S>, duration: number) => SoundCue[];
+  /** Precisa do recorte do apresentador (segmentação) enquanto está na tela. */
+  needsPerson?: boolean;
+  /** false: fica só no menu manual; o agente não recebe no catálogo. */
+  agent?: boolean;
 };
 
 const define = <S extends z.ZodType>(def: ComponentDef<S>) => def;
 
-const accent = z.string().default("#facc15").describe("cor de destaque (hex)");
+const accent = z.string().optional().describe("cor de destaque (hex). Omita para usar a cor do Brand Kit do usuário");
 const INK = "#0b0b10";
 const PAPER = "#ffffff";
 
@@ -57,12 +79,14 @@ const lowerThird = define({
     "Tarja inferior com nome e cargo/legenda. Use para apresentar quem fala ou rotular um assunto.",
   defaultDuration: 4,
   schema: z.object({
-    title: z.string().max(40),
-    subtitle: z.string().max(60).optional(),
+    title: z.string().max(40).optional().describe("nome. Omita para usar o nome do Brand Kit"),
+    subtitle: z.string().max(60).optional().describe("cargo/registro. Omita para usar a credencial do Brand Kit"),
     accent,
   }),
   example: { title: "Ana Souza", subtitle: "Especialista em tráfego pago" },
-  draw({ ctx, params, t, duration, height, u }) {
+  draw({ ctx, params: raw, brand, t, duration, height, u }) {
+    const params = { ...raw, title: raw.title ?? brand.displayName, subtitle: raw.subtitle ?? (raw.title ? undefined : brand.credential || undefined) };
+    if (!params.title) return;
     const p = presence(t, duration, 0.5, 0.35);
     const x = 80 * u;
     const baseY = height - 220 * u;
@@ -78,7 +102,7 @@ const lowerThird = define({
     ctx.fillStyle = "rgba(11,11,16,0.86)";
     roundRect(ctx, x, baseY, w, h, 14 * u);
     ctx.fill();
-    ctx.fillStyle = params.accent;
+    ctx.fillStyle = (params.accent ?? brand.primaryColor);
     roundRect(ctx, x, baseY, 10 * u, h * easeOutCubic(stage(t, 0.1, 0.4)), 5 * u);
     ctx.fill();
     ctx.textBaseline = "top";
@@ -107,7 +131,7 @@ const titleCard = define({
     accent,
   }),
   example: { title: "3 erros que travam suas vendas", subtitle: "Parte 1 — Oferta" },
-  draw({ ctx, params, t, duration, width, height, u }) {
+  draw({ ctx, params, brand, t, duration, width, height, u }) {
     const p = presence(t, duration, 0.35, 0.35);
     ctx.save();
     ctx.globalAlpha = p;
@@ -127,7 +151,7 @@ const titleCard = define({
       y += lh;
     }
     const barW = 160 * u * easeOutCubic(stage(t, 0.3, 0.5));
-    ctx.fillStyle = params.accent;
+    ctx.fillStyle = (params.accent ?? brand.primaryColor);
     roundRect(ctx, width / 2 - barW / 2, y - lh / 2 + 14 * u, barW, 8 * u, 4 * u);
     ctx.fill();
     if (params.subtitle) {
@@ -144,12 +168,22 @@ const barChart = define({
   id: "bar_chart",
   name: "Gráfico de barras",
   description:
-    "Gráfico de barras animado sobre o vídeo escurecido. Use quando a fala citar números comparáveis (faturamento, crescimento, antes/depois).",
+    "Gráfico de barras animado sobre o vídeo escurecido. Use quando a fala citar números comparáveis (faturamento, crescimento, antes/depois). Preencha `at` de cada barra com o instante (segundos desde o início do componente) em que aquele número é dito, para a barra subir junto com a fala.",
   defaultDuration: 6,
   schema: z.object({
     title: z.string().max(60).optional(),
     bars: z
-      .array(z.object({ label: z.string().max(16), value: z.number().min(0) }))
+      .array(
+        z.object({
+          label: z.string().max(16),
+          value: z.number().min(0),
+          at: z
+            .number()
+            .min(0)
+            .optional()
+            .describe("segundos desde o início do componente em que a barra sobe (quando o número é dito)"),
+        }),
+      )
       .min(2)
       .max(6),
     prefix: z.string().max(4).default("").describe('ex.: "R$ "'),
@@ -159,14 +193,14 @@ const barChart = define({
   example: {
     title: "Faturamento por trimestre",
     bars: [
-      { label: "T1", value: 120 },
-      { label: "T2", value: 180 },
-      { label: "T3", value: 310 },
+      { label: "T1", value: 120, at: 0.3 },
+      { label: "T2", value: 180, at: 2.6 },
+      { label: "T3", value: 310, at: 4.4 },
     ],
     prefix: "R$ ",
     suffix: "k",
   },
-  draw({ ctx, params, t, duration, width, height, u }) {
+  draw({ ctx, params, brand, t, duration, width, height, u }) {
     const p = presence(t, duration, 0.4, 0.3);
     ctx.save();
     ctx.globalAlpha = p * 0.72;
@@ -191,11 +225,14 @@ const barChart = define({
     ctx.fillStyle = "rgba(255,255,255,0.25)";
     ctx.fillRect(padX, bottom, width - padX * 2, 2 * u);
     params.bars.forEach((bar, i) => {
-      const g = easeOutCubic(stage(t, 0.25 + i * 0.14, 0.7));
+      const enter = bar.at ?? 0.25 + i * 0.14;
+      const g = easeOutCubic(stage(t, enter, 0.7));
+      // Antes de subir a barra não aparece: nada de "R$ 0k" esperando a fala.
+      ctx.globalAlpha = p * stage(t, enter, 0.2);
       const h = chartH * (bar.value / max) * g;
       const x = padX + slot * i + (slot - bw) / 2;
       const isMax = bar.value === max;
-      ctx.fillStyle = isMax ? params.accent : "rgba(255,255,255,0.82)";
+      ctx.fillStyle = isMax ? (params.accent ?? brand.primaryColor) : "rgba(255,255,255,0.82)";
       roundRect(ctx, x, bottom - h, bw, h, 10 * u);
       ctx.fill();
       ctx.textAlign = "center";
@@ -212,6 +249,7 @@ const barChart = define({
       ctx.font = font(500, 30 * u);
       ctx.fillText(bar.label, x + bw / 2, bottom + 18 * u);
     });
+    ctx.globalAlpha = p;
     ctx.restore();
   },
 });
@@ -232,7 +270,7 @@ const counter = define({
     accent,
   }),
   example: { to: 250, prefix: "+", suffix: "%", label: "de aumento na conversão" },
-  draw({ ctx, params, t, duration, width, height, u }) {
+  draw({ ctx, params, brand, t, duration, width, height, u }) {
     const p = presence(t, duration, 0.3, 0.3);
     const k = easeOutCubic(stage(t, 0.15, Math.min(1.6, duration * 0.5)));
     const value = params.from + (params.to - params.from) * k;
@@ -247,7 +285,7 @@ const counter = define({
     const pop = 0.85 + 0.15 * easeOutBack(stage(t, 0, 0.45));
     ctx.translate(width / 2, height / 2 - (params.label ? 30 * u : 0));
     ctx.scale(pop, pop);
-    ctx.fillStyle = params.accent;
+    ctx.fillStyle = (params.accent ?? brand.primaryColor);
     fitText(ctx, text, 900, 220 * u, width * 0.85);
     ctx.fillText(text, 0, 0);
     ctx.scale(1 / pop, 1 / pop);
@@ -274,7 +312,7 @@ const textHighlight = define({
     accent,
   }),
   example: { text: "Preço não é o problema, oferta é.", highlight: "oferta é" },
-  draw({ ctx, params, t, duration, width, height, u }) {
+  draw({ ctx, params, brand, t, duration, width, height, u }) {
     const p = presence(t, duration, 0.3, 0.25);
     ctx.save();
     ctx.globalAlpha = p;
@@ -298,7 +336,7 @@ const textHighlight = define({
       if (hl && idx >= 0) {
         const pre = ctx.measureText(line.slice(0, idx)).width;
         const hw = ctx.measureText(line.slice(idx, idx + hl.length)).width;
-        ctx.fillStyle = params.accent;
+        ctx.fillStyle = (params.accent ?? brand.primaryColor);
         roundRect(ctx, x + pre - 10 * u, y - 44 * u, (hw + 20 * u) * sweep, 88 * u, 10 * u);
         ctx.fill();
       }
@@ -331,7 +369,7 @@ const bulletList = define({
     accent,
   }),
   example: { title: "O que você vai aprender", items: ["Montar a oferta", "Escrever o gancho", "Fechar a venda"] },
-  draw({ ctx, params, t, duration, width, height, u }) {
+  draw({ ctx, params, brand, t, duration, width, height, u }) {
     const p = presence(t, duration, 0.45, 0.3);
     const w = Math.min(width * 0.42, 760 * u);
     const rowH = 84 * u;
@@ -349,7 +387,7 @@ const bulletList = define({
     ctx.textAlign = "left";
     let cy = y + 40 * u;
     if (params.title) {
-      ctx.fillStyle = params.accent;
+      ctx.fillStyle = (params.accent ?? brand.primaryColor);
       fitText(ctx, params.title, 800, 42 * u, w - 80 * u);
       ctx.fillText(params.title, x + 40 * u, y + 62 * u);
       cy = y + 110 * u;
@@ -358,7 +396,7 @@ const bulletList = define({
       const s = easeOutCubic(stage(t, 0.4 + i * 0.35, 0.4));
       const iy = cy + rowH * i + rowH / 2;
       ctx.globalAlpha = p * s;
-      ctx.fillStyle = params.accent;
+      ctx.fillStyle = (params.accent ?? brand.primaryColor);
       roundRect(ctx, x + 40 * u, iy - 22 * u, 44 * u, 44 * u, 10 * u);
       ctx.fill();
       ctx.fillStyle = INK;
@@ -374,8 +412,10 @@ const bulletList = define({
   },
 });
 
+// Os seis da v1.0 são o vocabulário do agente; os anteriores seguem disponíveis no menu manual.
+const LEGACY = [lowerThird, titleCard, barChart, counter, textHighlight, bulletList].map((c) => ({ ...c, agent: false }) as ComponentDef);
 export const COMPONENTS: Record<string, ComponentDef> = Object.fromEntries(
-  [lowerThird, titleCard, barChart, counter, textHighlight, bulletList].map((c) => [c.id, c as ComponentDef]),
+  [...(V1_COMPONENTS as unknown as ComponentDef[]), ...LEGACY].map((c) => [c.id, c]),
 );
 
 /** Valida e normaliza (aplica defaults) os params de um componente. Lança se inválido. */
@@ -383,7 +423,7 @@ export function validateComponent(component: string, params: Record<string, unkn
   const def = COMPONENTS[component];
   if (!def)
     throw new Error(
-      `componente "${component}" não existe. Disponíveis: ${Object.keys(COMPONENTS).join(", ")}`,
+      `componente "${component}" não existe. Disponíveis: ${Object.values(COMPONENTS).filter((c) => c.agent !== false).map((c) => c.id).join(", ")}`,
     );
   const parsed = def.schema.safeParse(params);
   if (!parsed.success) throw new Error(`params inválidos para ${component}: ${z.prettifyError(parsed.error)}`);
@@ -393,6 +433,7 @@ export function validateComponent(component: string, params: Record<string, unkn
 /** Catálogo em texto para o prompt de sistema do agente. */
 export function catalogForAgent(): string {
   return Object.values(COMPONENTS)
+    .filter((c) => c.agent !== false)
     .map(
       (c) =>
         `### ${c.id} — ${c.name}\n${c.description}\nDuração sugerida: ${c.defaultDuration}s\nparams (JSON Schema): ${JSON.stringify(

@@ -3,8 +3,28 @@ import {
   addAssetToProject,
   applyOperations,
   buildAgentContext,
+  EditTemplateSchema,
+  templateOperations,
+  templatePrompt,
+  type EditTemplate,
+  type OperationInput,
+  findRetakes,
+  AgentOperationSchema,
+  ProjectSchema,
+  safeArea,
+  shiftTimedParams,
+  clipEnd,
   createProject,
+  agentTier,
   creditCost,
+  PLANS,
+  SIGNUP_CREDITS,
+  SKILLS,
+  skillPrompt,
+  videosEstimate,
+  nextRenewal,
+  renewedPlanCredits,
+  splitDebit,
   getTrack,
   mainClips,
   OperationError,
@@ -189,11 +209,281 @@ describe("agente e créditos", () => {
     expect(scoped).toContain("SELEÇÃO ATIVA");
   });
 
-  it("precificação segue a tabela de unit economics", () => {
+  it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
     expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(10);
-    expect(creditCost({ type: "agent", motionScenes: 1 })).toBe(17);
+    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(2);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(15);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(42);
+    expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
     expect(creditCost({ type: "browser_export" })).toBe(0);
+  });
+
+  it("classifica o pedido: skills e direção do vídeo inteiro são edição completa; o resto é ajuste", () => {
+    for (const id of Object.keys(SKILLS) as (keyof typeof SKILLS)[]) expect(agentTier(skillPrompt(SKILLS[id]), false)).toBe("full");
+    expect(agentTier("Edite meu vídeo no estilo viral", false)).toBe("full");
+    expect(agentTier("deixa o vídeo inteiro mais dinâmico", false)).toBe("full");
+    expect(agentTier("Aplique o modelo de edição \"VSL dinâmica\" a este vídeo.", false)).toBe("full");
+    expect(agentTier("aumenta o zoom na parte do preço", false)).toBe("adjust");
+    expect(agentTier("troca a legenda para amarelo", false)).toBe("adjust");
+    // Com trecho selecionado é sempre pontual, mesmo que o texto pareça amplo.
+    expect(agentTier("edite o vídeo todo", true)).toBe("adjust");
+  });
+
+  it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
+    expect(PLANS.free.monthlyCredits).toBe(0);
+    expect(SIGNUP_CREDITS).toBe(60);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 35, max: 50 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 120, max: 170 });
+    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 2, max: 3 });
+    expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
+    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): edição completa de 1 min
+    // custa ~R$ 0,31 em IA e rende 15 créditos.
+    const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(0.31 * 3);
+  });
+
+  it("débito consome o saldo do plano antes do extra", () => {
+    expect(splitDebit(30, 500, 10)).toEqual({ plan: 10, extra: 0 });
+    expect(splitDebit(4, 500, 10)).toEqual({ plan: 4, extra: 6 });
+    expect(splitDebit(0, 500, 10)).toEqual({ plan: 0, extra: 10 });
+    // Nenhum saldo cobre: o resto fica como dívida no saldo do plano.
+    expect(splitDebit(3, 2, 10)).toEqual({ plan: 8, extra: 2 });
+    expect(splitDebit(-5, 0, 10)).toEqual({ plan: 10, extra: 0 });
+  });
+
+  it("renovação repõe o saldo do plano sem acumular e desconta dívida", () => {
+    expect(renewedPlanCredits(120, 1000)).toBe(1000);
+    expect(renewedPlanCredits(0, 30)).toBe(30);
+    expect(renewedPlanCredits(-8, 30)).toBe(22);
+  });
+
+  it("próxima renovação mantém o dia do mês e não acumula meses perdidos", () => {
+    const iso = (a: string, n: string) => nextRenewal(new Date(a), new Date(n)).toISOString();
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-01-15T10:00:00.000Z")).toBe("2026-02-15T10:00:00.000Z");
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-02-20T00:00:00.000Z")).toBe("2026-03-15T10:00:00.000Z");
+    expect(iso("2026-01-15T10:00:00.000Z", "2026-06-14T00:00:00.000Z")).toBe("2026-06-15T10:00:00.000Z");
+    expect(iso("2026-01-31T10:00:00.000Z", "2026-02-01T00:00:00.000Z")).toBe("2026-02-28T10:00:00.000Z");
+    expect(iso("2026-11-30T10:00:00.000Z", "2026-12-31T00:00:00.000Z")).toBe("2027-01-30T10:00:00.000Z");
+  });
+});
+
+describe("referências estáveis por palavra", () => {
+  /** Palavras de 0.4s a cada 0.5s a partir de 1s: w{i} começa em 1 + i*0.5. */
+  function withWords(texts: string[]): Project {
+    const words = texts.map((text, i) => ({ id: `w${i}`, text, start: 1 + i * 0.5, end: 1.4 + i * 0.5 }));
+    return addAssetToProject(createProject({ name: "rep" }), {
+      id: "a1",
+      kind: "video",
+      name: "bruto.mp4",
+      duration: 1 + texts.length * 0.5 + 1,
+      hasAudio: true,
+      transcript: { words },
+    });
+  }
+  const talk = () => withWords(["Olá", "pessoal.", "O", "segredo", "do", "o", "segredo", "do", "sucesso", "é", "constância", "todo", "dia."]);
+  const spoken = (p: Project) => timelineWords(p).map((w) => w.id).join(" ");
+
+  it("cut_words corta do início da primeira palavra ao início da seguinte à última", () => {
+    const { project, log } = applyOperations(talk(), [{ op: "cut_words", cuts: [{ from: "w2", to: "w4" }] }]);
+    expect(spoken(project)).toBe("w0 w1 w5 w6 w7 w8 w9 w10 w11 w12");
+    // w2 começa em 2s e w5 em 3.5s: saem exatamente 1.5s, e w5 passa a começar onde w2 começava.
+    expect(timelineWords(project).find((w) => w.id === "w5")!.start).toBe(2);
+    expect(log[0]).toContain('"O segredo do"');
+  });
+
+  it("zoom e componente ancorados em palavra não se deslocam, em qualquer ordem de operações", () => {
+    const cut: OperationInput = { op: "cut_words", cuts: [{ from: "w2", to: "w4" }] };
+    const zoom: OperationInput = { op: "add_zoom", atWord: "w8", untilWord: "w10" };
+    const comp: OperationInput = { op: "add_component", component: "x", atWord: "w9", duration: 2, params: { items: [{ atWord: "w10" }, { atWord: "w12" }] } };
+    const a = applyOperations(talk(), [zoom, comp, cut]).project;
+    const b = applyOperations(talk(), [cut, zoom, comp]).project;
+    for (const p of [a, b]) {
+      const words = timelineWords(p);
+      const at = (id: string) => words.find((w) => w.id === id)!;
+      const z = getTrack(p, "fx").clips[0]!;
+      expect(z.start).toBe(at("w8").start);
+      expect(clipEnd(z)).toBe(at("w10").end);
+      const c = p.tracks.flatMap((t) => t.clips).find((c) => c.type === "component")!;
+      expect(c.start).toBe(at("w9").start);
+      if (c.type !== "component") throw new Error("esperado componente");
+      // atWord vira `at` relativo ao início do componente: w10 está 0.5s depois de w9, w12 a 1.5s.
+      expect(c.params).toEqual({ items: [{ at: 0.5 }, { at: 1.5 }] });
+    }
+  });
+
+  it("cortar de novo o mesmo trecho não faz nada; ancorar em palavra cortada é erro claro", () => {
+    const cut: OperationInput = { op: "cut_words", cuts: [{ from: "w2", to: "w4" }] };
+    const { project, log } = applyOperations(talk(), [cut, cut]);
+    expect(log[1]).toContain("nada a cortar");
+    expect(() => applyOperations(project, [{ op: "add_zoom", atWord: "w3", duration: 2 }])).toThrow(/w3 não está na timeline/);
+  });
+
+  it("o vocabulário do agente não aceita tempo de timeline", () => {
+    expect(AgentOperationSchema.safeParse({ op: "remove_ranges", ranges: [{ start: 1, end: 2 }] }).success).toBe(false);
+    expect(AgentOperationSchema.safeParse({ op: "add_zoom", start: 3, duration: 2 }).success).toBe(false);
+    expect(AgentOperationSchema.safeParse({ op: "add_zoom", atWord: "w3", duration: 2 }).success).toBe(true);
+  });
+
+  it("o contexto do agente usa ids de palavra e tempo do vídeo bruto, mesmo depois de cortes", () => {
+    const before = buildAgentContext(talk());
+    expect(before).toContain("[w0–w1 | 1–1.9] Olá pessoal.");
+    const { project } = applyOperations(talk(), [{ op: "cut_words", cuts: [{ from: "w0", to: "w1" }] }]);
+    const after = buildAgentContext(project);
+    // "O" continua sendo w2 em 2s do bruto, embora agora esteja no início da timeline.
+    expect(after).toMatch(/\[w2–w\d+ \| 2–/);
+    expect(after).not.toContain("Olá");
+  });
+});
+
+describe("takes ruins", () => {
+  const takes = (texts: string[], gaps: Record<number, number> = {}) => {
+    let t = 1;
+    const words = texts.map((text, i) => {
+      t += gaps[i] ?? 0;
+      const w = { id: `w${i}`, text, start: Math.round(t * 100) / 100, end: Math.round((t + 0.4) * 100) / 100, clipId: "c", assetId: "a" };
+      t += 0.5;
+      return w;
+    });
+    return findRetakes(words);
+  };
+
+  it("frase abandonada e recomeçada: corta até o recomeço, com confiança alta", () => {
+    const r = takes(["Olá.", "O", "segredo", "do", "o", "segredo", "do", "sucesso", "é", "constância."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", from: "w1", to: "w3", cutText: "O segredo do" });
+    expect(r[0]!.keepText).toMatch(/^o segredo do sucesso/);
+  });
+
+  it("recomeço com palavras no meio também é encontrado", () => {
+    const r = takes(["Hoje", "eu", "vou", "mostrar", "como", "é", "hoje", "eu", "vou", "mostrar", "três", "passos."]);
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", from: "w0", to: "w5" });
+  });
+
+  it("gaguejo de uma palavra conta; artigo repetido não", () => {
+    const r = takes(["é", "é", "preciso", "mudar", "mudar", "a", "oferta."]);
+    expect(r.map((x) => [x.kind, x.cutText])).toEqual([["stutter", "mudar"]]);
+  });
+
+  it("paralelismo com frases completas fica como dúvida, não como erro certo", () => {
+    const r = takes(["Você", "precisa", "de", "foco.", "Você", "precisa", "de", "método."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]!.confidence).toBe("media");
+  });
+
+  it("aviso de erro corta a frase até o aviso", () => {
+    const r = takes(["Tudo", "certo.", "O", "preço", "é", "cem,", "errei.", "Custa", "duzentos", "reais."]);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "marker", confidence: "alta", from: "w2", to: "w6" });
+  });
+
+  it("'de novo' no meio de uma frase normal não é aviso de erro", () => {
+    expect(takes(["Faça", "de", "novo", "amanhã", "cedo."])).toEqual([]);
+  });
+
+  it("remove_retakes corta só os de confiança alta por padrão", () => {
+    const words = ["Olá.", "O", "segredo", "do", "o", "segredo", "do", "sucesso.", "Você", "precisa", "de", "foco.", "Você", "precisa", "de", "método."].map(
+      (text, i) => ({ id: `w${i}`, text, start: 1 + i * 0.5, end: 1.4 + i * 0.5 }),
+    );
+    const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 12, hasAudio: true, transcript: { words } });
+    const { project } = applyOperations(p, [{ op: "remove_retakes" }]);
+    expect(timelineWords(project).map((w) => w.text).join(" ")).toBe("Olá. o segredo do sucesso. Você precisa de foco. Você precisa de método.");
+  });
+});
+
+describe("formato e áreas seguras", () => {
+  it("projeto novo é vertical 1080×1920; projeto antigo sem o campo continua horizontal", () => {
+    const p = createProject({ name: "x" });
+    expect([p.aspectRatio, p.width, p.height]).toEqual(["9:16", 1080, 1920]);
+    const { aspectRatio: _a, framing: _f, sfx: _s, ...old } = createProject({ name: "x", aspectRatio: "16:9" });
+    expect(ProjectSchema.parse(old)).toMatchObject({ aspectRatio: "16:9", framing: { x: 0.5, y: 0.5 }, sfx: { enabled: true } });
+  });
+
+  it("set_format troca as dimensões e preserva a edição", () => {
+    const { project } = applyOperations(fixture(), [{ op: "add_zoom", start: 1, duration: 2 }, { op: "set_format", aspectRatio: "16:9", framing: { x: 0.3 } }]);
+    expect([project.width, project.height, project.framing.x, project.framing.y]).toEqual([1920, 1080, 0.3, 0.5]);
+    expect(getTrack(project, "fx").clips).toHaveLength(1);
+  });
+
+  it("no vertical as margens cobrem a interface dos apps: mais embaixo e à direita", () => {
+    const v = safeArea(createProject({ name: "v" }));
+    const h = safeArea(createProject({ name: "h", aspectRatio: "16:9" }));
+    expect(v.bottom).toBeGreaterThan(v.top);
+    expect(v.right).toBeGreaterThan(v.left);
+    expect(v.bottom / 1920).toBeGreaterThan(0.2);
+    expect(h.bottom / 1080).toBeLessThan(0.1);
+  });
+});
+
+describe("brand kit", () => {
+  it("projeto novo nasce com o padrão; projeto antigo sem brand continua abrindo", () => {
+    const p = createProject({ name: "x" });
+    expect(p.brand).toMatchObject({ backgroundColor: "#0B0F19", textColor: "#F8FAFC" });
+    const { brand: _, ...old } = p;
+    expect(ProjectSchema.parse(old).brand.primaryColor).toBe("#FACC15");
+  });
+
+  it("set_brand mescla e valida as cores", () => {
+    const { project } = applyOperations(createProject({ name: "x" }), [{ op: "set_brand", brand: { primaryColor: "#FF0055", displayName: "Dra. Ana Silva", credential: "CRM 12345" } }]);
+    expect(project.brand).toMatchObject({ primaryColor: "#FF0055", secondaryColor: "#38BDF8", displayName: "Dra. Ana Silva" });
+    expect(() => applyOperations(project, [{ op: "set_brand", brand: { primaryColor: "vermelho" } }])).toThrow();
+  });
+});
+
+describe("instantes internos de componentes (at)", () => {
+  it("um corte dentro do componente recua os instantes posteriores", () => {
+    const { project } = applyOperations(fixture(), [
+      {
+        op: "add_component",
+        component: "bar_chart",
+        start: 1,
+        duration: 6,
+        params: { bars: [{ label: "a", value: 1, at: 0.5 }, { label: "b", value: 2, at: 2.5 }, { label: "c", value: 3, at: 4 }] },
+      },
+      { op: "remove_ranges", ranges: [{ start: 2, end: 3 }] },
+    ]);
+    const comp = getTrack(project, "overlay")!.clips[0]!;
+    expect(comp.duration).toBe(5);
+    if (comp.type !== "component") throw new Error("esperado componente");
+    // corte em 1s–2s relativo ao componente: 0.5 fica, 2.5 → 1.5, 4 → 3
+    expect((comp.params.bars as { at: number }[]).map((b) => b.at)).toEqual([0.5, 1.5, 3]);
+  });
+
+  it("instante dentro do trecho cortado vai para o ponto do corte", () => {
+    expect(shiftTimedParams({ bars: [{ at: 1.2 }] }, 1, 0.5)).toEqual({ bars: [{ at: 1 }] });
+  });
+});
+
+describe("modelos de edição", () => {
+  const template: EditTemplate = {
+    name: "VSL dinâmica",
+    description: "Cortes rápidos e gráfico nos números.",
+    captions: { enabled: true, preset: "bold", position: "center" },
+    silence: { remove: true, minSilence: 0.4, padding: 0.1 },
+    zoom: { perMinute: 4, scale: 1.25, duration: 3, focusY: 0.38 },
+    motion: [{ component: "bar_chart", when: "quando citar números comparáveis" }],
+    pacing: "rápido",
+    instructions: "Corte pausas e dê zoom nas ênfases.",
+  };
+
+  it("legendas do modelo são aplicadas localmente quando há transcrição", () => {
+    const ops = templateOperations(template, fixture());
+    expect(ops).toEqual([{ op: "set_captions", enabled: true, style: { preset: "bold", position: "center" } }]);
+    const { project } = applyOperations(fixture(), ops);
+    expect(project.captions.style).toMatchObject({ preset: "bold", position: "center" });
+  });
+
+  it("sem transcrição não há operação local", () => {
+    const empty = addAssetToProject(createProject({ name: "x" }), { id: "a1", kind: "video", name: "v.mp4", duration: 5, hasAudio: true });
+    expect(templateOperations(template, empty)).toEqual([]);
+  });
+
+  it("a receita para o agente traz pausas, zooms e motion", () => {
+    const prompt = templatePrompt(template);
+    expect(prompt).toContain("acima de 0.4s");
+    expect(prompt).toContain("cerca de 4 por minuto");
+    expect(prompt).toContain("- bar_chart: quando citar números comparáveis");
+    expect(EditTemplateSchema.safeParse(template).success).toBe(true);
   });
 });

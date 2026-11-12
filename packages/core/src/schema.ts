@@ -60,6 +60,17 @@ export const ZoomClipSchema = z.object({
   y: z.number().min(0).max(1).default(0.5),
   /** Duração da rampa de entrada/saída, em segundos. 0 = corte seco (punch-in). */
   ease: z.number().min(0).default(0.25),
+  /**
+   * hold: entra em `ease`, segura e sai em `ease`.
+   * creep: avança devagar de 1 até `scale` durante o clip inteiro e volta num corte.
+   */
+  mode: z.enum(["hold", "creep"]).default("hold"),
+  /**
+   * Deslocamento do quadro em fração da largura/altura. panX positivo leva o
+   * apresentador para a direita (abre espaço à esquerda); negativo, o contrário.
+   */
+  panX: z.number().min(-0.5).max(0.5).default(0),
+  panY: z.number().min(-0.5).max(0.5).default(0),
 });
 export type ZoomClip = z.infer<typeof ZoomClipSchema>;
 
@@ -105,6 +116,31 @@ export const CaptionStyleSchema = z.object({
 });
 export type CaptionStyle = z.infer<typeof CaptionStyleSchema>;
 
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "cor em hexadecimal, ex.: #0B0F19");
+
+/** Pares tipográficos disponíveis: uma sem serifa forte + uma serifada itálica para ênfase. */
+export const FONT_PAIRS = {
+  "inter-instrument": { name: "Inter + Instrument Serif", sans: "Inter", serif: "Instrument Serif" },
+  "montserrat-playfair": { name: "Montserrat + Playfair Display", sans: "Montserrat", serif: "Playfair Display" },
+} as const;
+export type FontPairId = keyof typeof FONT_PAIRS;
+
+/**
+ * Brand Kit: a estética do usuário, definida uma vez e herdada por todos os
+ * vídeos. Componentes e legendas usam estes valores quando o clip não define os seus.
+ */
+export const BrandKitSchema = z.object({
+  primaryColor: hex.default("#FACC15").describe("cor de destaque principal"),
+  secondaryColor: hex.default("#38BDF8").describe("cor de apoio"),
+  backgroundColor: hex.default("#0B0F19").describe("fundo das cenas de tela cheia"),
+  textColor: hex.default("#F8FAFC"),
+  fontPair: z.enum(["inter-instrument", "montserrat-playfair"]).default("inter-instrument"),
+  displayName: z.string().max(40).default("").describe("nome exibido na tarja (ex.: Dra. Ana Silva)"),
+  credential: z.string().max(60).default("").describe("registro ou cargo (ex.: CRM 12345, Personal Trainer)"),
+});
+export type BrandKit = z.infer<typeof BrandKitSchema>;
+export const defaultBrandKit = (): BrandKit => BrandKitSchema.parse({});
+
 export const ProjectSchema = z.object({
   version: z.literal(1),
   id: z.string(),
@@ -118,7 +154,38 @@ export const ProjectSchema = z.object({
     enabled: z.boolean(),
     style: CaptionStyleSchema,
   }),
+  // Com default: projetos salvos antes do Brand Kit continuam abrindo.
+  brand: BrandKitSchema.default(defaultBrandKit),
+  /** Formato do quadro. Projetos antigos (sem o campo) eram horizontais. */
+  aspectRatio: z.enum(["9:16", "16:9"]).default("16:9"),
+  /**
+   * Reenquadramento: que parte do vídeo de origem fica visível quando ele é
+   * recortado para preencher o quadro (0 = borda esquerda/superior, 1 = direita/inferior).
+   */
+  framing: z.object({ x: z.number().min(0).max(1).default(0.5), y: z.number().min(0).max(1).default(0.5) }).default({ x: 0.5, y: 0.5 }),
+  /** Efeitos sonoros automáticos sincronizados com os movimentos visuais. */
+  sfx: z.object({ enabled: z.boolean().default(true), volume: z.number().min(0).max(2).default(1) }).default({ enabled: true, volume: 1 }),
 });
+
+export type AspectRatio = Project["aspectRatio"];
+export const FORMATS: Record<AspectRatio, { name: string; width: number; height: number }> = {
+  "9:16": { name: "Vertical 9:16 (Reels, TikTok, Shorts)", width: 1080, height: 1920 },
+  "16:9": { name: "Horizontal 16:9 (YouTube, VSL)", width: 1920, height: 1080 },
+};
+
+export type SafeArea = { top: number; right: number; bottom: number; left: number };
+
+/**
+ * Margens, em pixels do quadro, que textos e tarjas devem respeitar. No
+ * vertical cobrem a interface de Reels/TikTok/Shorts: legenda e botões de
+ * ação embaixo e à direita, cabeçalho em cima.
+ */
+export function safeArea(project: { width: number; height: number; aspectRatio: AspectRatio }): SafeArea {
+  const { width: w, height: h } = project;
+  return project.aspectRatio === "9:16"
+    ? { top: Math.round(h * 0.13), right: Math.round(w * 0.14), bottom: Math.round(h * 0.21), left: Math.round(w * 0.06) }
+    : { top: Math.round(h * 0.06), right: Math.round(w * 0.05), bottom: Math.round(h * 0.08), left: Math.round(w * 0.05) };
+}
 export type Project = z.infer<typeof ProjectSchema>;
 
 export type TimeRange = { start: number; end: number };

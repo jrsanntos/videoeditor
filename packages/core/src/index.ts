@@ -3,4 +3,7 @@ export * from "./timeline";
 export * from "./ops";
 export * from "./silence";
 export * from "./credits";
+export * from "./retakes";
 export * from "./agent-context";
+export * from "./template";
+export * from "./skills";

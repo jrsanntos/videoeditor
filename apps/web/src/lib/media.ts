@@ -91,6 +91,61 @@ export function probeVideo(file: Blob): Promise<{ duration: number; width: numbe
 const monoCache = new Map<string, Promise<Float32Array>>();
 export const SPEECH_RATE = 16000;
 
+/** Decodifica o áudio de qualquer arquivo de vídeo em mono 16 kHz. */
+export async function decodeBlobMono(blob: Blob): Promise<Float32Array> {
+  const ac = new AudioContext();
+  try {
+    const decoded = await ac.decodeAudioData(await blob.arrayBuffer());
+    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * SPEECH_RATE), SPEECH_RATE);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    src.connect(off.destination);
+    src.start();
+    return (await off.startRendering()).getChannelData(0);
+  } catch {
+    throw new Error("Este vídeo não tem uma faixa de áudio legível.");
+  } finally {
+    void ac.close();
+  }
+}
+
+/** Amostra `count` quadros espaçados do vídeo como JPEG (largura máx. `maxWidth`). */
+export async function sampleFrames(file: Blob, count: number, maxWidth = 768): Promise<{ t: number; image: Blob }[]> {
+  const url = URL.createObjectURL(file);
+  const v = document.createElement("video");
+  v.muted = true;
+  v.preload = "auto";
+  v.src = url;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      v.onloadeddata = () => resolve();
+      v.onerror = () => reject(new Error("Formato de vídeo não suportado por este navegador."));
+    });
+    const scale = Math.min(1, maxWidth / v.videoWidth);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(v.videoWidth * scale);
+    canvas.height = Math.round(v.videoHeight * scale);
+    const ctx = canvas.getContext("2d")!;
+    const out: { t: number; image: Blob }[] = [];
+    for (let i = 0; i < count; i++) {
+      // Centro de cada fatia: evita o primeiro quadro preto e o último.
+      const t = ((i + 0.5) / count) * v.duration;
+      await new Promise<void>((resolve) => {
+        v.onseeked = () => resolve();
+        v.currentTime = t;
+      });
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      const image = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Falha ao capturar quadro."))), "image/jpeg", 0.8),
+      );
+      out.push({ t: Math.round(t * 100) / 100, image });
+    }
+    return out;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Áudio do asset em mono 16 kHz — base para detecção de silêncio local e transcrição. */
 export function decodeMono(assetId: string): Promise<Float32Array> {
   let p = monoCache.get(assetId);
@@ -98,20 +153,7 @@ export function decodeMono(assetId: string): Promise<Float32Array> {
     p = (async () => {
       const blob = mediaBlob(assetId);
       if (!blob) throw new Error("Arquivo de mídia não encontrado. Envie o vídeo novamente.");
-      const ac = new AudioContext();
-      try {
-        const decoded = await ac.decodeAudioData(await blob.arrayBuffer());
-        const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * SPEECH_RATE), SPEECH_RATE);
-        const src = off.createBufferSource();
-        src.buffer = decoded;
-        src.connect(off.destination);
-        src.start();
-        return (await off.startRendering()).getChannelData(0);
-      } catch {
-        throw new Error("Este vídeo não tem uma faixa de áudio legível.");
-      } finally {
-        void ac.close();
-      }
+      return decodeBlobMono(blob);
     })();
     monoCache.set(assetId, p);
     p.catch(() => monoCache.delete(assetId));
@@ -140,3 +182,32 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   }
   return new Blob([view], { type: "audio/wav" });
 }
+
+/**
+ * Áudio da fala comprimido para envio: Opus mono a 32 kbps em WebM
+ * (~0,24 MB por minuto; 10 min ≈ 2,4 MB, contra ~19 MB em WAV). Cabe com folga
+ * nos limites de corpo de requisição de hosts serverless. Se o navegador não
+ * codifica Opus, cai para WAV.
+ */
+export async function encodeSpeech(samples: Float32Array, sampleRate: number): Promise<{ blob: Blob; filename: string }> {
+  try {
+    const { AudioBufferSource, BufferTarget, getFirstEncodableAudioCodec, Output, WebMOutputFormat } = await import("mediabunny");
+    const codec = await getFirstEncodableAudioCodec(["opus"], { numberOfChannels: 1, sampleRate, bitrate: SPEECH_BITRATE });
+    if (!codec) throw new Error("opus indisponível");
+    const buffer = new AudioBuffer({ length: samples.length, sampleRate, numberOfChannels: 1 });
+    buffer.getChannelData(0).set(samples);
+    const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
+    const source = new AudioBufferSource({ codec, bitrate: SPEECH_BITRATE });
+    output.addAudioTrack(source);
+    await output.start();
+    await source.add(buffer);
+    source.close();
+    await output.finalize();
+    if (!output.target.buffer) throw new Error("codificação vazia");
+    return { blob: new Blob([output.target.buffer], { type: "audio/webm" }), filename: "audio.webm" };
+  } catch (e) {
+    console.warn("compressão de áudio indisponível; enviando WAV", e);
+    return { blob: encodeWav(samples, sampleRate), filename: "audio.wav" };
+  }
+}
+const SPEECH_BITRATE = 32_000;
