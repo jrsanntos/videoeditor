@@ -66,7 +66,10 @@ export async function POST(req: Request) {
 
   let client: Anthropic;
   try {
-    client = new Anthropic();
+    // VIDEOEDITOR_ANTHROPIC_KEY é um nome alternativo para ambientes que reservam ANTHROPIC_API_KEY.
+    client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY || process.env.VIDEOEDITOR_ANTHROPIC_KEY || undefined,
+    });
   } catch {
     return noCredentials();
   }
@@ -183,7 +186,7 @@ function noCredentials() {
   return Response.json(
     {
       error:
-        "O agente de IA não está configurado neste servidor (defina ANTHROPIC_API_KEY em apps/web/.env.local). A edição manual e a remoção local de silêncios funcionam sem ele.",
+        "O agente de IA não está configurado neste servidor (defina ANTHROPIC_API_KEY ou VIDEOEDITOR_ANTHROPIC_KEY em apps/web/.env.local). A edição manual e a remoção local de silêncios funcionam sem ele.",
     },
     { status: 503 },
   );

@@ -49,7 +49,7 @@ Abra http://localhost:3000. Variáveis em `apps/web/.env.local`:
 
 | Variável | Para quê | Sem ela |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | Agente de edição (chat) | Chat responde que não está configurado; todo o resto funciona |
+| `ANTHROPIC_API_KEY` (ou `VIDEOEDITOR_ANTHROPIC_KEY`) | Agente de edição (chat) | Chat responde que não está configurado; todo o resto funciona |
 | `AGENT_MODEL` | Modelo do agente (padrão `claude-sonnet-5-5`) | — |
 | `GROQ_API_KEY` | Transcrição com timestamp por palavra (Whisper) | Sem legendas e sem cortes baseados na fala |
 
