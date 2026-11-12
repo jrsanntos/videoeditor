@@ -1,0 +1,15 @@
+{
+  "name": "videoeditor",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter @videoeditor/web dev",
+    "build": "pnpm --filter @videoeditor/web build",
+    "test": "vitest run",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.0"
+  }
+}
