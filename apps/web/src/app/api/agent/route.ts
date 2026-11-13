@@ -241,7 +241,7 @@ export async function POST(req: Request) {
       }
       // Modelo reserva: mesma conversa, mesmas ferramentas, mesmo teto de custo.
       send({ type: "status", role, text: status(role === "director" ? "plan_edit" : "edit_timeline") });
-      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, signal: req.signal });
+      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, effort: effortFor(role), signal: req.signal });
       const turn = { input: message.usage.input_tokens, output: message.usage.output_tokens, cacheRead: message.usage.cache_read_input_tokens ?? 0, cacheWrite: 0 };
       const cost = await geminiCostUSD(turn);
       account(model, turn, cost, role);
