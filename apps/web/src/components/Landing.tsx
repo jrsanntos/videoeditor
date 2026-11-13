@@ -139,9 +139,9 @@ export function Landing({ loggedIn }: { loggedIn: boolean }) {
                   <Ribbon items={["Corta os erros", "Planeja o ritmo", "Anima na palavra exata"]} />
                   <Ribbon items={["Reels", "Shorts", "TikTok", "Aulas", "Vídeos de vendas"]} reverse />
                 </div>
-                <FloatCard style="viral" caption="Viral · gancho + karaokê" className="left-[2%] top-[13%]" tilt={-3} float={8} />
-                <FloatCard style="vsl" caption="VSL · número em destaque" className="right-[2%] top-[4%]" tilt={3} float={10} />
-                <FloatCard style="autoridade" caption="Autoridade · tarja e ritmo sóbrio" className="bottom-[3%] left-[31.5%]" tilt={0} float={9} />
+                <FloatCard style="viral" caption="Viral · gancho + legenda pop" className="left-[2%] top-[13%]" tilt={-3} float={8} />
+                <FloatCard style="acao" caption="Ação · câmera lenta e impacto" className="right-[2%] top-[4%]" tilt={3} float={10} />
+                <FloatCard style="autoridade" caption="Autoridade · dados e ritmo sóbrio" className="bottom-[3%] left-[31.5%]" tilt={0} float={9} />
               </div>
             </div>
           </div>

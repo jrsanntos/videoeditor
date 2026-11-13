@@ -15,13 +15,13 @@ const MOVES: Record<SkillId, string[]> = {
   ],
   autoridade: [
     "Pausas de raciocínio ficam; erros e frases abandonadas saem.",
-    "Tarja com seu nome e credencial na afirmação mais forte da abertura.",
+    "Números em cartões de dados e comparativos na virada do raciocínio.",
     "Avanço lento de câmera nas frases que carregam a tese. Sem punch-in em sequência.",
   ],
-  vsl: [
-    "Cortes rápidos: sai a hesitação e tudo que repete o que já foi dito.",
-    "Todo número, prazo ou preço aparece animado na palavra exata.",
-    "A dor abre o vídeo e o benefício fecha, em cartão de tela cheia.",
+  acao: [
+    "As pausas sem fala ficam: silêncio com ação é a cena, não tempo morto.",
+    "Câmera lenta nos ápices e aceleração nos deslocamentos, com cor de cinema.",
+    "Trilha de ação, impactos e efeitos sonoros no pico exato de cada golpe.",
   ],
   limpeza: [
     "Recomeços, falas para a equipe e trechos fora do conteúdo são cortados.",

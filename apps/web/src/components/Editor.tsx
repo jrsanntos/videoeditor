@@ -2,15 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatCredits, PLANS, PRICING, projectDuration, type PlanId } from "@videoeditor/core";
-import { closeProject, importVideo, logout, refreshMe } from "@/lib/actions";
-import { downloadBlob, exportInBrowser } from "@/lib/export";
+import { closeProject, importVideo, logout, refreshMe, startEmptyProject } from "@/lib/actions";
+import { downloadBlob, exportInBrowser, exportOTIO } from "@/lib/export";
 import { loadMedia } from "@/lib/media";
 import { hydrateEditor, useEditor } from "@/lib/store";
 import { ChatPanel } from "./ChatPanel";
 import { Inspector } from "./Inspector";
 import { Player, togglePlay } from "./Player";
 import { Sidebar } from "./Sidebar";
-import { deleteSelection, splitAtPlayhead, Timeline } from "./Timeline";
+import { addMarkerAtPlayhead, deleteSelection, splitAtPlayhead, Timeline } from "./Timeline";
 import { Assistant } from "./Assistant";
 import { Tour } from "./Tour";
 import { Icon, Logo, ResizeHandle } from "./ui";
@@ -26,8 +26,9 @@ export function Editor() {
     void (async () => {
       if (p) {
         const missing = await loadMedia(Object.keys(p.assets));
-        // O JSON da edição sobrevive, mas sem o arquivo bruto não há o que exibir.
-        if (missing.length) useEditor.getState().setProject(null);
+        // O JSON da edição sobrevive, mas sem o arquivo bruto de um clip da timeline não há o que exibir.
+        const used = new Set(p.tracks.flatMap((t) => t.clips).flatMap((c) => (c.type === "media" || c.type === "broll" ? [c.assetId] : [])));
+        if (missing.some((id) => used.has(id))) useEditor.getState().setProject(null);
       }
       setReady(true);
     })();
@@ -45,7 +46,8 @@ export function Editor() {
       else if (mod && e.key.toLowerCase() === "z") (e.shiftKey ? s.redo : s.undo)();
       else if (mod && e.key.toLowerCase() === "y") s.redo();
       else if (!mod && e.key.toLowerCase() === "s") splitAtPlayhead();
-      else if (e.key === "Delete" || e.key === "Backspace") deleteSelection();
+      else if (!mod && e.key.toLowerCase() === "m") addMarkerAtPlayhead();
+      else if (e.key === "Delete" || e.key === "Backspace") deleteSelection(e.shiftKey);
       else if (e.key === "Escape") (s.setRange(null), s.select(null), s.tour !== null && s.setTour(null));
       else if (e.key === "ArrowLeft") s.seek(s.time - (e.shiftKey ? 1 : 1 / s.project.fps));
       else if (e.key === "ArrowRight") s.seek(s.time + (e.shiftKey ? 1 : 1 / s.project.fps));
@@ -93,7 +95,8 @@ function UploadScreen() {
   const busy = useEditor((s) => s.busy);
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const pick = (file?: File | null) => file && void importVideo(file);
+  const [reference, setReference] = useState("");
+  const pick = (file?: File | null) => file && void importVideo(file, { referenceUrl: reference });
   const steps = [
     { icon: <Icon.wand size={16} />, title: "Limpeza automática", text: "Erros de gravação e pausas saem em um clique." },
     { icon: <Icon.sparkles size={16} />, title: "Diretor de IA", text: "Analisa o vídeo, planeja o ritmo e monta a edição." },
@@ -136,6 +139,23 @@ function UploadScreen() {
           <span className="text-sm text-zinc-500">MP4, MOV ou WebM · o arquivo fica no seu navegador</span>
         </button>
         <input ref={input} type="file" accept="video/*" className="hidden" data-testid="file-input" onChange={(e) => pick(e.target.files?.[0])} />
+        <button type="button" className="-mt-5 text-xs text-muted-foreground hover:underline" onClick={() => void startEmptyProject()} disabled={!!busy} data-testid="skip-upload">
+          ou pular direto para o editor sem adicionar vídeo
+        </button>
+        <label className="-mt-2 block w-full max-w-2xl text-left">
+          <span className="text-[12px] text-zinc-400">
+            URL do YouTube de inspiração <span className="text-zinc-600">(opcional)</span> — para a IA replicar o ritmo, estilo de cortes, cores e tipografia
+          </span>
+          <input
+            type="url"
+            inputMode="url"
+            value={reference}
+            onChange={(e) => setReference(e.target.value)}
+            placeholder="https://www.youtube.com/watch?v=…"
+            data-testid="reference-url"
+            className="mt-1.5 w-full rounded-xl border border-line bg-ink-900/70 px-3.5 py-2.5 text-[13px] text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-brand-400"
+          />
+        </label>
         <ol className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
           {steps.map((s, i) => (
             <li key={s.title} className="panel rounded-2xl p-4">
@@ -180,7 +200,7 @@ function TopBar() {
             if (confirm("Fechar este projeto? O vídeo e a edição salvos neste navegador serão removidos.")) void closeProject();
           }}
         >
-          Novo vídeo
+          Novo projeto
         </button>
         <Shortcuts />
         <ExportMenu />
@@ -209,7 +229,10 @@ function SmallScreen() {
 const SHORTCUTS: [string, string][] = [
   ["Espaço", "Reproduzir / pausar"],
   ["S", "Dividir no cursor"],
-  ["Delete", "Cortar o trecho ou apagar o selecionado"],
+  ["M", "Marcador no cursor"],
+  ["Delete", "Cortar o trecho ou apagar fechando o buraco (ripple)"],
+  ["Shift + Delete", "Apagar o clip e deixar a lacuna"],
+  ["Alt + arrastar", "Mover um clip de vídeo por qualquer ponto"],
   ["Ctrl + Z", "Desfazer"],
   ["Ctrl + Shift + Z", "Refazer"],
   ["← →", "Um quadro para trás / para frente"],
@@ -240,6 +263,8 @@ function Shortcuts() {
           <ul className="space-y-1.5 text-zinc-300">
             <li>Clique na timeline: marca um instante e oferece “Dividir aqui”.</li>
             <li>Arraste na timeline: seleciona um trecho para cortar ou mandar à IA.</li>
+            <li>Barra do nome de um clip de vídeo: arraste para mover; pode deixar lacunas ou soltar entre dois clips.</li>
+            <li>Mídia da aba Mídia: arraste para a trilha de vídeo (insere e empurra) ou para cima (sobrepõe).</li>
             <li>Clique num bloco: abre o editor dele ao lado do vídeo.</li>
             <li>No vídeo: arraste um texto para mover; duplo clique para reescrever.</li>
             <li>Bordas entre os painéis: arraste para redimensionar.</li>
@@ -344,6 +369,20 @@ function ExportMenu() {
             <span className="block text-sm text-zinc-100">Renderizar no navegador</span>
             <span className="block text-xs text-emerald-400">Grátis · usa o hardware do seu computador</span>
             {plan.watermark && <span className="mt-0.5 block text-xs text-zinc-500">Plano Free: sai em {plan.maxExportHeight}p com marca d'água</span>}
+          </button>
+          <button
+            onClick={() => {
+              const { project, setNotice } = useEditor.getState();
+              if (!project) return;
+              setOpen(false);
+              downloadBlob(exportOTIO(project), `${project.name}.otio`);
+              setNotice("Timeline exportada em OpenTimelineIO (.otio): abra no DaVinci Resolve, Premiere ou outro editor e religue a mídia.");
+            }}
+            className="block w-full rounded-lg px-3 py-2 text-left hover:bg-white/8"
+            data-testid="export-otio"
+          >
+            <span className="block text-sm text-zinc-100">Timeline para outro editor (.otio)</span>
+            <span className="block text-xs text-zinc-400">OpenTimelineIO: clips, lacunas, velocidades e marcadores</span>
           </button>
           <div className="rounded-lg px-3 py-2 opacity-50" aria-disabled>
             <span className="block text-sm text-zinc-100">Render turbo na nuvem</span>

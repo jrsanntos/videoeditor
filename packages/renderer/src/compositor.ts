@@ -1,20 +1,23 @@
 import {
+  depthPlacement,
+  faceBox,
   FONT_PAIRS,
   isFullscreen,
   mainClipAt,
+  projectDuration,
+  sourceTimeAt,
   subjectAt,
   safeArea,
-  timelineWords,
   type BrollClip,
-  type CaptionStyle,
   type MediaClip,
   type Project,
   type SafeArea,
-  type TimelineWord,
 } from "@videoeditor/core";
-import { cameraAt, drawVideo, type Rect } from "./camera";
+import { backdropBlur, drawLetterbox, drawVignette, letterboxHeight } from "./background";
+import { cameraAt, drawVideo, impactAt, type Rect } from "./camera";
+import { drawCaptions, type CaptionBox } from "./captions";
 import { COMPONENTS } from "./components/library";
-import { brandFonts, clamp01, type Ctx2D, EASE, easeOutBack, font, roundRect, setActiveFonts, setUnit, stage } from "./draw";
+import { brandFonts, clamp01, type Ctx2D, drawLookLayers, EASE, lookFilter, roundRect, setActiveFonts, setUnit, stage } from "./draw";
 
 export type FrameSource = { image: CanvasImageSource; width: number; height: number };
 
@@ -27,6 +30,8 @@ export type RenderOptions = {
   getPersonMask?: (clip: MediaClip, frame: FrameSource) => CanvasImageSource | null;
   /** Quadro atual de uma mídia de contexto (vídeo ou imagem). null = ainda não disponível. */
   getBrollFrame?: (clip: BrollClip, localTime: number) => FrameSource | null;
+  /** Só para a sonda de layout (sem canvas de verdade): considera que o recorte do apresentador existe. */
+  assumePerson?: boolean;
   /** Desenha as áreas seguras por cima (só no preview; nunca na exportação). */
   guides?: boolean;
   /**
@@ -43,7 +48,6 @@ export type RenderOptions = {
 
 /** Um texto editável de um componente, em pixels do quadro do projeto. */
 export type EditRegion = { clipId: string; key: string; x: number; y: number; w: number; h: number };
-export type CaptionBox = { x: number; y: number; w: number; h: number; wordIds: string[] };
 
 /** Componentes de tarja (nome/cargo): somem quando o Brand Kit desliga a tarja. */
 export const LOWER_THIRD_IDS = new Set(["executive_lower_third", "lower_third"]);
@@ -87,12 +91,15 @@ export function renderFrame(
 
   const clip = mainClipAt(project, t);
   const frame = clip ? getFrame(clip) : null;
+  const look = project.look;
   let rect: Rect | null = null;
   if (frame) {
     rect = cameraAt(project, t, frame.width, frame.height);
     // A posição do quadro anterior dá a velocidade da câmera para o motion blur.
-    drawVideo(ctx, frame.image, rect, cameraAt(project, Math.max(0, t - 1 / project.fps), frame.width, frame.height), u);
+    drawVideo(ctx, frame.image, rect, cameraAt(project, Math.max(0, t - 1 / project.fps), frame.width, frame.height), u, lookFilter(look));
   }
+  const subject = subjectAt(project, t);
+  const safeFrac = { top: safe.top / height, right: safe.right / width, bottom: safe.bottom / height, left: safe.left / width };
 
   // Recorte do apresentador, montado no máximo uma vez por quadro e só se alguém pedir.
   let person: OffscreenCanvas | null | undefined;
@@ -117,6 +124,7 @@ export function renderFrame(
   // Onde há texto de componentes neste quadro: as legendas desviam para não ficar por cima.
   const busy: Rect[] = [];
   let fullscreenOn = false;
+  let brollCover = false;
 
   // Mídia de contexto: por cima do vídeo falado, por baixo dos componentes e das legendas.
   if (options.getBrollFrame)
@@ -129,8 +137,26 @@ export function renderFrame(
         if (!src) continue;
         const card = drawBroll(ctx, src, c, local, width, height, u, safe, vertical);
         if (card) busy.push(card);
+        else brollCover = true;
       }
     }
+
+  // Tratamento visual do vídeo (e do b-roll): camadas de cor da grade, vinheta dinâmica e flash de impacto.
+  // Fica por baixo dos componentes e das legendas: texto e cartões mantêm as cores do Brand Kit.
+  if (frame || brollCover) {
+    drawLookLayers(ctx, look, width, height);
+    drawVignette(ctx, width, height, look.vignette, sceneEnergy(project, clip, t), t);
+  }
+  const impact = impactAt(project, t);
+  if (impact.flash > 0.004) {
+    ctx.save();
+    ctx.globalAlpha = impact.flash;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
+  const duration = projectDuration(project);
+  drawLetterbox(ctx, width, height, look.letterbox, t, duration);
 
   // Trilhas são ordenadas de cima para baixo; desenha de baixo para cima.
   for (const track of [...project.tracks].reverse()) {
@@ -142,7 +168,7 @@ export function renderFrame(
       if (!project.brand.showLowerThird && LOWER_THIRD_IDS.has(c.component)) continue;
       const parsed = def.schema.safeParse(c.params);
       if (!parsed.success) continue;
-      const hasPerson = def.needsPerson ? personLayer() !== null : false;
+      const hasPerson = def.needsPerson ? options.assumePerson === true || personLayer() !== null : false;
       const st = c.style;
       const brand = st
         ? {
@@ -180,10 +206,17 @@ export function renderFrame(
         height,
         u,
         brand,
-        subject: subjectAt(project, t),
+        subject,
         safe,
         vertical,
         hasPerson,
+        // Guardrail do texto em profundidade: em close-up (ou sem recorte) vira cartão fora do rosto.
+        depth: depthPlacement(subject, hasPerson, safeFrac, width / height),
+        backdropBlur: (x, y, w, h, r = 0, blur = 18 * u) => {
+          const m = ctx.getTransform();
+          // Só translação/escala uniformes chegam aqui; o desfoque é aplicado em pixels do quadro.
+          backdropBlur(ctx, m.a * x + m.e, m.d * y + m.f, w * m.a, h * m.d, r * m.a, blur);
+        },
         drawPerson: () => {
           const layer = def.needsPerson ? personLayer() : null;
           if (!layer) return;
@@ -218,10 +251,41 @@ export function renderFrame(
     }
   }
 
-  // Cena de tela cheia já traz a frase em tipografia própria: a legenda sai enquanto ela está na tela.
-  if (project.captions.enabled && !fullscreenOn) drawCaptions(ctx, project, t, u, safe, options, busy);
+  // Legendas: somem (com fade) enquanto um card está na tela, desviam do texto dos outros componentes
+  // e nunca ficam na frente do rosto.
+  if (project.captions.enabled && !fullscreenOn) {
+    const face = subject && frame && rect && !brollCover ? faceOnScreen(project, subject, rect, frame) : null;
+    drawCaptions(ctx, project, t, u, safe, { onCaption: options.onCaption, editCaptionId: options.editCaptionId, busy, face, letterbox: letterboxHeight(look.letterbox, height, t, duration) });
+  }
   if (options.guides) drawGuides(ctx, width, height, safe, u);
   ctx.restore();
+}
+
+/**
+ * Caixa do rosto em pixels da TELA: `subject` está no enquadramento de base
+ * (sem zoom); a câmera atual (`rect`) leva para onde o rosto realmente aparece.
+ */
+function faceOnScreen(project: Project, subject: NonNullable<ReturnType<typeof subjectAt>>, rect: Rect, frame: FrameSource): Rect {
+  const { width: W, height: H } = project;
+  const f = faceBox(subject, W / H);
+  const s0 = Math.max(W / frame.width, H / frame.height);
+  const w0 = frame.width * s0;
+  const h0 = frame.height * s0;
+  const x0 = (W - w0) * project.framing.x;
+  const y0 = (H - h0) * project.framing.y;
+  const sx = rect.w / w0;
+  const sy = rect.h / h0;
+  return { x: rect.x + (f.x * W - x0) * sx, y: rect.y + (f.y * H - y0) * sy, w: f.w * W * sx, h: f.h * H * sy };
+}
+
+/** Energia visual da cena em `t` (0–1): o movimento medido no vídeo de origem. Sem análise, 0. */
+function sceneEnergy(project: Project, clip: MediaClip | null, t: number): number {
+  const motion = clip ? project.assets[clip.assetId]?.analysis?.motion : undefined;
+  if (!clip || !motion?.length) return 0;
+  const src = sourceTimeAt(clip, t - clip.start);
+  let best = motion[0]!;
+  for (const m of motion) if (Math.abs(m.t - src) < Math.abs(best.t - src)) best = m;
+  return best.v;
 }
 
 /**
@@ -304,150 +368,5 @@ function drawGuides(ctx: Ctx2D, width: number, height: number, safe: SafeArea, u
   ctx.lineWidth = 2 * u;
   ctx.setLineDash([12 * u, 10 * u]);
   ctx.strokeRect(safe.left, safe.top, width - safe.left - safe.right, height - safe.top - safe.bottom);
-  ctx.restore();
-}
-
-export type CaptionGroup = {
-  /** Tempos na timeline, já com o deslocamento da legenda. */
-  start: number;
-  end: number;
-  /** Palavras visíveis (com texto e não escondidas), com os tempos já deslocados. */
-  words: TimelineWord[];
-  /** Todas as palavras do grupo, para editar a legenda inteira. */
-  wordIds: string[];
-  text: string;
-  hidden: boolean;
-  shift: number;
-};
-const groupCache = new WeakMap<Project, CaptionGroup[]>();
-
-/**
- * Legendas derivadas da transcrição. O agrupamento usa sempre os tempos e as
- * palavras originais — esconder, reescrever ou deslocar uma legenda não muda
- * onde as outras quebram.
- */
-export function captionGroups(project: Project): CaptionGroup[] {
-  const cached = groupCache.get(project);
-  if (cached) return cached;
-  const max = project.captions.style.maxWords;
-  const groups: CaptionGroup[] = [];
-  let cur: TimelineWord[] = [];
-  const flush = () => {
-    if (cur.length) {
-      const shift = cur[0]!.shift ?? 0;
-      const words = cur.filter((w) => !w.hidden && w.text.trim()).map((w) => ({ ...w, start: w.start + shift, end: w.end + shift }));
-      groups.push({
-        start: cur[0]!.start + shift,
-        end: cur[cur.length - 1]!.end + shift,
-        words,
-        wordIds: cur.map((w) => w.id),
-        text: cur
-          .map((w) => w.text.trim())
-          .filter(Boolean)
-          .join(" "),
-        hidden: !words.length,
-        shift,
-      });
-    }
-    cur = [];
-  };
-  for (const w of timelineWords(project)) {
-    const prev = cur[cur.length - 1];
-    if (prev && (cur.length >= max || w.start - prev.end > 0.6 || (w.clipId !== prev.clipId && w.start - prev.end > 0.2) || /[.!?]$/.test(prev.text)))
-      flush();
-    cur.push(w);
-  }
-  flush();
-  groups.sort((a, b) => a.start - b.start);
-  groupCache.set(project, groups);
-  return groups;
-}
-
-function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number, safe: SafeArea, options: RenderOptions, busy: Rect[]) {
-  const groups = captionGroups(project).filter((g) => !g.hidden);
-  const group = groups.find((g, i) => {
-    const next = groups[i + 1];
-    return t >= g.start && t < Math.min(g.end + 0.35, next ? next.start : Infinity);
-  });
-  if (!group) return;
-  const style: CaptionStyle = project.captions.style;
-  const { width, height } = project;
-  const upper = style.preset !== "clean";
-  const weight = style.preset === "clean" ? 600 : 900;
-  let size = (style.preset === "clean" ? 52 : 68) * u * style.fontScale;
-  const texts = group.words.map((w) => (upper ? w.text.toUpperCase() : w.text));
-
-  const measure = () => {
-    ctx.font = font(weight, size);
-    const space = ctx.measureText(" ").width;
-    const widths = texts.map((s) => ctx.measureText(s).width);
-    return { space, widths, total: widths.reduce((a, b) => a + b, 0) + space * (texts.length - 1) };
-  };
-  let m = measure();
-  // As legendas ficam dentro da área segura: nada sob os botões e a descrição do app.
-  const maxWidth = (width - safe.left - safe.right) * 0.96;
-  if (m.total > maxWidth) {
-    size *= maxWidth / m.total;
-    m = measure();
-  }
-  let cy =
-    style.y !== undefined
-      ? Math.min(height - size, Math.max(size, style.y * height))
-      : style.position === "top"
-        ? safe.top + size * 1.4
-        : style.position === "center"
-          ? height * 0.5
-          : height - safe.bottom - size * 1.1;
-  const cx = safe.left + (width - safe.left - safe.right) / 2;
-  // Controle de colisão: se a legenda cairia sobre o texto de um componente, vai para o espaço livre mais próximo.
-  const half = size * 0.85;
-  const gap = 26 * u;
-  const hits = busy.filter((r) => r.x < cx + m.total / 2 && r.x + r.w > cx - m.total / 2 && r.y < cy + half + gap / 2 && r.y + r.h > cy - half - gap / 2);
-  if (hits.length) {
-    const below = Math.max(...hits.map((r) => r.y + r.h)) + gap + half;
-    const above = Math.min(...hits.map((r) => r.y)) - gap - half;
-    const free = (y: number) => y - half >= safe.top && y + half <= height - safe.bottom * 0.6 && !busy.some((r) => r.x < cx + m.total / 2 && r.x + r.w > cx - m.total / 2 && r.y < y + half && r.y + r.h > y - half);
-    const options2 = [below, above].filter(free).sort((a, b) => Math.abs(a - cy) - Math.abs(b - cy));
-    if (options2.length) cy = options2[0]!;
-  }
-  const box: CaptionBox = { x: cx - m.total / 2 - size * 0.5, y: cy - size * 0.85, w: m.total + size, h: size * 1.7, wordIds: group.wordIds };
-  options.onCaption?.(box);
-  if (options.editCaptionId && options.editCaptionId === group.wordIds[0]) {
-    ctx.save();
-    ctx.strokeStyle = "rgba(129,140,248,0.95)";
-    ctx.lineWidth = 3 * u;
-    ctx.setLineDash([10 * u, 8 * u]);
-    roundRect(ctx, box.x, box.y, box.w, box.h, 10 * u);
-    ctx.stroke();
-    ctx.restore();
-  }
-  const pop = 0.9 + 0.1 * easeOutBack(stage(t, group.start, 0.18));
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(pop, pop);
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  if (style.preset === "clean") {
-    // Executive pill: caixa escura translúcida de cantos arredondados.
-    ctx.fillStyle = "rgba(15,23,42,0.78)";
-    roundRect(ctx, -m.total / 2 - size * 0.5, -size * 0.85, m.total + size, size * 1.7, size * 0.35);
-    ctx.fill();
-  }
-  let x = -m.total / 2;
-  group.words.forEach((w, i) => {
-    const active = t >= w.start && t < w.end + 0.05;
-    const spoken = t >= w.start;
-    if (style.preset !== "clean") {
-      ctx.lineJoin = "round";
-      ctx.lineWidth = size * 0.22;
-      ctx.strokeStyle = "rgba(0,0,0,0.92)";
-      ctx.strokeText(texts[i]!, x, 0);
-    }
-    ctx.fillStyle =
-      style.preset === "karaoke" ? (active ? style.highlightColor : spoken ? style.color : "rgba(255,255,255,0.72)") : style.color;
-    ctx.fillText(texts[i]!, x, 0);
-    x += m.widths[i]! + m.space;
-  });
   ctx.restore();
 }

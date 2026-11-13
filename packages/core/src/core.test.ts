@@ -179,15 +179,19 @@ describe("silêncios", () => {
     const { project, log } = applyOperations(fixture(), [
       { op: "remove_silences", minSilence: 0.5, padding: 0.1 },
     ]);
-    // 0–0.9 (início), 2.0–3.9 (pausa), 6.5–10 (cauda) → 0.9 + 1.9 + 3.5 = 6.3s
-    expect(projectDuration(project)).toBeCloseTo(3.7, 3);
+    // Pré-roll de 150 ms e pós-roll de 220 ms: 0–0.85 (início), 2.12–3.85 (pausa), 6.62–10 (cauda) → 5.96s
+    expect(projectDuration(project)).toBeCloseTo(4.04, 3);
     expect(log[0]).toContain("3 silêncio");
     expect(timelineWords(project)).toHaveLength(7);
   });
 
   it("silencesFromWords respeita o padding", () => {
+    // O padding pedido vale como piso extra; o pós-roll nunca fica abaixo de 220 ms.
     expect(silencesFromWords([{ start: 0, end: 1 }, { start: 3, end: 4 }], 4, { padding: 0.2 })).toEqual([
-      { start: 1.2, end: 2.8 },
+      { start: 1.22, end: 2.8 },
+    ]);
+    expect(silencesFromWords([{ start: 0, end: 1 }, { start: 3, end: 4 }], 4, { padding: 0.3 })).toEqual([
+      { start: 1.3, end: 2.7 },
     ]);
   });
 
@@ -199,8 +203,8 @@ describe("silêncios", () => {
       samples[i] = t >= 1 && t < 3 ? 0 : Math.sin(i) * 0.5;
     }
     const [r] = silencesFromAudio(samples, sr, { minSilence: 0.5, padding: 0.1 });
-    expect(r!.start).toBeCloseTo(1.1, 1);
-    expect(r!.end).toBeCloseTo(2.9, 1);
+    expect(r!.start).toBeCloseTo(1.22, 1);
+    expect(r!.end).toBeCloseTo(2.85, 1);
   });
 });
 
@@ -589,7 +593,7 @@ describe("mídia de contexto (b-roll)", () => {
   });
 
   it("recusa asset que não é de contexto e aparece para o agente e para o auditor", () => {
-    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "a1", start: 0, duration: 2 }])).toThrow(/não existe/);
+    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "nao_existe", start: 0, duration: 2 }])).toThrow(/não existe/);
     expect(AgentOperationSchema.safeParse({ op: "add_broll", assetId: "b1", atWord: "w2", untilWord: "w4" }).success).toBe(true);
     const { project } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", start: 0, duration: 3 }]);
     expect(buildAgentContext(project)).toContain("b1 | vídeo de 3s | academia.mp4 — pessoa levantando peso");
@@ -606,5 +610,647 @@ describe("acabamento", () => {
     const cut = applyOperations(fixture(), [{ op: "remove_ranges", ranges: [{ start: 2, end: 4 }, { start: 6, end: 7 }] }]).project;
     expect(mainClips(cut).map((c) => jumpsBefore(cut, c.id))).toEqual([0, 1, 2]);
     expect(cut.finish).toEqual({ cutZoom: true, voice: true });
+  });
+});
+
+// ====================================================================
+// Critérios de aceite da evolução para "padrão ouro" (6 épicos)
+// ====================================================================
+import {
+  actionRanges,
+  BUILTIN_TEMPLATES,
+  BrandKitSchema,
+  captionAlpha,
+  captionBaseY,
+  captionSuppression,
+  checkArtDirection,
+  classifyGenre,
+  createEmptyProject,
+  critiqueEdit,
+  cutFadeGain,
+  CUT_FADE,
+  depthPlacement,
+  detectCuts,
+  energyPeaks,
+  faceBox,
+  hasSpeed,
+  isCloseUp,
+  localTimeAt,
+  mainGaps,
+  MotionGraphicSchema,
+  placeCaption,
+  projectGenre,
+  SILENCE_RULES,
+  skillForGenre,
+  skillOperations,
+  sourceSpan,
+  sourceTimeAt,
+  speechProfile,
+  StyleReferenceProfileSchema,
+  TEMPLATE_SKILLS,
+  timelineView,
+  toOTIO,
+  voiceRanges,
+  type AssetAnalysis,
+  type MediaClip,
+} from "./index";
+
+/** Vídeo de 70 s, 2 clips de teste, sem transcrição. */
+const blank = (duration = 10) => addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "bruto.mp4", duration, hasAudio: true, width: 1920, height: 1080 });
+const media = (p: Project) => mainClips(p).sort((a, b) => a.start - b.start);
+
+describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", () => {
+  it("o link 'pular direto para o editor' abre uma timeline vazia e funcional", () => {
+    const p = createEmptyProject();
+    expect(ProjectSchema.safeParse(p).success).toBe(true);
+    expect(mainClips(p)).toHaveLength(0);
+    expect(projectDuration(p)).toBe(0);
+    expect(p.tracks.map((t) => t.kind)).toEqual(["overlay", "fx", "main"]);
+    // Composição só com texto, cards e sons: nada exige um vídeo na trilha principal.
+    const { project } = applyOperations(p, [
+      { op: "add_component", component: "title_card", start: 0, duration: 3, params: { title: "Abertura" } },
+      { op: "add_sfx", sfx: "pop", start: 0.2 },
+      { op: "set_music", music: { mood: "ambient" } },
+    ]);
+    expect(projectDuration(project)).toBe(3);
+    // E a mídia pode entrar depois.
+    const later = structuredClone(project);
+    later.assets.v1 = { id: "v1", kind: "video", name: "depois.mp4", duration: 5, hasAudio: true };
+    const withVideo = applyOperations(later, [{ op: "insert_clip", assetId: "v1", at: 3 }]).project;
+    expect(media(withVideo)[0]).toMatchObject({ start: 3, duration: 5 });
+    expect(buildAgentContext(p)).toContain("vazia: composição sem vídeo");
+  });
+
+  it("a tarja de nome/cargo nasce desligada; projetos que a ligaram continuam com ela", () => {
+    expect(BrandKitSchema.parse({}).showLowerThird).toBe(false);
+    expect(createProject({ name: "x" }).brand.showLowerThird).toBe(false);
+    expect(BrandKitSchema.parse({ showLowerThird: true }).showLowerThird).toBe(true);
+    const ctx = buildAgentContext(fixture());
+    expect(ctx).toContain("Tarja de nome/cargo: DESLIGADA");
+    const on = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Dra. Ana" } }]).project;
+    expect(buildAgentContext(on)).toContain("Tarja de nome/cargo: disponível");
+  });
+
+  it("o StyleReferenceProfile do YouTube entra no contexto do Diretor", () => {
+    const profile = StyleReferenceProfileSchema.parse({
+      url: "https://www.youtube.com/watch?v=abcdefghijk",
+      videoId: "abcdefghijk",
+      title: "Treino tático em 60 segundos",
+      channel: "Canal X",
+      durationSec: 62,
+      pacing: { cutsPerMin: 28, wordsPerMin: 40, avgShotSec: 2.1, energy: "alta" },
+      structure: [{ t: 0, title: "Gancho" }, { t: 12, title: "Execução" }],
+      cutStyle: "Cortes na batida, com speed ramps.",
+      palette: ["#0B6B73", "#FF8A3D"],
+      typography: "Sem serifa condensada, caixa alta.",
+      guidelines: ["Use câmera lenta nos impactos."],
+    });
+    const { project } = applyOperations(fixture(), [{ op: "set_style_reference", profile }]);
+    const ctx = buildAgentContext(project);
+    expect(ctx).toContain("## Referência de inspiração (YouTube)");
+    expect(ctx).toContain("~28 cortes/min");
+    expect(ctx).toContain("#0B6B73, #FF8A3D");
+    expect(ctx).toContain("- Use câmera lenta nos impactos.");
+    expect(applyOperations(project, [{ op: "set_style_reference", profile: null }]).project.styleReference).toBeUndefined();
+  });
+});
+
+describe("2. gênero, playbook de ação e crítico", () => {
+  /** Cena de treino: 70 s, 9 palavras, muito movimento, picos em 12 s, 31 s e 52 s. */
+  const actionAnalysis = (): AssetAnalysis => {
+    const motion = Array.from({ length: 140 }, (_, i) => ({ t: i * 0.5, v: [12, 31, 52].some((p) => Math.abs(i * 0.5 - p) < 1.5) ? 0.9 : 0.25 }));
+    return {
+      genre: "action_cinematic",
+      reason: "Quase sem fala (9 palavras em 70s) e a cena é visual.",
+      motion,
+      cuts: [20, 40],
+      peaks: [{ t: 31, kind: "both", strength: 1 }, { t: 12, kind: "visual", strength: 0.9 }, { t: 52, kind: "audio", strength: 0.7 }],
+      speech: [{ start: 3, end: 5 }],
+      speechRatio: 0.03,
+      motionLevel: 0.09,
+    };
+  };
+  const actionVideo = () => {
+    const words = ["atenção", "preparar", "vai", "limpo", "avança", "cobertura", "alvo", "neutralizado", "encerrado"].map((text, i) => ({ id: `w${i}`, text, start: 3 + i * 7, end: 3.5 + i * 7 }));
+    const p = addAssetToProject(createProject({ name: "treino" }), { id: "a1", kind: "video", name: "treino.mp4", duration: 70, hasAudio: true, width: 1920, height: 1080, transcript: { words }, analysis: actionAnalysis() });
+    return p;
+  };
+
+  it("classifica o material: 9 palavras em 70 s com movimento é ação, não talking-head", () => {
+    expect(classifyGenre({ duration: 70, speechRatio: 0.05, wordCount: 9, motionLevel: 0.08, cutsPerMin: 3, hasPerson: true }).genre).toBe("action_cinematic");
+    expect(classifyGenre({ duration: 70, speechRatio: 0.85, wordCount: 190, motionLevel: 0.02, cutsPerMin: 0, hasPerson: true }).genre).toBe("talking_head");
+    expect(classifyGenre({ duration: 120, speechRatio: 0.7, wordCount: 300, motionLevel: 0.01, cutsPerMin: 0, hasPerson: false }).genre).toBe("tutorial_demo");
+    expect(classifyGenre({ duration: 60, speechRatio: 0.5, wordCount: 110, motionLevel: 0.1, cutsPerMin: 14, hasPerson: true }).genre).toBe("vlog_montage");
+    expect(skillForGenre("action_cinematic")).toBe("acao");
+    expect(skillForGenre("talking_head")).toBe("viral");
+  });
+
+  it("extrai picos de energia visual e acústica e mudanças de plano, não só palavras", () => {
+    const motion = Array.from({ length: 40 }, (_, i) => ({ t: i * 0.5, v: i === 20 ? 0.95 : 0.1 }));
+    const audio = Array.from({ length: 200 }, (_, i) => ({ t: i * 0.1, db: i === 100 || i === 101 ? -8 : -50 }));
+    const peaks = energyPeaks(motion, audio);
+    // Movimento e transiente de áudio no mesmo instante (10 s) viram um pico só, "both".
+    expect(peaks[0]).toMatchObject({ kind: "both" });
+    expect(peaks[0]!.t).toBeCloseTo(10, 0);
+    expect(detectCuts([{ t: 0, v: 0.02 }, { t: 0.5, v: 0.03 }, { t: 1, v: 0.6 }, { t: 1.5, v: 0.02 }, { t: 2, v: 0.03 }])).toEqual([1]);
+    expect(actionRanges(motion)).toEqual([{ start: 9.75, end: 10.25 }]);
+  });
+
+  it("o contexto do agente traz o gênero, o playbook de ação e os picos ancoráveis por tempo do bruto", () => {
+    const ctx = buildAgentContext(actionVideo());
+    expect(projectGenre(actionVideo())).toBe("action_cinematic");
+    expect(ctx).toContain("Gênero: action_cinematic");
+    expect(ctx).toContain("NÃO corte pausas sem fala");
+    expect(ctx).toContain("atSource 31 | visual+áudio | 1");
+    expect(ctx).toContain("Alta atividade visual");
+  });
+
+  it("plano de edição de ação: speed ramps, LUT/vinheta, trilha e SFX sincronizados", () => {
+    const skill = SKILLS.acao;
+    // Parte determinística do modelo: cor, vinheta, letterbox, trilha com ducking. Nenhum corte de silêncio.
+    const local = skillOperations(skill, actionVideo());
+    expect(local.some((o) => o.op === "remove_silences")).toBe(false);
+    const base = applyOperations(actionVideo(), local).project;
+    expect(base.look).toMatchObject({ grade: "tactical_teal_orange", vignette: 0.55 });
+    expect(base.look.letterbox).toBeGreaterThan(0);
+    expect(base.music).toMatchObject({ mood: "action", duck: true });
+    expect(base.captions.style).toMatchObject({ preset: "minimal_cinema", position: "bottom" });
+
+    // O plano que o Editor executa, só com o vocabulário do agente (âncoras por tempo do bruto).
+    const plan: OperationInput[] = [
+      { op: "speed_ramp", atSource: 30, untilSource: 32.5, rate: 0.5 },
+      { op: "speed_ramp", atSource: 14, untilSource: 20, rate: 1.8 },
+      { op: "add_sfx", sfx: "impacto_cinematico", atSource: 31 },
+      { op: "add_sfx", sfx: "whoosh_rapido", atSource: 14 },
+      { op: "add_impact", atSource: 31, kind: "both" },
+      { op: "add_zoom", atSource: 30, duration: 2, scale: 1.2, easing: "spring", ease: 0.3 },
+      { op: "add_component", component: "tactical_hud_overlay", atSource: 40, duration: 6, params: { label: "TREINO" } },
+    ];
+    for (const op of plan) expect(AgentOperationSchema.safeParse(op).success).toBe(true);
+    const { project } = applyOperations(base, plan);
+
+    // Rampas: câmera lenta (0,5x segura) e aceleração, com entrada e saída em 1x.
+    const ramps = media(project).filter(hasSpeed);
+    expect(ramps).toHaveLength(2);
+    const slow = ramps.find((c) => c.speedRamp!.some((p) => p.rate === 0.5))!;
+    expect(slow.speedRamp![0]!.rate).toBe(1);
+    expect(slow.speedRamp![slow.speedRamp!.length - 1]!.rate).toBe(1);
+    expect(sourceSpan(slow)).toBeCloseTo(2.5, 2);
+    expect(slow.duration).toBeGreaterThan(2.5 * 1.4);
+    // A aceleração encurta; o total fecha: 70 − 6 + 6/k_rápido − 2,5 + 2,5/k_lento.
+    const fast = ramps.find((c) => c !== slow)!;
+    expect(fast.duration).toBeLessThan(6);
+    expect(projectDuration(project)).toBeCloseTo(70 - 6 + fast.duration - 2.5 + slow.duration, 2);
+    // Nenhum trecho do bruto se perdeu nem se repetiu.
+    const clips = media(project);
+    clips.forEach((c, i) => i > 0 && expect(c.sourceStart).toBeCloseTo(clips[i - 1]!.sourceStart + sourceSpan(clips[i - 1]!), 2));
+
+    // SFX sincronizado: o pico cai no mesmo instante da timeline que o pico de ação (bruto 31 s), mesmo com as rampas.
+    const peakAt = slow.start + localTimeAt(slow, 31);
+    const sfx = project.tracks.flatMap((t) => t.clips).filter((c) => c.type === "sfx");
+    expect(sfx.map((c) => c.type === "sfx" && c.sfx)).toEqual(expect.arrayContaining(["impacto_cinematico", "whoosh_rapido"]));
+    expect(sfx.find((c) => c.type === "sfx" && c.sfx === "impacto_cinematico")!.start).toBeCloseTo(peakAt, 2);
+    const impact = getTrack(project, "fx").clips.find((c) => c.type === "impact")!;
+    expect(impact.start).toBeCloseTo(peakAt, 2);
+    // Zoom sem x/y e sem sujeito medido não inventa rastreamento.
+    const zoom = getTrack(project, "fx").clips.find((c) => c.type === "zoom")!;
+    expect(zoom).toMatchObject({ easing: "spring", follow: false });
+
+    // O Crítico aprova: tem rampa, cor, trilha, sons; e o auditor de ritmo conta as rampas como tratamento.
+    expect(critiqueEdit(project, { skill }).filter((i) => i.severity === "erro")).toEqual([]);
+    expect(timelineView(project)).toContain("rampa");
+  });
+
+  it("o Crítico reprova o que o sistema fazia antes: zooms aleatórios e cards soltos, sem rampa, cor nem som", () => {
+    const { project } = applyOperations(actionVideo(), [
+      { op: "add_zoom", start: 22.3, duration: 2, scale: 1.2, x: 0.5, y: 0.5 },
+      { op: "add_zoom", start: 45.1, duration: 2, scale: 1.2, x: 0.5, y: 0.5 },
+      { op: "add_component", component: "title_card", start: 10, duration: 3, params: { title: "Treino" } },
+    ]);
+    const codes = critiqueEdit(project, { skill: SKILLS.acao }).map((i) => i.code);
+    expect(codes).toContain("zoom_sem_motivo");
+    expect(codes).toContain("acao_sem_tratamento");
+    expect(codes).toContain("som_incompleto");
+  });
+
+  it("o Crítico acusa texto na tela repetindo a fala", () => {
+    const { project } = applyOperations(fixture(), [{ op: "add_component", component: "text_highlight", atWord: "w2", duration: 3, params: { text: "Hoje vamos falar de vendas" } }]);
+    expect(critiqueEdit(project).map((i) => i.code)).toContain("texto_repete_fala");
+    const ok = applyOperations(fixture(), [{ op: "add_component", component: "text_highlight", atWord: "w2", duration: 3, params: { text: "Oferta irresistível" } }]).project;
+    expect(critiqueEdit(ok).map((i) => i.code)).not.toContain("texto_repete_fala");
+  });
+
+  it("velocidade: palavras, legendas e âncoras seguem a curva do clip", () => {
+    const base = fixture();
+    const { project } = applyOperations(base, [{ op: "set_speed", clipId: mainClips(base)[0]!.id, speed: 2 }]);
+    expect(projectDuration(project)).toBeCloseTo(5, 3);
+    expect(timelineWords(project).find((w) => w.id === "w2")!.start).toBeCloseTo(2, 3);
+    const clip = mainClips(project)[0] as MediaClip;
+    expect(sourceTimeAt(clip, 2)).toBeCloseTo(4, 3);
+    expect(localTimeAt(clip, 4)).toBeCloseTo(2, 3);
+    // Cortar por palavra continua exato num clip acelerado.
+    const cut = applyOperations(project, [{ op: "cut_words", cuts: [{ from: "w0", to: "w1" }] }]).project;
+    expect(timelineWords(cut).map((w) => w.id)).toEqual(["w2", "w3", "w4", "w5", "w6"]);
+  });
+});
+
+describe("3. timeline NLE: movimentação livre, lacunas, inserção e ripple", () => {
+  const two = () => {
+    const p = blank(10);
+    p.assets.b1 = { id: "b1", kind: "video", name: "outro.mp4", duration: 4, hasAudio: true };
+    return applyOperations(p, [{ op: "split", time: 6 }]).project;
+  };
+
+  it("depois de dividir, um trecho pode ser arrastado para a direita criando uma lacuna", () => {
+    const p = two();
+    const [a, b] = media(p);
+    const { project, log } = applyOperations(p, [{ op: "move_clip", clipId: b!.id, start: 9 }]);
+    expect(log[0]).toContain("posição livre");
+    expect(media(project).map((c) => [c.start, clipEnd(c)])).toEqual([[0, 6], [9, 13]]);
+    expect(mainGaps(project)).toEqual([{ start: 6, end: 9 }]);
+    expect(media(project)[0]!.id).toBe(a!.id);
+    // Nada força a trilha a começar em t = 0: o primeiro clip também pode sair de lá.
+    const shifted = applyOperations(project, [{ op: "move_clip", clipId: a!.id, start: 1.5 }]).project;
+    expect(mainGaps(shifted)).toEqual([{ start: 0, end: 1.5 }, { start: 7.5, end: 9 }]);
+    expect(ProjectSchema.safeParse(shifted).success).toBe(true);
+  });
+
+  it("zooms e textos que estavam sobre o clip vão junto quando ele é movido", () => {
+    const p = applyOperations(two(), [{ op: "add_zoom", start: 7, duration: 2 }]).project;
+    const b = media(p)[1]!;
+    const { project } = applyOperations(p, [{ op: "move_clip", clipId: b.id, start: 10 }]);
+    expect(getTrack(project, "fx").clips[0]!.start).toBe(11);
+  });
+
+  it("novo vídeo solto ENTRE dois clipes abre espaço (ripple) e não sobrescreve nada", () => {
+    const p = two();
+    // Solto em 5,6 s: sobre o fim do primeiro clip → o ponto de corte mais próximo é 6 s.
+    const { project, log } = applyOperations(p, [{ op: "insert_clip", assetId: "b1", at: 5.6 }]);
+    expect(log[0]).toContain("inserido entre clipes");
+    const clips = media(project);
+    expect(clips.map((c) => [c.assetId, c.start, clipEnd(c)])).toEqual([["a1", 0, 6], ["b1", 6, 10], ["a1", 10, 14]]);
+    // Todo o conteúdo original continua lá, na mesma ordem.
+    expect(clips.filter((c) => c.assetId === "a1").map((c) => [c.sourceStart, c.duration])).toEqual([[0, 6], [6, 4]]);
+    expect(mainGaps(project)).toEqual([]);
+  });
+
+  it("solto numa lacuna, encaixa; se não couber, é aparado e avisa (ou empurra, em modo insert)", () => {
+    const p = two();
+    const gap = applyOperations(p, [{ op: "move_clip", clipId: media(p)[1]!.id, start: 9 }]).project; // lacuna 6–9
+    const fits = applyOperations(gap, [{ op: "insert_clip", assetId: "b1", at: 6, duration: 2.5 }]);
+    expect(fits.log[0]).toContain("encaixado na lacuna");
+    expect(media(fits.project)[1]).toMatchObject({ assetId: "b1", start: 6, duration: 2.5 });
+    const trimmed = applyOperations(gap, [{ op: "insert_clip", assetId: "b1", at: 6 }]);
+    expect(trimmed.log[0]).toContain("ajustado à lacuna");
+    expect(media(trimmed.project)[1]).toMatchObject({ assetId: "b1", start: 6, duration: 3 });
+    expect(media(trimmed.project)[2]!.start).toBe(9);
+    const pushed = applyOperations(gap, [{ op: "insert_clip", assetId: "b1", at: 6, mode: "insert" }]).project;
+    expect(media(pushed)[1]).toMatchObject({ duration: 4 });
+    expect(media(pushed)[2]!.start).toBe(10);
+  });
+
+  it("overwrite substitui o que está embaixo; trilha de cima (b-roll) não mexe no vídeo principal", () => {
+    const p = two();
+    const over = applyOperations(p, [{ op: "insert_clip", assetId: "b1", at: 4, mode: "overwrite" }]).project;
+    expect(media(over).map((c) => [c.assetId, c.start, clipEnd(c)])).toEqual([["a1", 0, 4], ["b1", 4, 8], ["a1", 8, 10]]);
+    expect(media(over)[2]!.sourceStart).toBe(8);
+    const overlay = applyOperations(p, [{ op: "add_broll", assetId: "b1", start: 4, duration: 3 }]).project;
+    expect(media(overlay)).toEqual(media(p));
+    expect(projectDuration(overlay)).toBe(10);
+  });
+
+  it("mover um clip para cima de outro reordena com ripple, sem sobrescrever e sem deixar buraco", () => {
+    const p = applyOperations(two(), [{ op: "split", time: 3 }]).project; // A 0–3, B 3–6, C 6–10
+    const [a, b, c] = media(p);
+    const { project } = applyOperations(p, [{ op: "move_clip", clipId: c!.id, start: 0.5 }]);
+    expect(media(project).map((x) => [x.id, x.start, clipEnd(x)])).toEqual([[c!.id, 0, 4], [a!.id, 4, 7], [b!.id, 7, 10]]);
+    expect(mainGaps(project)).toEqual([]);
+  });
+
+  it("ripple delete fecha o buraco; apagar sem ripple deixa a lacuna; cortar a lacuna a fecha", () => {
+    const p = applyOperations(two(), [{ op: "split", time: 3 }]).project;
+    const b = media(p)[1]!;
+    const ripple = applyOperations(p, [{ op: "delete_clip", clipId: b.id }]).project;
+    expect(media(ripple).map((c) => [c.start, clipEnd(c)])).toEqual([[0, 3], [3, 7]]);
+    const lift = applyOperations(p, [{ op: "delete_clip", clipId: b.id, ripple: false }]).project;
+    expect(mainGaps(lift)).toEqual([{ start: 3, end: 6 }]);
+    expect(projectDuration(lift)).toBe(10);
+    const closed = applyOperations(lift, [{ op: "remove_ranges", ranges: mainGaps(lift) }]).project;
+    expect(mainGaps(closed)).toEqual([]);
+    expect(projectDuration(closed)).toBe(7);
+  });
+
+  it("marcadores acompanham os cortes e são pontos de snapping", () => {
+    const { project } = applyOperations(blank(10), [{ op: "add_marker", time: 8, label: "clímax" }, { op: "remove_ranges", ranges: [{ start: 2, end: 4 }] }]);
+    expect(project.markers).toMatchObject([{ t: 6, label: "clímax" }]);
+  });
+
+  it("exporta em OpenTimelineIO com clips, lacunas, velocidade e marcadores", () => {
+    const p = two();
+    const { project } = applyOperations(p, [
+      { op: "move_clip", clipId: media(p)[1]!.id, start: 8 },
+      { op: "set_speed", clipId: media(p)[0]!.id, speed: 2 },
+      { op: "add_marker", time: 1 },
+      { op: "add_broll", assetId: "b1", start: 0, duration: 2 },
+    ]);
+    const otio = toOTIO(project) as { OTIO_SCHEMA: string; tracks: { markers: unknown[]; children: { name: string; kind: string; children: { OTIO_SCHEMA: string; effects?: { time_scalar: number }[]; source_range: { duration: { value: number; rate: number } } }[] }[] } };
+    expect(otio.OTIO_SCHEMA).toBe("Timeline.1");
+    expect(JSON.parse(JSON.stringify(otio))).toEqual(otio);
+    const video = otio.tracks.children.find((t) => t.name === "Vídeo")!;
+    expect(video.children.map((c) => c.OTIO_SCHEMA)).toEqual(["Clip.2", "Gap.1", "Clip.2"]);
+    expect(video.children[0]!.effects![0]!.time_scalar).toBe(2);
+    // O clip acelerado referencia os 6 s de origem; a lacuna vai de 3 s a 6 s da timeline (o resto recuou 3 s).
+    expect(video.children[0]!.source_range.duration).toEqual({ OTIO_SCHEMA: "RationalTime.1", value: 180, rate: 30 });
+    expect(video.children[1]!.source_range.duration.value).toBe(60);
+    expect(otio.tracks.children.some((t) => t.kind === "Audio")).toBe(true);
+    expect(otio.tracks.markers).toHaveLength(1);
+  });
+});
+
+describe("4. remover silêncios: sílabas, respiração e cenas de ação preservadas", () => {
+  const words = (spans: [number, number][]) => spans.map(([start, end]) => ({ start, end }));
+
+  it("nunca corta pausa menor que 450 ms (respiração), em nenhum modo", () => {
+    const w = words([[0, 1], [1.4, 2], [2.44, 3]]);
+    expect(silencesFromWords(w, 3)).toEqual([]);
+    expect(silencesFromWords(w, 3, { minSilence: 0.2 })).toEqual([]);
+    expect(SILENCE_RULES.minPause).toBe(0.45);
+  });
+
+  it("mantém 150 ms antes e 220 ms depois de cada palavra: nenhuma sílaba decepada", () => {
+    const [cut] = silencesFromWords(words([[0, 1], [3, 4]]), 4);
+    expect(cut).toEqual({ start: 1.22, end: 2.85 });
+    // Cada palavra continua inteira na timeline depois do corte.
+    const { project } = applyOperations(fixture(), [{ op: "remove_silences", mode: "aggressive" }]);
+    const src = fixture().assets.a1!.transcript!.words;
+    for (const clip of mainClips(project))
+      for (const w of src)
+        if (w.start >= clip.sourceStart - 0.001 && w.start < clip.sourceStart + clip.duration) {
+          expect(w.start - clip.sourceStart).toBeGreaterThanOrEqual(0);
+          expect(clip.sourceStart + clip.duration - w.end).toBeGreaterThanOrEqual(SILENCE_RULES.postRoll - 0.001);
+        }
+    expect(timelineWords(project)).toHaveLength(7);
+  });
+
+  it("descarta ilhas de corte menores que 300 ms: sem 'metralhadora' de micro-cortes", () => {
+    // Pausa de 0,6 s: tirando 220 + 150 ms de proteção sobram 230 ms de corte → descartado.
+    expect(silencesFromWords(words([[0, 1], [1.6, 2.6]]), 2.6)).toEqual([]);
+    // Palavra curta isolada entre duas pausas longas: o trecho mantido nunca fica menor que 300 ms.
+    const cuts = silencesFromWords(words([[0, 1], [3, 3.05], [5, 6]]), 6, { preRoll: 0.15, postRoll: 0.22 });
+    expect(cuts).toHaveLength(2);
+    expect(cuts[1]!.start - cuts[0]!.end).toBeGreaterThanOrEqual(SILENCE_RULES.minIsland - 0.001);
+    for (const c of cuts) expect(c.end - c.start).toBeGreaterThanOrEqual(SILENCE_RULES.minIsland - 0.001);
+  });
+
+  it("os três modos: agressivo (>0,45 s), ritmo natural (>0,8 s) e só pausas mortas (>1,5 s)", () => {
+    const w = words([[0, 1], [1.7, 2.7], [3.7, 4.7], [6.7, 7.7]]); // pausas de 0,7 / 1,0 / 2,0 s
+    expect(silencesFromWords(w, 7.7, { mode: "aggressive" })).toHaveLength(3);
+    expect(silencesFromWords(w, 7.7, { mode: "natural" })).toHaveLength(2);
+    expect(silencesFromWords(w, 7.7, { mode: "dead" })).toHaveLength(1);
+  });
+
+  it("limiar adaptativo: calibra pelo piso de ruído (P15) e pela voz (P85) do próprio arquivo", () => {
+    const sr = 2000;
+    // Gravação baixa, com ruído de fundo constante: um limiar fixo de −38 dBFS classificaria tudo como silêncio.
+    const quiet = new Float32Array(sr * 6);
+    for (let i = 0; i < quiet.length; i++) {
+      const t = i / sr;
+      const speaking = (t >= 0.5 && t < 2) || (t >= 3.5 && t < 5.5);
+      quiet[i] = Math.sin(i * 0.9) * (speaking ? 0.008 : 0.0008);
+    }
+    const profile = speechProfile(quiet, sr);
+    expect(profile.reliable).toBe(true);
+    expect(profile.speechDb).toBeLessThan(-38);
+    expect(profile.thresholdDb).toBeGreaterThan(profile.noiseFloorDb);
+    expect(profile.thresholdDb).toBeLessThan(profile.speechDb);
+    expect(profile.speech).toHaveLength(2);
+    const cuts = silencesFromAudio(quiet, sr);
+    // O silêncio inicial (0,5 s) sai até 150 ms antes da fala; a pausa do meio perde só o miolo;
+    // a cauda (0,5 s − 220 ms = 280 ms) é um micro-corte e fica.
+    expect(cuts).toHaveLength(2);
+    expect(cuts[0]!.start).toBe(0);
+    expect(cuts[0]!.end).toBeCloseTo(0.35, 1);
+    expect(cuts[1]!.start).toBeCloseTo(2.22, 1);
+    expect(cuts[1]!.end).toBeCloseTo(3.35, 1);
+    // Áudio sem contraste (ruído contínuo): não dá para separar voz de silêncio → não corta nada, em vez de picotar tudo.
+    const flat = Float32Array.from({ length: sr * 4 }, (_, i) => Math.sin(i * 0.7) * 0.05);
+    expect(silencesFromAudio(flat, sr)).toEqual([]);
+  });
+
+  it("silêncio com alta atividade visual não é cortado; vídeo de ação não é cortado", () => {
+    // Pausa de 2 s (1–3 s) com movimento forte entre 1,8 e 2,4 s.
+    const protectedCuts = silencesFromWords(words([[0, 1], [3, 4]]), 4, { protect: [{ start: 1.8, end: 2.4 }] });
+    expect(protectedCuts).toEqual([{ start: 1.22, end: 1.8 }, { start: 2.4, end: 2.85 }]);
+    const p = fixture();
+    p.assets.a1!.analysis = { genre: "talking_head", reason: "", motion: Array.from({ length: 20 }, (_, i) => ({ t: i * 0.5, v: i * 0.5 >= 2 && i * 0.5 <= 3.5 ? 0.9 : 0.05 })), cuts: [], peaks: [], speech: [], speechRatio: 0.6, motionLevel: 0.02 };
+    const kept = applyOperations(p, [{ op: "remove_silences" }]).project;
+    const never = applyOperations(p, [{ op: "remove_silences", preserveAction: "never" }]).project;
+    expect(projectDuration(kept)).toBeGreaterThan(projectDuration(never));
+    // Gênero de ação: a pausa é a cena.
+    p.assets.a1!.analysis.genre = "action_cinematic";
+    const action = applyOperations(p, [{ op: "remove_silences" }]);
+    expect(projectDuration(action.project)).toBe(10);
+    expect(action.log[0]).toContain("vídeo de ação");
+  });
+
+  it("micro-fade de 30 ms em toda fronteira de corte", () => {
+    expect(CUT_FADE).toBe(0.03);
+    expect(cutFadeGain(0, 2)).toBe(0);
+    expect(cutFadeGain(0.015, 2)).toBeCloseTo(0.5, 5);
+    expect(cutFadeGain(0.03, 2)).toBe(1);
+    expect(cutFadeGain(1, 2)).toBe(1);
+    expect(cutFadeGain(2 - 0.015, 2)).toBeCloseTo(0.5, 5);
+    expect(cutFadeGain(2, 2)).toBe(0);
+    // Clip mais curto que dois fades: um quarto da duração de cada lado, sem estourar.
+    expect(cutFadeGain(0.02, 0.08)).toBe(1);
+  });
+
+  it("a voz ativa sai da transcrição ou, sem ela, do VAD: é o que comanda o ducking", () => {
+    expect(voiceRanges(fixture())).toEqual([{ start: 1, end: 1.9 }, { start: 4, end: 6.4 }]);
+    const p = blank(10);
+    p.assets.a1!.analysis = { genre: "talking_head", reason: "", motion: [], cuts: [], peaks: [], speech: [{ start: 2, end: 5 }], speechRatio: 0.3, motionLevel: 0 };
+    expect(voiceRanges(p)).toEqual([{ start: 2, end: 5 }]);
+  });
+});
+
+describe("5. legendas e texto atrás da cabeça: guardrails espaciais", () => {
+  const safe = { top: 0.13, right: 0.14, bottom: 0.21, left: 0.06 };
+  const medium = { x: 0.3, y: 0.2, w: 0.4, h: 0.8, faceX: 0.5, faceY: 0.3, faceW: 0.2, faceH: 0.16 };
+  const closeUp = { x: 0.05, y: 0.1, w: 0.9, h: 0.9, faceX: 0.5, faceY: 0.36, faceW: 0.6, faceH: 0.42 };
+
+  it("a posição padrão é a base do quadro, dentro da zona segura (14–18% do fundo)", () => {
+    expect(ProjectSchema.parse(createProject({ name: "x" })).captions.style.position).toBe("bottom");
+    for (const ratio of ["9:16", "16:9"] as const) {
+      const fromBottom = 1 - captionBaseY(ratio);
+      expect(fromBottom).toBeGreaterThanOrEqual(0.14);
+      expect(fromBottom).toBeLessThanOrEqual(0.18);
+    }
+    // Os três modelos prontos usam legenda na base.
+    for (const id of TEMPLATE_SKILLS) {
+      const caps = SKILLS[id].local.find((o) => o.op === "set_captions");
+      expect(caps?.op === "set_captions" && caps.style?.position).toBe("bottom");
+    }
+  });
+
+  it("a legenda some (com fade) enquanto um card ou texto cinético está na tela", () => {
+    const { project } = applyOperations(fixture(), [
+      { op: "add_component", component: "stat_counter", start: 4, duration: 2, params: { value: 30 } },
+      { op: "add_component", component: "executive_lower_third", start: 7, duration: 2, params: { name: "Ana" } },
+      { op: "set_brand", brand: { showLowerThird: true } },
+    ]);
+    // O card suprime; a tarja (discreta) convive com a legenda.
+    const ranges = captionSuppression(project);
+    expect(ranges).toEqual([{ start: 4, end: 6 }]);
+    expect(captionAlpha(ranges, 5)).toBe(0);
+    expect(captionAlpha(ranges, 3.9)).toBeCloseTo(0.5, 5);
+    expect(captionAlpha(ranges, 6.1)).toBeCloseTo(0.5, 5);
+    expect(captionAlpha(ranges, 3)).toBe(1);
+    expect(captionAlpha(ranges, 7.5)).toBe(1);
+  });
+
+  it("colisão com o rosto: a legenda desvia para a margem segura livre e nunca fica na frente dele", () => {
+    const base = { cx: 0.46, half: 0.03, width: 0.7, safeTop: 0.13, maxBottom: 0.9, busy: [] };
+    const face = faceBox(medium);
+    // Sem colisão: fica onde foi pedida.
+    expect(placeCaption({ ...base, cy: 0.835, face })).toBe(0.835);
+    // Legenda centralizada à mão sobre um rosto: sai de cima dele.
+    const low = { x: 0.3, y: 0.42, w: 0.4, h: 0.2 };
+    const y = placeCaption({ ...base, cy: 0.5, face: low });
+    expect(y - base.half >= low.y + low.h || y + base.half <= low.y).toBe(true);
+    // Rosto na parte de baixo do quadro (legenda padrão colidiria): sobe para a margem superior livre.
+    const bottomFace = { x: 0.3, y: 0.7, w: 0.4, h: 0.25 };
+    const up = placeCaption({ ...base, cy: 0.835, face: bottomFace });
+    expect(up + base.half).toBeLessThanOrEqual(bottomFace.y);
+    // E também desvia do texto de um componente.
+    const busy = [{ x: 0.1, y: 0.78, w: 0.8, h: 0.1 }];
+    const moved = placeCaption({ ...base, cy: 0.835, face, busy });
+    expect(moved + base.half <= busy[0]!.y || moved - base.half >= busy[0]!.y + busy[0]!.h).toBe(true);
+  });
+
+  it("texto atrás da cabeça: em close-up (> 35% da altura) ou rosto cortado, vira cartão na área livre", () => {
+    expect(isCloseUp(medium)).toBe(false);
+    expect(isCloseUp(closeUp)).toBe(true);
+    // Rosto cortado na borda de cima também conta.
+    expect(isCloseUp({ ...medium, y: 0, faceY: 0.06 })).toBe(true);
+    expect(depthPlacement(medium, true, safe)).toEqual({ mode: "behind" });
+    const placed = depthPlacement(closeUp, true, safe);
+    expect(placed.mode).toBe("card");
+    if (placed.mode === "card") {
+      expect(placed.reason).toBe("close_up");
+      // A área escolhida fica inteira fora da caixa do rosto e dentro das margens seguras.
+      const f = faceBox(closeUp);
+      const a = placed.area;
+      const overlap = a.x < f.x + f.w && a.x + a.w > f.x && a.y < f.y + f.h && a.y + a.h > f.y;
+      expect(overlap).toBe(false);
+      expect(a.y).toBeGreaterThanOrEqual(safe.top - 1e-9);
+      expect(a.y + a.h).toBeLessThanOrEqual(1 - safe.bottom + 1e-9);
+      expect(a.w * a.h).toBeGreaterThan(0.03);
+    }
+    // Sem recorte da pessoa não há "atrás": também vira cartão.
+    expect(depthPlacement(medium, false, safe).mode).toBe("card");
+    expect(buildAgentContext((() => {
+      const p = fixture();
+      Object.assign(p.assets.a1!, { width: 1080, height: 1920, subject: [{ t: 2, ...closeUp }] });
+      return p;
+    })())).toContain("CLOSE-UP");
+  });
+});
+
+describe("6. motion generativo e os 3 modelos prontos", () => {
+  const spec = {
+    anchor: "bottom" as const,
+    root: {
+      type: "group" as const,
+      layout: "column" as const,
+      children: [
+        { type: "badge" as const, text: "Regra 80/20" },
+        { type: "text" as const, text: "Poucos clientes, *quase todo* o lucro", size: 68, role: "title" as const, anim: [{ prop: "opacity" as const, from: 0, to: 1, duration: 0.4 }] },
+        { type: "line" as const, x2: 400, y2: 0, anim: [{ prop: "draw" as const, from: 0, to: 1, at: 0.4, duration: 0.6, ease: "spring" as const }] },
+      ],
+    },
+  };
+
+  it("custom_motion_graphic: a árvore declarativa da IA é validada por schema, com limites", () => {
+    const parsed = MotionGraphicSchema.safeParse(spec);
+    expect(parsed.success).toBe(true);
+    // Defaults preenchidos; nada de campos desconhecidos virando código.
+    expect(parsed.data!.root).toMatchObject({ gap: 16, align: "center" });
+    expect(MotionGraphicSchema.safeParse({ root: { type: "script", src: "x" } }).success).toBe(false);
+    expect(MotionGraphicSchema.safeParse({ root: { type: "path", d: "M0 0 L10 10; alert(1)", w: 10, h: 10 } }).success).toBe(false);
+    // Profundidade máxima de 4 níveis.
+    const deep = (n: number): unknown => (n === 0 ? { type: "rect", w: 10, h: 10 } : { type: "group", children: [deep(n - 1)] });
+    expect(MotionGraphicSchema.safeParse({ root: deep(3) }).success).toBe(true);
+    expect(MotionGraphicSchema.safeParse({ root: deep(4) }).success).toBe(false);
+  });
+
+  it("direção de arte: título ≥ 64 px no 9:16, pausa final limpa, sem clichê de IA", () => {
+    const ok = MotionGraphicSchema.parse(spec);
+    expect(checkArtDirection(ok, { vertical: true, duration: 4 })).toEqual([]);
+    const small = MotionGraphicSchema.parse({ root: { type: "text", text: "Título pequeno", size: 40, role: "title" } });
+    expect(checkArtDirection(small, { vertical: true }).map((i) => i.code)).toEqual(["titulo_pequeno"]);
+    expect(checkArtDirection(small, { vertical: false })).toEqual([]);
+    // Animação que só termina em cima da saída: falta a pausa final.
+    expect(checkArtDirection(ok, { vertical: true, duration: 1.6 }).map((i) => i.code)).toEqual(["sem_pausa_final"]);
+    const cliche = MotionGraphicSchema.parse({ root: { type: "group", fill: { from: "#8B5CF6", to: "#3B82F6" }, children: [{ type: "text", text: "Decole 🚀", size: 80 }] } });
+    expect(checkArtDirection(cliche, { vertical: true }).map((i) => i.code)).toEqual(["cliche", "cliche"]);
+  });
+
+  it("os 3 modelos prontos são arquiteturas distintas: legenda, cor, trilha, ritmo e cards próprios", () => {
+    expect(TEMPLATE_SKILLS).toEqual(["viral", "acao", "autoridade"]);
+    expect(SKILLS.viral.name).toBe("Retenção Viral & Creator Pro");
+    expect(SKILLS.acao.name).toBe("Ação & Cinematográfico");
+    expect(SKILLS.autoridade.name).toBe("Autoridade & Documentário Moderno");
+    const recipes = TEMPLATE_SKILLS.map((id) => SKILLS[id].recipe);
+    for (const key of ["captions", "look", "music"] as const) expect(new Set(recipes.map((r) => r[key])).size).toBe(3);
+    expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.fontPair)).size).toBe(3);
+    expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.primaryColor)).size).toBe(3);
+
+    expect(SKILLS.viral.recipe).toMatchObject({ captions: "viral_pop", cutZoom: true, speedRamps: false });
+    expect(SKILLS.viral.recipe.sfx).toEqual(expect.arrayContaining(["pop", "whoosh_rapido", "riser"]));
+    expect(SKILLS.viral.direction).toContain("2 s");
+
+    expect(SKILLS.acao.recipe).toMatchObject({ captions: "minimal_cinema", speedRamps: true, music: "action" });
+    expect(SKILLS.acao.recipe.sfx).toEqual(expect.arrayContaining(["impacto_cinematico", "sub_drop"]));
+    expect(SKILLS.acao.recipe.cards).toContain("tactical_hud_overlay");
+    expect(SKILLS.acao.local.some((o) => o.op === "remove_silences")).toBe(false);
+
+    expect(SKILLS.autoridade.recipe).toMatchObject({ captions: "editorial_clean", look: "warm_cinematic", music: "ambient" });
+    expect(SKILLS.autoridade.recipe.cards).toEqual(expect.arrayContaining(["stat_counter_card", "comparison_split"]));
+    // A tarja de cargo é opcional e fica desligada: nenhum modelo a liga sozinho.
+    for (const id of TEMPLATE_SKILLS) expect(JSON.stringify(SKILLS[id].local)).not.toContain("showLowerThird");
+  });
+
+  it("aplicar um modelo: acabamento determinístico válido, marca do usuário preservada, formato respeitado", () => {
+    for (const id of TEMPLATE_SKILLS) {
+      const ops = skillOperations(SKILLS[id], fixture());
+      const { project } = applyOperations(fixture(), ops);
+      expect(project.captions.style.preset).toBe(SKILLS[id].recipe.captions);
+      expect(project.look.grade).toBe(SKILLS[id].recipe.look);
+      expect(project.music).toMatchObject({ mood: SKILLS[id].recipe.music, duck: true });
+      expect(project.brand.fontPair).toBe(SKILLS[id].brand.fontPair);
+      expect(project.brand.showLowerThird).toBe(false);
+      expect(skillPrompt(SKILLS[id])).toContain(SKILLS[id].name);
+    }
+    // Quem já tem Brand Kit próprio não tem as cores trocadas pelo modelo.
+    const branded = applyOperations(fixture(), [{ op: "set_brand", brand: { primaryColor: "#00FF88" } }]).project;
+    expect(applyOperations(branded, skillOperations(SKILLS.acao, branded)).project.brand.primaryColor).toBe("#00FF88");
+    // No vertical o letterbox do modelo de ação é contido.
+    expect(applyOperations(fixture(), skillOperations(SKILLS.acao, fixture())).project.look.letterbox).toBeLessThanOrEqual(0.05);
+    // Vídeo sem fala: nada de limpeza de fala nem legenda.
+    const silent = skillOperations(SKILLS.viral, blank(10)).map((o) => o.op);
+    expect(silent).not.toContain("remove_silences");
+    expect(silent).not.toContain("set_captions");
+  });
+
+  it("os modelos prontos também existem como EditTemplate, com a receita completa", () => {
+    expect(BUILTIN_TEMPLATES.map((t) => t.data.name)).toEqual(["Retenção Viral & Creator Pro", "Ação & Cinematográfico", "Autoridade & Documentário Moderno"]);
+    for (const t of BUILTIN_TEMPLATES) {
+      expect(EditTemplateSchema.safeParse(t.data).success).toBe(true);
+      expect(templateOperations(t.data, fixture())).toEqual(skillOperations(SKILLS[t.skill], fixture()));
+      expect(templatePrompt(t.data)).toContain(t.data.name);
+    }
+    const action = BUILTIN_TEMPLATES[1]!.data;
+    expect(action).toMatchObject({ speedRamps: true, music: "action", silence: { remove: false } });
+    expect(templatePrompt(action)).toContain("Rampas de velocidade");
   });
 });

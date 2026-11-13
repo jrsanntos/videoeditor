@@ -4,7 +4,7 @@ import type { SkillId } from "@videoeditor/core";
 const PHOTO: Record<SkillId, string> = {
   viral: "/landing/viral.webp",
   autoridade: "/landing/autoridade.webp",
-  vsl: "/landing/vsl.webp",
+  acao: "/landing/vsl.webp",
   limpeza: "/landing/viral.webp",
 };
 
@@ -62,7 +62,7 @@ const LAYERS: Record<SkillId, React.ReactNode> = {
       </div>
     </>
   ),
-  vsl: (
+  acao: (
     <>
       <span className={tag}>Número</span>
       <div className="absolute inset-x-0 bottom-[19%] text-center [text-shadow:0_0.8cqw_3cqw_rgba(0,0,0,0.6)]">

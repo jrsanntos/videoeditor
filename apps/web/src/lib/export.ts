@@ -15,11 +15,12 @@ import {
   QUALITY_HIGH,
   WebMOutputFormat,
 } from "mediabunny";
-import { mainClips, projectDuration, type BrollClip, type Project } from "@videoeditor/core";
+import { clipEnd, CUT_FADE, hasSpeed, mainClips, projectDuration, ratePoints, sourceSpan, sourceTimeAt, toOTIO, type BrollClip, type MediaClip, type Project } from "@videoeditor/core";
 import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
 import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
+import { hasMusic, scheduleMusic } from "./music";
 import { scheduleSfx } from "./sfx";
 import { voiceCompressor, voiceGain } from "./voice";
 
@@ -45,8 +46,9 @@ export async function exportInBrowser(
   const width = even(project.width * scale);
   const height = even(project.height * scale);
   const duration = projectDuration(project);
-  const clips = mainClips(project);
-  if (!clips.length || duration <= 0) throw new Error("A timeline está vazia.");
+  // Em ordem de tempo; a trilha principal pode ter lacunas (ou nenhum vídeo: composição só com cards e sons).
+  const clips = mainClips(project).sort((a, b) => a.start - b.start);
+  if (duration <= 0) throw new Error("A timeline está vazia.");
 
   // MP4/H.264 quando o navegador codifica; senão WebM/VP9.
   let format: Mp4OutputFormat | WebMOutputFormat = new Mp4OutputFormat({ fastStart: "in-memory" });
@@ -156,36 +158,42 @@ export async function exportInBrowser(
     let frame = 0;
     // Último quadro decodificado: se o primeiro quadro de um clip demorar, a emenda repete o anterior em vez de sair preta.
     let last: FrameSource | null = null;
+    /** Compõe e codifica um quadro. `clip` nulo = lacuna (fundo preto com o que estiver por cima). */
+    const emit = async (clip: MediaClip | null, sourceTime: number) => {
+      if (signal?.aborted) throw new DOMException("Exportação cancelada", "AbortError");
+      const t = frame / fps;
+      const context = brolls.length ? await brollAt(t) : null;
+      renderFrame(ctx, project, t, () => (clip ? last : null), {
+        getBrollFrame: context ? (c) => context.get(c.id) ?? null : undefined,
+        // Segmentação só nos quadros dos trechos que pedem; as máscaras vistas no preview vêm do cache.
+        getPersonMask: clip && depth.some((r) => t >= r.start && t < r.end) ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height) : undefined,
+      });
+      if (!direct) {
+        out.imageSmoothingQuality = "high";
+        out.drawImage(stage, 0, 0, width, height);
+        if (limits.watermark) drawWatermark(out, width, height);
+      }
+      await videoSource.add(t, 1 / fps);
+      frame++;
+      if (frame % 5 === 0) onProgress(frame / totalFrames);
+    };
     for (const clip of clips) {
-      const end = clip.start + clip.duration;
+      // Lacuna antes do clip: quadros sem vídeo.
+      while (frame < totalFrames && frame / fps < clip.start - 0.5 / fps) await emit(null, 0);
+      const end = clipEnd(clip);
       const first = frame;
       const sourceTimes: number[] = [];
-      for (let i = first; i < totalFrames && i / fps < end; i++)
-        sourceTimes.push(clip.sourceStart + Math.max(0, i / fps - clip.start));
+      // Com rampa de velocidade, o tempo de origem de cada quadro segue a curva do clip.
+      for (let i = first; i < totalFrames && i / fps < end; i++) sourceTimes.push(sourceTimeAt(clip, i / fps - clip.start));
+      if (!sourceTimes.length) continue;
       const { sink } = inputs.get(clip.assetId)!;
       for await (const wrapped of sink.canvasesAtTimestamps(sourceTimes)) {
-        if (signal?.aborted) throw new DOMException("Exportação cancelada", "AbortError");
         if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };
-        const t = frame / fps;
-        const sourceTime = sourceTimes[frame - first] ?? clip.sourceStart;
-        const context = brolls.length ? await brollAt(t) : null;
-        renderFrame(ctx, project, t, () => last, {
-          getBrollFrame: context ? (c) => context.get(c.id) ?? null : undefined,
-          // Segmentação só nos quadros dos trechos que pedem; as máscaras vistas no preview vêm do cache.
-          getPersonMask: depth.some((r) => t >= r.start && t < r.end)
-            ? (c, f) => personMask(maskKey(c.assetId, sourceTime, fps), f.image, f.width, f.height)
-            : undefined,
-        });
-        if (!direct) {
-          out.imageSmoothingQuality = "high";
-          out.drawImage(stage, 0, 0, width, height);
-          if (limits.watermark) drawWatermark(out, width, height);
-        }
-        await videoSource.add(t, 1 / fps);
-        frame++;
-        if (frame % 5 === 0) onProgress(frame / totalFrames);
+        await emit(clip, sourceTimes[frame - first] ?? clip.sourceStart);
       }
     }
+    // Depois do último clip (ou sem nenhum): o que estiver nas outras trilhas.
+    while (frame < totalFrames) await emit(null, 0);
 
     await audioDone;
     videoSource.close();
@@ -222,7 +230,7 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
   } finally {
     void ac.close();
   }
-  if (![...decoded.values()].some(Boolean) && !soundEvents(project).length) return null;
+  if (![...decoded.values()].some(Boolean) && !soundEvents(project).length && !hasMusic(project)) return null;
 
   const off = new OfflineAudioContext(2, Math.ceil(duration * RATE), RATE);
   // Barramento da voz: com o acabamento ligado, ganho até o volume padrão das redes e compressão leve.
@@ -237,16 +245,27 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
     const src = off.createBufferSource();
     src.buffer = buffer;
     const gain = off.createGain();
-    // Micro-fade nas bordas de cada corte evita estalos.
-    const edge = Math.min(0.008, clip.duration / 4);
+    // Micro-fade de 30 ms (entrada e saída) em TODA fronteira de corte: sem cliques nem pops.
+    const edge = Math.min(CUT_FADE, clip.duration / 4);
     const level = clip.volume * (boost.get(clip.assetId) ?? 1);
     gain.gain.setValueAtTime(0, clip.start);
     gain.gain.linearRampToValueAtTime(level, clip.start + edge);
     gain.gain.setValueAtTime(level, clip.start + clip.duration - edge);
     gain.gain.linearRampToValueAtTime(0, clip.start + clip.duration);
+    if (hasSpeed(clip)) {
+      // Rampa de velocidade: o playbackRate do áudio segue a mesma curva, em rampas lineares
+      // (o pitch desliza junto, sem degrau).
+      const pts = ratePoints(clip);
+      src.playbackRate.setValueAtTime(pts[0]!.rate, clip.start);
+      for (const p of pts.slice(1)) src.playbackRate.linearRampToValueAtTime(p.rate, clip.start + p.u * clip.duration);
+    }
     src.connect(gain).connect(voiceBus);
-    src.start(clip.start, clip.sourceStart, clip.duration);
+    // O terceiro argumento é em segundos de ORIGEM: o trecho que o clip consome.
+    src.start(clip.start, clip.sourceStart, sourceSpan(clip));
+    src.stop(clip.start + clip.duration + 0.005);
   }
+  // Trilha de fundo com auto-ducking de −14 dB sob a voz; fora do compressor da fala.
+  await scheduleMusic(off, project, duration);
   // Efeitos sonoros nos mesmos instantes do preview.
   await scheduleSfx(off, project);
   const mixed = await off.startRendering();
@@ -271,4 +290,13 @@ export function downloadBlob(blob: Blob, filename: string) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Exporta a timeline em OpenTimelineIO (.otio): abre em DaVinci Resolve,
+ * Premiere (via adaptador) e outros editores, com clips, lacunas, velocidades
+ * e marcadores. A mídia é religada no destino pelo nome do arquivo.
+ */
+export function exportOTIO(project: Project): Blob {
+  return new Blob([JSON.stringify(toOTIO(project), null, 2)], { type: "application/json" });
 }

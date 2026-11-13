@@ -1,19 +1,32 @@
 "use client";
 
 import {
+  actionRanges,
   addAssetToProject,
   addContextAsset,
   agentTier,
+  classifyGenre,
+  clipEnd,
+  createEmptyProject,
   createProject,
   creditCost,
+  cutPoints,
   mainClips,
+  MAX_CRITIC_CYCLES,
   newId,
   PLANS,
+  projectDuration,
+  projectGenre,
+  SILENCE_MODES,
   silencesFromAudio,
   SKILLS,
+  skillOperations,
   skillPrompt,
+  subjectAt,
   timelineWords,
   sourceRangesToTimeline,
+  type SilenceMode,
+  type StyleReferenceProfile,
   templateOperations,
   templatePrompt,
   type Asset,
@@ -27,8 +40,10 @@ import {
 } from "@videoeditor/core";
 import { analyzeVideo, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
+import { cacheGet, cachePut, fileHash } from "./cache";
+import { peaksFor } from "./waveform";
 import { clearMedia, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
-import { TOUR_KEY, useEditor, type EditPlan, type SavedBrand, type SessionUser } from "./store";
+import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
 const analyses = new Map<string, Promise<VideoAnalysis | null>>();
@@ -44,14 +59,32 @@ export function analyzeAsset(assetId: string): Promise<VideoAnalysis | null> {
     p = (async () => {
       const blob = mediaBlob(assetId);
       if (!blob) return null;
-      try {
-        const result = await analyzeVideo(blob, assetId);
+      const apply = (result: Pick<VideoAnalysis, "subject" | "analysis">) => {
         const current = useEditor.getState().project;
-        if (result.subject.length && current?.assets[assetId] && !current.assets[assetId]!.subject) {
-          const next = structuredClone(current);
-          next.assets[assetId]!.subject = result.subject;
-          useEditor.setState({ project: next });
+        const asset = current?.assets[assetId];
+        if (!current || !asset) return;
+        const next = structuredClone(current);
+        const target = next.assets[assetId]!;
+        if (result.subject.length && !asset.subject) target.subject = result.subject;
+        if (result.analysis && !asset.analysis) target.analysis = result.analysis;
+        // Sem ponto de desfazer: medir o vídeo não é uma edição.
+        useEditor.setState({ project: next });
+        reclassify(assetId);
+      };
+      try {
+        // Mesmo arquivo já analisado (em qualquer projeto): vem do cache, sem reprocessar.
+        const hash = useEditor.getState().project?.assets[assetId]?.hash;
+        const cached = await cacheGet(hash);
+        if (cached?.analysis && cached.frames?.length) {
+          const result = { subject: cached.subject ?? [], frames: cached.frames, analysis: cached.analysis };
+          apply(result);
+          return result;
         }
+        const samples = await decodeMono(assetId).catch(() => null);
+        const words = useEditor.getState().project?.assets[assetId]?.transcript?.words.length;
+        const result = await analyzeVideo(blob, assetId, samples, SPEECH_RATE, words);
+        apply(result);
+        void cachePut(hash, { analysis: result.analysis ?? undefined, subject: result.subject, frames: result.frames });
         return result;
       } catch (e) {
         console.warn("análise do vídeo indisponível", e);
@@ -63,29 +96,71 @@ export function analyzeAsset(assetId: string): Promise<VideoAnalysis | null> {
   return p;
 }
 
+/**
+ * Reclassifica o gênero quando chega um dado novo (a transcrição): 9 palavras
+ * em 70 s é ação, por mais que o VAD tenha ouvido "voz" no ruído da cena.
+ */
+function reclassify(assetId: string) {
+  const current = useEditor.getState().project;
+  const asset = current?.assets[assetId];
+  if (!current || !asset?.analysis || !asset.transcript) return;
+  const a = asset.analysis;
+  const next = classifyGenre({
+    duration: asset.duration,
+    speechRatio: a.speechRatio,
+    wordCount: asset.transcript.words.length,
+    motionLevel: a.motionLevel,
+    cutsPerMin: a.cuts.length / Math.max(asset.duration / 60, 1 / 60),
+    hasPerson: (asset.subject?.length ?? 0) > 0,
+  });
+  if (next.genre === a.genre) return;
+  const project = structuredClone(current);
+  project.assets[assetId]!.analysis = { ...a, ...next };
+  useEditor.setState({ project });
+  void cachePut(asset.hash, { analysis: project.assets[assetId]!.analysis });
+}
+
 const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | null> => Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
-/** Ingestão: lê metadados localmente e cria o projeto. Nada sobe para o servidor. */
-export async function importVideo(file: File) {
+/** Lê o arquivo e monta o asset, já com o hash e o que o cache souber dele. */
+async function ingest(file: File): Promise<Asset> {
+  const meta = await probeVideo(file);
+  const plan = PLANS[(useEditor.getState().user?.plan ?? "free") as PlanId] ?? PLANS.free;
+  if (meta.duration > plan.maxUploadMinutes * 60 + 1)
+    throw new Error(`Seu plano aceita vídeos de até ${plan.maxUploadMinutes} minutos (este tem ${Math.ceil(meta.duration / 60)}). Corte o vídeo ou veja os planos.`);
+  const hash = await fileHash(file);
+  const cached = await cacheGet(hash);
+  return {
+    id: newId("asset"),
+    kind: "video",
+    name: file.name,
+    duration: meta.duration,
+    width: meta.width,
+    height: meta.height,
+    hasAudio: true,
+    role: "main",
+    ...(hash ? { hash } : {}),
+    // Vídeo já visto: transcrição e análise voltam do cache, sem gastar créditos nem tempo.
+    ...(cached?.transcript ? { transcript: cached.transcript } : {}),
+    ...(cached?.analysis ? { analysis: cached.analysis } : {}),
+    ...(cached?.subject?.length ? { subject: cached.subject } : {}),
+  };
+}
+
+/**
+ * Ingestão: lê metadados localmente e cria o projeto. O vídeo não sobe para o
+ * servidor. Com `referenceUrl` (YouTube), a referência de estilo é analisada
+ * em paralelo e entra no contexto do Diretor de IA.
+ */
+export async function importVideo(file: File, opts: { referenceUrl?: string } = {}) {
   const { setBusy, setProject, setNotice } = useEditor.getState();
   setBusy("Lendo o vídeo…");
   try {
-    const meta = await probeVideo(file);
-    const plan = PLANS[(useEditor.getState().user?.plan ?? "free") as PlanId] ?? PLANS.free;
-    if (meta.duration > plan.maxUploadMinutes * 60 + 1)
-      throw new Error(`Seu plano aceita vídeos de até ${plan.maxUploadMinutes} minutos (este tem ${Math.ceil(meta.duration / 60)}). Corte o vídeo ou veja os planos.`);
-    const asset: Asset = {
-      id: newId("asset"),
-      kind: "video",
-      name: file.name,
-      duration: meta.duration,
-      width: meta.width,
-      height: meta.height,
-      hasAudio: true,
-    };
+    const asset = await ingest(file);
     await clearMedia();
     clearBroll();
     thumbs.clear();
+    analyses.clear();
     await storeMedia(asset.id, file);
     const project = createProject({
       name: file.name.replace(/\.[^.]+$/, ""),
@@ -95,7 +170,9 @@ export async function importVideo(file: File) {
     });
     useEditor.setState({ chat: [], time: 0, range: null });
     setProject(addAssetToProject(project, asset));
+    if (asset.transcript) setNotice("Este vídeo já foi analisado antes: a transcrição veio do cache, sem custo.");
     void analyzeAsset(asset.id);
+    if (opts.referenceUrl?.trim()) void attachStyleReference(opts.referenceUrl.trim());
     // Todo vídeo novo abre o assistente: escolher um estilo e deixar a IA editar é o caminho mais curto.
     useEditor.setState({ assistant: "choose" });
   } catch (e) {
@@ -105,30 +182,110 @@ export async function importVideo(file: File) {
   }
 }
 
-const hasTranscript = (project: Project) => Object.values(project.assets).some((a) => a.transcript?.words.length);
+/**
+ * Pula o upload: abre o editor numa timeline vazia e funcional. Mídias entram
+ * depois (aba Mídia ou arrastando para a timeline); composições só com texto,
+ * cards, sons e banco de imagens também valem.
+ */
+export async function startEmptyProject() {
+  await clearMedia();
+  clearBroll();
+  thumbs.clear();
+  analyses.clear();
+  useEditor.setState({ chat: [], time: 0, range: null, assistant: null });
+  useEditor.getState().setProject(createEmptyProject({ brand: useEditor.getState().brands[0]?.brand }));
+}
+
+/**
+ * Mais um vídeo para a trilha principal de um projeto já aberto. `at`
+ * indefinido = no fim da trilha; com `at`, entra entre clipes (ripple), numa
+ * lacuna ou no ponto solto, sem sobrescrever nada.
+ */
+export async function addMainVideo(file: File, at?: number): Promise<string | null> {
+  const s = useEditor.getState();
+  if (!s.project) return null;
+  s.setBusy("Lendo o vídeo…");
+  try {
+    const asset = await ingest(file);
+    await storeMedia(asset.id, file);
+    const current = useEditor.getState().project!;
+    const next = structuredClone(current);
+    next.assets[asset.id] = asset;
+    useEditor.setState({ project: next });
+    const end = mainClips(next).reduce((m, c) => Math.max(m, clipEnd(c)), 0);
+    const error = useEditor.getState().apply([{ op: "insert_clip", assetId: asset.id, at: at ?? end }]);
+    if (!error) s.setNotice(useEditor.getState().lastLog[0] ?? "Vídeo adicionado à timeline.");
+    void analyzeAsset(asset.id);
+    return asset.id;
+  } catch (e) {
+    s.setNotice((e as Error).message);
+    return null;
+  } finally {
+    s.setBusy(null);
+  }
+}
+
+/** Analisa o vídeo de referência (YouTube) e guarda o perfil de estilo no projeto. */
+export async function attachStyleReference(url: string): Promise<string | null> {
+  const s = useEditor.getState();
+  if (!s.project) return "Nenhum projeto aberto";
+  try {
+    const res = await fetch("/api/style-reference", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }) });
+    const data = (await res.json().catch(() => null)) as { profile?: StyleReferenceProfile; error?: string } | null;
+    if (!res.ok || !data?.profile) throw new Error(data?.error ?? "Não foi possível analisar o vídeo de referência.");
+    const current = useEditor.getState().project;
+    if (!current) return null;
+    // Sem ponto de desfazer: a referência é contexto para a IA, não uma edição da timeline.
+    useEditor.setState({ project: { ...current, styleReference: data.profile } });
+    s.setNotice(`Referência de estilo pronta: "${data.profile.title || "vídeo do YouTube"}". O Diretor de IA vai seguir esse ritmo e esse visual.`);
+    return null;
+  } catch (e) {
+    const message = (e as Error).message;
+    s.setNotice(message);
+    return message;
+  }
+}
+
+export function removeStyleReference() {
+  const current = useEditor.getState().project;
+  if (!current) return;
+  const { styleReference: _, ...rest } = current;
+  useEditor.setState({ project: rest as Project });
+}
+
+// Transcrição vazia também conta: um vídeo sem fala já foi "ouvido" e não precisa ser transcrito de novo.
+const hasTranscript = (project: Project) => Object.values(project.assets).some((a) => a.role !== "context" && a.transcript !== undefined);
 
 function primaryAssetId(project: Project): string | null {
   return mainClips(project)[0]?.assetId ?? Object.keys(project.assets)[0] ?? null;
 }
 
-/** Remove silêncios analisando o áudio no próprio navegador: 0 créditos, 0 nuvem. */
-export async function removeSilencesLocally() {
+/**
+ * Remove silêncios analisando o áudio no próprio navegador: 0 créditos, 0 nuvem.
+ * O limiar é calibrado pelo próprio arquivo (piso de ruído × voz ativa) e as
+ * proteções valem em qualquer modo: pausas < 450 ms ficam, 150 ms antes e
+ * 220 ms depois de cada fala ficam, nada de micro-cortes < 300 ms, e silêncio
+ * com ação na imagem não é cortado.
+ */
+export async function removeSilencesLocally(mode: SilenceMode = "natural", opts: { preserveAction?: boolean } = {}) {
   const { project, setBusy, setNotice, apply } = useEditor.getState();
   if (!project) return;
   const assetId = primaryAssetId(project);
-  if (!assetId) return;
+  if (!assetId) return setNotice("Adicione um vídeo à timeline primeiro.");
+  const preserve = opts.preserveAction ?? true;
+  if (preserve && projectGenre(project) === "action_cinematic")
+    return setNotice("Este é um vídeo de ação: os silêncios fazem parte da cena e foram preservados. Desligue “Preservar ação” se quiser cortar mesmo assim.");
   setBusy("Analisando o áudio no seu navegador…");
   try {
     const samples = await decodeMono(assetId);
-    const ranges = sourceRangesToTimeline(
-      useEditor.getState().project!,
-      assetId,
-      silencesFromAudio(samples, SPEECH_RATE, { minSilence: 0.5, padding: 0.12 }),
-    );
-    if (!ranges.length) setNotice("Nenhum silêncio com mais de 0,5s encontrado.");
+    const analysis = preserve ? (await withTimeout(analyzeAsset(assetId), 20_000))?.analysis : null;
+    const protect = analysis ? actionRanges(analysis.motion, 0.5) : [];
+    const ranges = sourceRangesToTimeline(useEditor.getState().project!, assetId, silencesFromAudio(samples, SPEECH_RATE, { mode, protect }));
+    const label = SILENCE_MODES[mode].name;
+    if (!ranges.length) setNotice(`${label}: nenhuma pausa para cortar${protect.length ? " (os trechos com ação foram preservados)" : ""}.`);
     else if (!apply([{ op: "remove_ranges", ranges }])) {
       const total = ranges.reduce((s, r) => s + r.end - r.start, 0);
-      setNotice(`${ranges.length} silêncios removidos (${total.toFixed(1)}s a menos). Ctrl+Z desfaz.`);
+      setNotice(`${label}: ${ranges.length} pausas removidas (${total.toFixed(1)}s a menos), sem cortar sílabas${protect.length ? " nem cenas de ação" : ""}. Ctrl+Z desfaz.`);
     }
   } catch (e) {
     setNotice((e as Error).message);
@@ -148,7 +305,21 @@ export async function transcribe(opts: { captions?: boolean } = {}): Promise<boo
   if (!project) return false;
   const assetId = primaryAssetId(project);
   const asset = assetId ? project.assets[assetId] : null;
-  if (!assetId || !asset) return false;
+  if (!assetId || !asset) {
+    setNotice("Adicione um vídeo à timeline primeiro (aba Mídia, ou arraste um arquivo para a trilha de vídeo).");
+    return false;
+  }
+  // O mesmo arquivo já foi transcrito antes (cache por SHA-256): reaproveita, sem créditos.
+  const cached = await cacheGet(asset.hash);
+  if (cached?.transcript) {
+    const next = structuredClone(project);
+    next.assets[assetId]!.transcript = cached.transcript;
+    if (opts.captions !== false && cached.transcript.words.length) next.captions.enabled = true;
+    setProject(next, { history: true });
+    reclassify(assetId);
+    setNotice("Transcrição recuperada do cache: este vídeo já tinha sido transcrito. Nenhum crédito gasto.");
+    return true;
+  }
   const cost = creditCost({ type: "ingest", durationSec: asset.duration });
   if (credits < cost && !useEditor.getState().unlimited) {
     setNotice(`Créditos insuficientes: a transcrição custa ${cost} ${cost === 1 ? "crédito" : "créditos"}.`);
@@ -169,10 +340,14 @@ export async function transcribe(opts: { captions?: boolean } = {}): Promise<boo
     const current = useEditor.getState().project;
     if (!current?.assets[assetId]) return false;
     const next = structuredClone(current);
-    next.assets[assetId]!.transcript = { ...data.transcript, words: wordEnergy(samples, SPEECH_RATE, data.transcript.words) };
-    if (opts.captions !== false) next.captions.enabled = true;
+    const transcript = { ...data.transcript, words: wordEnergy(samples, SPEECH_RATE, data.transcript.words) };
+    next.assets[assetId]!.transcript = transcript;
+    const spoken = transcript.words.length > 0;
+    if (opts.captions !== false && spoken) next.captions.enabled = true;
     setProject(next, { history: true });
-    setNotice(`Transcrição pronta: ${data.transcript.words.length} palavras.${opts.captions !== false ? " Legendas na timeline." : ""}`);
+    void cachePut(asset.hash, { transcript });
+    reclassify(assetId);
+    setNotice(spoken ? `Transcrição pronta: ${transcript.words.length} palavras.${opts.captions !== false ? " Legendas na timeline." : ""}` : "Este vídeo não tem fala: a edição vai seguir a imagem e o som da cena.");
     return true;
   } catch (e) {
     setNotice((e as Error).message);
@@ -216,7 +391,7 @@ export async function autoClean() {
   if (!before) return;
   const wordsBefore = timelineWords(before).length;
   const lengthBefore = mainClips(before).reduce((m, c) => Math.max(m, c.start + c.duration), 0);
-  const error = s.apply([{ op: "remove_retakes" }, { op: "remove_silences", minSilence: 0.45, padding: 0.1 }]);
+  const error = s.apply([{ op: "remove_retakes" }, { op: "remove_silences", mode: "aggressive" }]);
   if (error) return s.setNotice(error);
   const after = useEditor.getState().project!;
   const saved = lengthBefore - mainClips(after).reduce((m, c) => Math.max(m, c.start + c.duration), 0);
@@ -251,27 +426,32 @@ export async function logout() {
 export async function applyTemplate(template: EditTemplate) {
   const s = useEditor.getState();
   if (!s.project) return;
-  const ops = templateOperations(template, s.project);
+  // Modelo pronto da casa: é uma skill completa (acabamento, orçamento de ritmo e direção).
+  if (template.skill) return runSkill(template.skill);
   if (!(await ensureTranscript())) return;
-  const ops2 = templateOperations(template, useEditor.getState().project!);
-  if (ops2.length) useEditor.getState().apply(ops2);
-  void ops;
+  const ops = templateOperations(template, useEditor.getState().project!);
+  if (ops.length) useEditor.getState().apply(ops);
   await askAgent(templatePrompt(template), `Aplicar o modelo "${template.name}"`);
 }
 
 type AgentEvent =
   | { type: "status"; text: string }
-  | { type: "plan"; plan: EditPlan }
+  | { type: "plan"; plan: EditPlan; planToken?: string }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
   | { type: "error"; error: string };
 
 /**
  * Pedido ao agente. A resposta chega em etapas (um JSON por linha): cada grupo
  * de operações aplicado no servidor atualiza a timeline na hora. Com um trecho
  * selecionado, só os metadados dele são enviados.
+ *
+ * Edição completa passa por três papéis: o Diretor devolve um plano por atos,
+ * que aparece no chat para confirmação rápida (`confirm: false` pula a
+ * pergunta, como no assistente de um clique); o Editor executa; o Crítico
+ * avalia o resultado em até 3 ciclos de autocorreção.
  */
-export async function askAgent(message: string, label?: string, opts: { skill?: SkillId } = {}) {
+export async function askAgent(message: string, label?: string, opts: { skill?: SkillId; confirm?: boolean } = {}) {
   const s = useEditor.getState();
   if (!s.project || !message.trim()) return;
   const history = s.chat.filter((m) => !m.error && !m.plan).slice(-8).map((m) => ({ role: m.role, text: m.text }));
@@ -285,16 +465,65 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   const range = useEditor.getState().range;
   const full = agentTier(message, !!range) === "full";
   s.setBusy(full ? "Analisando o vídeo…" : "O agente está lendo o vídeo…");
-  // Edição completa: o agente recebe quadros do vídeo e o enquadramento medido.
+  // Edição completa: o agente recebe quadros do vídeo, o enquadramento e a análise de movimento e som.
   const assetId = primaryAssetId(project);
-  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 12_000) : null;
+  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 25_000) : null;
+  const frames = analysis?.frames ?? [];
+  if (full && opts.confirm !== false) {
+    // Fase 1 — Diretor: só o plano. Nada é editado nem cobrado até o usuário confirmar.
+    try {
+      await streamAgent({ project: useEditor.getState().project, message, history, skill: opts.skill, frames, phase: "plan" }, (e) => {
+        if (e.type === "status") s.setBusy(e.text);
+        else if (e.type === "plan" && e.planToken) s.pushChat({ role: "assistant", text: e.plan.resumo, plan: e.plan, pending: { token: e.planToken, message, skill: opts.skill, frames } });
+        else if (e.type === "done" && !e.awaitingConfirmation) s.pushChat({ role: "assistant", text: e.message });
+        else if (e.type === "error") s.pushChat({ role: "assistant", text: e.error, error: true });
+      });
+    } catch (e) {
+      s.pushChat({ role: "assistant", text: (e as Error).message, error: true });
+    } finally {
+      s.setBusy(null);
+    }
+    return;
+  }
+  await executeAgent({ message, history, skill: opts.skill, frames, selection: range, phase: "auto" });
+}
+
+/** O usuário aprovou o plano no chat: o Editor executa e o Crítico confere. */
+export async function confirmPlan(messageId: string) {
+  const s = useEditor.getState();
+  const pending = s.chat.find((m) => m.id === messageId)?.pending;
+  if (!pending || s.busy) return;
+  s.resolvePlan(messageId);
+  s.pushChat({ role: "user", text: "Pode editar assim." });
+  await executeAgent({ message: pending.message, history: [], skill: pending.skill as SkillId | undefined, frames: pending.frames, selection: null, phase: "execute", planToken: pending.token });
+}
+
+/** O usuário quer outro plano: descarta este e pede de novo, com a observação dele. */
+export async function revisePlan(messageId: string, note: string) {
+  const s = useEditor.getState();
+  const pending = s.chat.find((m) => m.id === messageId)?.pending;
+  if (!pending || s.busy) return;
+  s.resolvePlan(messageId);
+  if (!note.trim()) return;
+  await askAgent(`${pending.message}\n\nAjuste pedido pelo usuário depois de ver o primeiro plano: ${note.trim()}`, `Ajustar o plano: ${note.trim()}`, { skill: pending.skill as SkillId | undefined });
+}
+
+export function discardPlan(messageId: string) {
+  useEditor.getState().resolvePlan(messageId);
+}
+
+export const pendingPlanOf = (m: ChatMessage): PendingPlan | undefined => m.pending;
+
+async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string }) {
+  const s = useEditor.getState();
   let applied = false;
   const log: string[] = [];
   let reviewToken: string | undefined;
+  s.setBusy("O Editor está montando a edição…");
   try {
-    await streamAgent({ project: useEditor.getState().project, selection: range, message, history, skill: opts.skill, frames: analysis?.frames ?? [] }, (e) => {
+    await streamAgent({ project: useEditor.getState().project, ...req }, (e) => {
       if (e.type === "status") s.setBusy(e.text);
-      else if (e.type === "plan") s.pushChat({ role: "assistant", text: e.plan.diagnostico, plan: e.plan });
+      else if (e.type === "plan") s.pushChat({ role: "assistant", text: e.plan.resumo, plan: e.plan });
       else if (e.type === "ops") {
         // A primeira etapa cria o ponto de desfazer; as seguintes só atualizam: um Ctrl+Z desfaz o pedido inteiro.
         s.setProject(e.project, { history: applied ? "keep" : true });
@@ -346,37 +575,25 @@ async function streamAgent(body: unknown, onEvent: (e: AgentEvent) => void) {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Capturas do vídeo já editado, tiradas do próprio preview: o cursor passa
- * pelos momentos em que há componente ou mídia de contexto na tela. É o que
- * o agente recebe para conferir, com os olhos, o que montou.
- */
-async function captureShots(project: Project, max = 6): Promise<{ t: number; data: string }[]> {
+/** Captura o preview nos instantes pedidos, em tamanho reduzido. Devolve o cursor ao lugar no fim. */
+async function capturePreview(times: number[], maxSide: number): Promise<{ t: number; canvas: HTMLCanvasElement }[]> {
   const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="preview"]');
   if (!canvas) return [];
-  const moments = project.tracks
-    .flatMap((t) => t.clips)
-    .filter((c) => c.type === "component" || c.type === "broll")
-    .sort((a, b) => a.start - b.start)
-    .map((c) => Math.round((c.start + Math.min(c.duration * 0.7, Math.max(0.3, c.duration - 0.5))) * 100) / 100);
-  // Espalha pelo vídeo quando há mais momentos do que capturas.
-  const picked = moments.length <= max ? moments : Array.from({ length: max }, (_, i) => moments[Math.round((i * (moments.length - 1)) / (max - 1))]!);
   const s = useEditor.getState();
   const back = s.time;
   s.setPlaying(false);
-  const small = document.createElement("canvas");
-  const scale = Math.min(1, 480 / Math.max(canvas.width, canvas.height));
-  const out: { t: number; data: string }[] = [];
+  const scale = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
+  const out: { t: number; canvas: HTMLCanvasElement }[] = [];
   try {
-    for (const t of [...new Set(picked)]) {
+    for (const t of [...new Set(times)]) {
       useEditor.getState().seek(t);
       // Tempo para o vídeo buscar o quadro e o preview redesenhar.
-      await wait(650);
-      small.width = Math.round(canvas.width * scale);
-      small.height = Math.round(canvas.height * scale);
+      await wait(520);
+      const small = document.createElement("canvas");
+      small.width = Math.max(1, Math.round(canvas.width * scale));
+      small.height = Math.max(1, Math.round(canvas.height * scale));
       small.getContext("2d")!.drawImage(canvas, 0, 0, small.width, small.height);
-      const data = small.toDataURL("image/jpeg", 0.8).split(",")[1];
-      if (data) out.push({ t, data });
+      out.push({ t, canvas: small });
     }
   } finally {
     useEditor.getState().seek(back);
@@ -384,28 +601,129 @@ async function captureShots(project: Project, max = 6): Promise<{ t: number; dat
   return out;
 }
 
+const spread = <T,>(list: T[], max: number): T[] => (list.length <= max ? list : Array.from({ length: max }, (_, i) => list[Math.round((i * (list.length - 1)) / (max - 1))]!));
+const jpeg = (canvas: HTMLCanvasElement, q = 0.8) => canvas.toDataURL("image/jpeg", q).split(",")[1] ?? "";
+
 /**
- * Revisão visual depois de uma edição completa: o agente olha as capturas do
- * resultado e corrige texto ilegível, cortado ou sobreposto. Faz parte da
- * edição (sem custo extra) e entra no mesmo ponto de desfazer.
+ * Capturas do vídeo já editado, tiradas do próprio preview: o cursor passa
+ * pelos momentos em que há componente ou mídia de contexto na tela. É o que
+ * o Crítico recebe para conferir, com os olhos, o que foi montado.
  */
-async function visualReview(token: string) {
-  const s = useEditor.getState();
-  const project = s.project;
-  if (!project) return;
-  s.setBusy("Conferindo como ficou na tela…");
-  const shots = await captureShots(project);
-  if (!shots.length) return;
-  try {
-    await streamAgent({ project: useEditor.getState().project, message: "Revisão visual da edição.", review: { token, shots } }, (e) => {
-      if (e.type === "status") s.setBusy(e.text);
-      else if (e.type === "ops") s.setProject(e.project, { history: "keep" });
-      else if (e.type === "done" && e.log.length) s.pushChat({ role: "assistant", text: `Revi o vídeo pronto, quadro a quadro. ${e.message}`, log: e.log });
-    });
-  } catch (e) {
-    // A edição já está entregue; uma falha na revisão não é erro para o usuário.
-    console.warn("revisão visual indisponível", e);
+async function captureShots(project: Project, max = 6): Promise<{ t: number; data: string }[]> {
+  const moments = project.tracks
+    .flatMap((t) => t.clips)
+    .filter((c) => c.type === "component" || c.type === "broll")
+    .sort((a, b) => a.start - b.start)
+    .map((c) => Math.round((c.start + Math.min(c.duration * 0.7, Math.max(0.3, c.duration - 0.5))) * 100) / 100);
+  // Sem nada por cima (ex.: vídeo de ação só com rampas e cor): olha o começo, o meio e o fim.
+  const duration = projectDuration(project);
+  const times = moments.length ? spread(moments, max) : [0.4, duration / 2, Math.max(0, duration - 0.6)].map((t) => Math.round(t * 100) / 100);
+  return (await capturePreview(times, 480)).map((c) => ({ t: c.t, data: jpeg(c.canvas) })).filter((c) => c.data);
+}
+
+/**
+ * Tira leve de diagnóstico (timeline_view): miniaturas nos pontos de corte,
+ * com a caixa do sujeito detectado por cima, e a forma de onda do áudio
+ * embaixo com os cortes marcados. Uma imagem só, barata de enviar.
+ */
+export async function diagnosticStrip(project: Project, max = 6): Promise<string | null> {
+  const duration = projectDuration(project);
+  if (duration <= 0) return null;
+  const cuts = cutPoints(project).filter((t) => t < duration - 0.1);
+  const times = spread([0.15, ...cuts.map((t) => Math.min(duration - 0.05, t + 0.08))], max).map((t) => Math.round(t * 100) / 100);
+  const thumbs = await capturePreview(times, 220);
+  if (!thumbs.length) return null;
+  const th = thumbs[0]!.canvas.height;
+  const tw = thumbs[0]!.canvas.width;
+  const gap = 6;
+  const waveH = 70;
+  const strip = document.createElement("canvas");
+  strip.width = thumbs.length * (tw + gap) + gap;
+  strip.height = th + waveH + 46;
+  const ctx = strip.getContext("2d")!;
+  ctx.fillStyle = "#0b0b10";
+  ctx.fillRect(0, 0, strip.width, strip.height);
+  ctx.font = "600 13px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  thumbs.forEach((thumb, i) => {
+    const x = gap + i * (tw + gap);
+    ctx.drawImage(thumb.canvas, x, 22);
+    ctx.fillStyle = "#e4e4e7";
+    ctx.fillText(`${thumb.t.toFixed(1)}s`, x + 2, 4);
+    // Caixa do sujeito e centro do rosto, como a segmentação mediu (enquadramento de base).
+    const s = subjectAt(project, thumb.t);
+    if (s) {
+      ctx.strokeStyle = "#22d3ee";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + s.x * tw, 22 + s.y * th, s.w * tw, s.h * th);
+      ctx.fillStyle = "#f43f5e";
+      ctx.beginPath();
+      ctx.arc(x + s.faceX * tw, 22 + s.faceY * th, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  // Forma de onda da timeline inteira (segue os cortes), com os pontos de corte em vermelho.
+  const y0 = th + 30;
+  const w = strip.width - gap * 2;
+  ctx.fillStyle = "#18181b";
+  ctx.fillRect(gap, y0, w, waveH);
+  ctx.fillStyle = "#a78bfa";
+  for (const clip of mainClips(project)) {
+    const peaks = peaksFor(clip.assetId);
+    if (!peaks) continue;
+    const x1 = gap + (clip.start / duration) * w;
+    const x2 = gap + (clipEnd(clip) / duration) * w;
+    for (let x = Math.floor(x1); x < x2; x++) {
+      const src = clip.sourceStart + ((x - x1) / Math.max(1, x2 - x1)) * clip.duration;
+      const peak = peaks[Math.min(peaks.length - 1, Math.floor(src * 100))] ?? 0;
+      const bar = Math.max(1, peak * (waveH - 6));
+      ctx.fillRect(x, y0 + (waveH - bar) / 2, 1, bar);
+    }
   }
+  ctx.fillStyle = "#f43f5e";
+  for (const t of cuts) ctx.fillRect(gap + (t / duration) * w, y0, 1.5, waveH);
+  return jpeg(strip, 0.78) || null;
+}
+
+/**
+ * Crítico visual depois de uma edição completa: olha a tira de diagnóstico e
+ * as capturas do resultado, e corrige. Cada correção gera uma nova avaliação,
+ * até 3 ciclos. Faz parte da edição (sem custo extra) e entra no mesmo ponto
+ * de desfazer.
+ */
+async function visualReview(firstToken: string) {
+  const s = useEditor.getState();
+  let token: string | undefined = firstToken;
+  const fixes: string[] = [];
+  let lastMessage = "";
+  for (let cycle = 1; token && cycle <= MAX_CRITIC_CYCLES; cycle++) {
+    const project = useEditor.getState().project;
+    if (!project) return;
+    s.setBusy(`O Crítico está conferindo como ficou na tela (${cycle} de ${MAX_CRITIC_CYCLES})…`);
+    const strip = await diagnosticStrip(project);
+    const shots = await captureShots(project);
+    if (!shots.length) break;
+    const current: string = token;
+    token = undefined;
+    try {
+      await streamAgent({ project: useEditor.getState().project, message: "Autoavaliação visual da edição.", review: { token: current, shots, ...(strip ? { strip } : {}) } }, (e) => {
+        if (e.type === "status") s.setBusy(e.text);
+        else if (e.type === "ops") s.setProject(e.project, { history: "keep" });
+        else if (e.type === "done") {
+          token = e.reviewToken;
+          if (e.log.length) {
+            fixes.push(...e.log);
+            lastMessage = e.message;
+          }
+        }
+      });
+    } catch (e) {
+      // A edição já está entregue; uma falha na revisão não é erro para o usuário.
+      console.warn("revisão visual indisponível", e);
+      break;
+    }
+  }
+  if (fixes.length) s.pushChat({ role: "assistant", text: `Revi o vídeo pronto, quadro a quadro. ${lastMessage}`, log: fixes });
 }
 
 /** Tira os erros de gravação de alta confiança, no navegador: 0 créditos. */
@@ -439,7 +757,8 @@ export function editManually() {
 export async function autoEdit(id: SkillId) {
   useEditor.setState({ assistant: "working" });
   const before = useEditor.getState().chat.length;
-  await runSkill(id);
+  // Um clique: o plano do Diretor aparece no chat, mas a edição segue sem esperar confirmação.
+  await runSkill(id, { confirm: false });
   const s = useEditor.getState();
   const reply = s.chat.slice(before).filter((m) => m.role === "assistant" && !m.plan);
   const ok = reply.length > 0 && !reply[reply.length - 1]!.error;
@@ -454,19 +773,20 @@ export async function autoCleanOnly() {
 }
 
 /**
- * Skill: a limpeza determinística roda aqui, de graça; a direção de estilo
- * (cortes finos, câmera, motion) vai para o agente.
+ * Modelo de edição: a limpeza e o acabamento determinísticos (legenda, cor,
+ * trilha) rodam aqui, de graça; a direção (cortes finos, velocidade, câmera,
+ * motion, sons) vai para o Diretor de IA.
  */
-export async function runSkill(id: SkillId) {
+export async function runSkill(id: SkillId, opts: { confirm?: boolean } = {}) {
   const s = useEditor.getState();
   if (!s.project) return;
   if (!(await ensureTranscript())) return;
   const skill = SKILLS[id];
-  // Uma operação sem efeito (ex.: nenhum silêncio) não impede as demais.
-  const ops: OperationInput[] = skill.local;
-  const error = useEditor.getState().apply(ops);
+  // Só o que faz sentido para ESTE vídeo: sem fala não há limpeza de fala; a marca do usuário não é trocada.
+  const ops: OperationInput[] = skillOperations(skill, useEditor.getState().project!);
+  const error = ops.length ? useEditor.getState().apply(ops) : null;
   if (error) return s.setNotice(error);
-  await askAgent(skillPrompt(skill), `Editar o vídeo no estilo ${skill.name}`, { skill: id });
+  await askAgent(skillPrompt(skill), `Editar o vídeo no modelo ${skill.name}`, { skill: id, confirm: opts.confirm });
 }
 
 /**
@@ -498,6 +818,7 @@ export async function closeProject() {
   await clearMedia();
   clearBroll();
   thumbs.clear();
+  analyses.clear();
   useEditor.setState({ chat: [], time: 0, range: null, playing: false });
   useEditor.getState().setProject(null);
 }
@@ -604,12 +925,12 @@ export async function uploadContextFiles(files: FileList | File[]) {
   if (added) setNotice(`${added === 1 ? "Mídia adicionada" : `${added} mídias adicionadas`}. Clique em “Inserir” para pôr no vídeo, ou peça ao Diretor de IA.`);
 }
 
-/** Põe a mídia na timeline, a partir do cursor, e já abre o editor dela. */
-export function insertBroll(assetId: string) {
+/** Põe a mídia na trilha de cima (overlay), a partir do cursor ou de `at`, e já abre o editor dela. */
+export function insertBroll(assetId: string, at?: number) {
   const s = useEditor.getState();
   if (!s.project) return;
   const before = new Set(s.project.tracks.flatMap((t) => t.clips.map((c) => c.id)));
-  if (s.apply([{ op: "add_broll", assetId, start: s.time }])) return;
+  if (s.apply([{ op: "add_broll", assetId, start: at ?? s.time }])) return;
   const created = useEditor.getState().project!.tracks.flatMap((t) => t.clips).find((c) => !before.has(c.id));
   if (created) {
     useEditor.getState().select(created.id);
@@ -661,4 +982,16 @@ export async function importStockItem(item: StockItem, label: string) {
   } finally {
     setBusy(null);
   }
+}
+
+/**
+ * Solta uma mídia do projeto na trilha principal: entre dois clipes abre
+ * espaço (ripple), numa lacuna encaixa (aparando se não couber). Nada é sobrescrito.
+ */
+export function insertOnMain(assetId: string, at: number, mode: "auto" | "insert" | "overwrite" = "auto") {
+  const s = useEditor.getState();
+  if (!s.project) return;
+  if (s.apply([{ op: "insert_clip", assetId, at, mode }])) return;
+  const log = useEditor.getState().lastLog[0];
+  if (log) s.setNotice(log.replace(/\s*\(clip_[^)]+\)/, ""));
 }

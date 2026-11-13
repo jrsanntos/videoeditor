@@ -50,6 +50,8 @@ export function isFullscreen(clip: ComponentClip): boolean {
   if (clip.component === "kinetic_pivot_card" || clip.component === "title_card") return true;
   if (clip.component === "step_progress") return clip.params.fullscreen !== false;
   if (clip.component === "stat_counter") return clip.params.fullscreen === true;
+  if (clip.component === "comparison_split") return clip.params.fullscreen !== false;
+  if (clip.component === "custom_motion_graphic") return clip.params.backdrop === "solid";
   return false;
 }
 
@@ -131,7 +133,12 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
 
   // Trechos parados: intervalos que nenhum zoom nem componente cobre.
   // Mídia de contexto também é mudança visual: cobre o trecho e conta na densidade.
-  const covered = [...zooms, ...components, ...brolls].map((c) => ({ start: c.start, end: clipEnd(c) })).sort((a, b) => a.start - b.start);
+  // Rampas de velocidade e impactos de câmera também são tratamento visual (o vocabulário da edição de ação).
+  const treated = [
+    ...mainClips(project).filter((c) => c.speedRamp?.length || (c.speed !== undefined && c.speed !== 1)),
+    ...project.tracks.flatMap((t) => t.clips.filter((c) => c.type === "impact")),
+  ];
+  const covered = [...zooms, ...components, ...brolls, ...treated].map((c) => ({ start: c.start, end: clipEnd(c) })).sort((a, b) => a.start - b.start);
   let cursor = 0;
   let longestStatic = 0;
   const gaps: { start: number; end: number }[] = [];
@@ -151,7 +158,7 @@ export function auditPacing(project: Project, profile: PacingProfile = DEFAULT_P
   }
 
   if (profile.edges && duration > 4) {
-    const firstVisual = Math.min(zooms[0]?.start ?? Infinity, components[0]?.start ?? Infinity, brolls[0]?.start ?? Infinity);
+    const firstVisual = Math.min(zooms[0]?.start ?? Infinity, components[0]?.start ?? Infinity, brolls[0]?.start ?? Infinity, ...treated.map((c) => c.start));
     if (firstVisual > 1.5)
       issues.push({
         severity: "erro",

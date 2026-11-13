@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { creditCost, FONT_PAIRS, FORMATS, mainClips, PLANS, type AspectRatio, type BrandKit, type EditTemplate, type FontPairId } from "@videoeditor/core";
+import { CAPTION_PRESET_IDS, CAPTION_PRESET_NAMES, creditCost, FONT_PAIRS, FORMATS, GENRE_NAMES, LOOK_IDS, LOOK_NAMES, mainClips, MUSIC_MOODS, MUSIC_NAMES, PLANS, projectGenre, SILENCE_MODES, type AspectRatio, type BrandKit, type CaptionPreset, type EditTemplate, type FontPairId, type Genre, type LookId, type MusicMood, type SilenceMode } from "@videoeditor/core";
 import { COMPONENTS } from "@videoeditor/renderer";
 import { applyTemplate, autoClean, deleteBrand, removeSilencesLocally, saveBrand, toggleCaptions } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
@@ -24,6 +24,13 @@ const MOTION_HINT: Record<string, string> = {
   acronym_list: "Lista ao lado, item a item",
   executive_lower_third: "Seu nome e cargo",
   stat_counter: "Número com contador",
+  stat_counter_card: "Cartão com número e barra",
+  comparison_split: "Antes vs. depois",
+  tactical_hud_overlay: "Telemetria e retículo",
+  social_proof_toast: "Notificação de prova social",
+  callout_pointer: "Linha apontando um detalhe",
+  step_progress_bar: "Etapas no topo",
+  custom_motion_graphic: "Peça sob medida (exemplo)",
 };
 
 export function Sidebar() {
@@ -39,6 +46,9 @@ export function Sidebar() {
   const credits = (n: number) => (unlimited ? "sem custo para admin" : `${n} ${n === 1 ? "crédito" : "créditos"}`);
   const tour = useEditor((s) => s.tour);
   const [tab, setTab] = useState<Tab>("editar");
+  const [silenceMode, setSilenceMode] = useState<SilenceMode>("natural");
+  const [preserveAction, setPreserveAction] = useState(true);
+  const genre = projectGenre(project);
   // O guia inicial aponta para a Limpeza automática, que mora na aba Editar.
   const shown: Tab = tour === 0 ? "editar" : tab;
 
@@ -106,12 +116,26 @@ export function Sidebar() {
             <span className="mt-1 block text-[11.5px] leading-snug text-white/85">Remove erros de gravação e retira pausas, deixando profissional e limpo.</span>
             {!hasTranscript && <span className="mt-1.5 inline-block rounded-md bg-black/25 px-1.5 py-0.5 text-[10.5px] text-white/90">inclui a transcrição · {credits(ingestCost)}</span>}
           </button>
-          <button className={btn} disabled={!!busy} onClick={removeSilencesLocally} data-testid="remove-silences">
-            <span className="flex items-center gap-2 font-medium">
+          <div className="rounded-xl border border-line bg-ink-850 p-2.5" data-testid="silence-panel">
+            <span className="flex items-center gap-2 px-1 text-xs font-medium text-zinc-200">
               <Icon.scissors size={14} className="text-zinc-400" /> Remover silêncios
             </span>
-            <span className="mt-1 block text-[11px] leading-snug text-zinc-500">Corta o vídeo nas pausas de fala, facilitando a edição manual. Grátis.</span>
-          </button>
+            <div className="mt-2 space-y-1" role="radiogroup" aria-label="Modo de remoção de silêncios">
+              {(Object.keys(SILENCE_MODES) as SilenceMode[]).map((m) => (
+                <button key={m} role="radio" aria-checked={silenceMode === m} onClick={() => setSilenceMode(m)} data-testid={`silence-${m}`} className={`block w-full rounded-lg border px-2.5 py-1.5 text-left transition ${silenceMode === m ? "border-brand-400 bg-brand-500/15" : "border-line hover:border-line-strong"}`}>
+                  <span className="block text-[11.5px] font-medium text-zinc-100">{SILENCE_MODES[m].name}</span>
+                  <span className="block text-[10.5px] leading-snug text-zinc-500">{SILENCE_MODES[m].hint}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 px-1">
+              <ToggleRow label="Preservar ação" hint="Silêncio com movimento na imagem não é cortado." checked={preserveAction} onChange={setPreserveAction} testid="preserve-action" />
+            </div>
+            <button className="mt-2 w-full rounded-lg bg-white/8 px-3 py-2 text-xs font-medium text-zinc-100 transition hover:bg-white/12 disabled:opacity-40" disabled={!!busy} onClick={() => void removeSilencesLocally(silenceMode, { preserveAction })} data-testid="remove-silences">
+              Cortar pausas · grátis
+            </button>
+            <p className="mt-1.5 px-1 text-[10.5px] leading-snug text-zinc-600">Nunca corta respiração (&lt; 0,45 s), sílabas (150 ms antes e 220 ms depois da fala) nem faz micro-cortes.</p>
+          </div>
         </div>
       </div>
 
@@ -129,10 +153,12 @@ export function Sidebar() {
         />
         {caps.enabled && hasTranscript && (
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <select className={field} value={caps.style.preset} aria-label="Estilo da legenda" onChange={(e) => apply([{ op: "set_captions", style: { preset: e.target.value as "bold" } }])}>
-              <option value="karaoke">Karaokê</option>
-              <option value="bold">Negrito</option>
-              <option value="clean">Limpa</option>
+            <select className={field} value={caps.style.preset} aria-label="Estilo da legenda" onChange={(e) => apply([{ op: "set_captions", style: { preset: e.target.value as CaptionPreset } }])}>
+              {CAPTION_PRESET_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {CAPTION_PRESET_NAMES[id as CaptionPreset]}
+                </option>
+              ))}
             </select>
             <select className={field} value={caps.style.y !== undefined ? "custom" : caps.style.position} aria-label="Posição da legenda" onChange={(e) => e.target.value !== "custom" && apply([{ op: "set_captions", style: { position: e.target.value as "top" } }])}>
               <option value="bottom">Embaixo</option>
@@ -156,6 +182,62 @@ export function Sidebar() {
               <div className="space-y-3">
                 <ToggleRow label="Disfarçar os cortes" hint="Alterna um leve zoom a cada corte, como uma troca de câmera." checked={project.finish.cutZoom} onChange={(v) => apply([{ op: "set_format", finish: { cutZoom: v } }])} testid="finish-cutzoom" />
                 <ToggleRow label="Voz no volume das redes" hint="Deixa a fala no nível de Reels, TikTok e YouTube, sem estourar." checked={project.finish.voice} onChange={(v) => apply([{ op: "set_format", finish: { voice: v } }])} testid="finish-voice" />
+              </div>
+            </div>
+            <div className={section} data-testid="look-panel">
+              <h3 className={heading}>
+                <Icon.palette size={12} /> Cor, trilha e gênero
+              </h3>
+              <div className="space-y-3">
+                <label className="block text-xs text-zinc-400">
+                  Tratamento de cor
+                  <select className={`${field} mt-1`} value={project.look.grade} data-testid="look-grade" onChange={(e) => apply([{ op: "set_look", look: { grade: e.target.value as LookId } }])}>
+                    {LOOK_IDS.map((id) => (
+                      <option key={id} value={id}>
+                        {LOOK_NAMES[id]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                  Vinheta
+                  <input type="range" min={0} max={1} step={0.05} defaultValue={project.look.vignette} key={`v-${project.look.vignette}`} className="w-32" onPointerUp={(e) => apply([{ op: "set_look", look: { vignette: Number(e.currentTarget.value) } }])} onKeyUp={(e) => apply([{ op: "set_look", look: { vignette: Number(e.currentTarget.value) } }])} aria-label="Vinheta" />
+                </label>
+                <label className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                  Barras de cinema
+                  <input type="range" min={0} max={0.16} step={0.01} defaultValue={project.look.letterbox} key={`l-${project.look.letterbox}`} className="w-32" onPointerUp={(e) => apply([{ op: "set_look", look: { letterbox: Number(e.currentTarget.value) } }])} onKeyUp={(e) => apply([{ op: "set_look", look: { letterbox: Number(e.currentTarget.value) } }])} aria-label="Barras cinemáticas" />
+                </label>
+                <label className="block text-xs text-zinc-400">
+                  Trilha de fundo
+                  <select className={`${field} mt-1`} value={project.music.mood} data-testid="music-mood" onChange={(e) => apply([{ op: "set_music", music: { mood: e.target.value as MusicMood } }])}>
+                    {MUSIC_MOODS.map((id) => (
+                      <option key={id} value={id}>
+                        {MUSIC_NAMES[id]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {project.music.mood !== "none" && (
+                  <>
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                      Volume da trilha
+                      <input type="range" min={0} max={1} step={0.05} defaultValue={project.music.volume} key={`m-${project.music.volume}`} className="w-32" onPointerUp={(e) => apply([{ op: "set_music", music: { volume: Number(e.currentTarget.value) } }])} onKeyUp={(e) => apply([{ op: "set_music", music: { volume: Number(e.currentTarget.value) } }])} aria-label="Volume da trilha" />
+                    </label>
+                    <ToggleRow label="Baixar sob a voz (ducking)" hint="A trilha desce 14 dB quando há fala e volta nas pausas." checked={project.music.duck} onChange={(v) => apply([{ op: "set_music", music: { duck: v } }])} testid="music-duck" />
+                  </>
+                )}
+                <label className="block text-xs text-zinc-400">
+                  Gênero do vídeo {genre && !project.genre && <span className="text-zinc-600">(detectado)</span>}
+                  <select className={`${field} mt-1`} value={project.genre ?? ""} data-testid="genre-select" onChange={(e) => apply([{ op: "set_genre", genre: (e.target.value || null) as Genre | null }])}>
+                    <option value="">{genre && !project.genre ? `Automático: ${GENRE_NAMES[genre]}` : "Automático"}</option>
+                    {(Object.keys(GENRE_NAMES) as Genre[]).map((g) => (
+                      <option key={g} value={g}>
+                        {GENRE_NAMES[g]}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="mt-1 block text-[10.5px] leading-snug text-zinc-600">Define como a IA edita: um vídeo de ação não é cortado como um vídeo falado.</span>
+                </label>
               </div>
             </div>
             <Templates />
@@ -366,7 +448,7 @@ function Brand() {
       <div className="mt-3">
         <ToggleRow
           label="Tarja de nome e cargo"
-          hint={brand.showLowerThird ? "Seu nome e registro podem aparecer no vídeo." : "Desligada: nome e cargo não aparecem no vídeo."}
+          hint={brand.showLowerThird ? "Seu nome e registro podem aparecer no vídeo." : "Desligada por padrão: nome e cargo não aparecem no vídeo. Ligue com um clique."}
           checked={brand.showLowerThird}
           onChange={(v) => apply([{ op: "set_brand", brand: { showLowerThird: v } }])}
           testid="lower-third-toggle"

@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { findClip, FONT_PAIRS, isFullscreen, type BrollClip, type Clip, type ComponentClip, type FontPairId, type OperationInput, type ZoomClip } from "@videoeditor/core";
-import { captionGroups, COMPONENTS, type ComponentDef } from "@videoeditor/renderer";
+import { findClip, FONT_PAIRS, hasSpeed, isFullscreen, rateAverage, sourceSpan, type BrollClip, type Clip, type ComponentClip, type FontPairId, type ImpactClip, type MediaClip, type OperationInput, type SfxClip, type ZoomClip } from "@videoeditor/core";
+import { captionGroups, COMPONENTS, SFX_CATALOG, type ComponentDef } from "@videoeditor/renderer";
 import { fromTokens, toTokens } from "@/lib/params";
 import { useEditor } from "@/lib/store";
 import { formatTime } from "./Player";
@@ -50,10 +50,14 @@ export function Inspector() {
         ? "Movimento de câmera"
         : clip!.type === "broll"
           ? "Mídia de contexto"
-          : (COMPONENTS[clip!.component]?.name ?? "Componente");
+          : clip!.type === "sfx"
+            ? "Efeito sonoro"
+            : clip!.type === "impact"
+              ? "Impacto de câmera"
+              : (COMPONENTS[clip!.component]?.name ?? "Componente");
   const kind = caption ? "captions" : clip!.type;
-  const accent = { captions: "text-sky-300 bg-sky-400/15", media: "text-brand-300 bg-brand-500/15", zoom: "text-amber-300 bg-amber-400/15", component: "text-emerald-300 bg-emerald-400/15", broll: "text-rose-300 bg-rose-400/15" }[kind];
-  const KindIcon = { captions: Icon.captions, media: Icon.film, zoom: Icon.zoomIn, component: Icon.layers, broll: Icon.film }[kind];
+  const accent = { captions: "text-sky-300 bg-sky-400/15", media: "text-brand-300 bg-brand-500/15", zoom: "text-amber-300 bg-amber-400/15", component: "text-emerald-300 bg-emerald-400/15", broll: "text-rose-300 bg-rose-400/15", sfx: "text-cyan-300 bg-cyan-400/15", impact: "text-orange-300 bg-orange-400/15" }[kind];
+  const KindIcon = { captions: Icon.captions, media: Icon.film, zoom: Icon.zoomIn, component: Icon.layers, broll: Icon.film, sfx: Icon.mic, impact: Icon.bolt }[kind];
 
   return (
     <aside className="pop-in m-3 mr-0 flex w-[340px] shrink-0 flex-col overflow-hidden rounded-2xl border border-line-strong bg-ink-850 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.9)]" data-testid="inspector">
@@ -88,13 +92,10 @@ function ClipEditor({ clip }: { clip: Clip }) {
       {clip.type === "component" && <ComponentEditor clip={clip} update={update} />}
       {clip.type === "zoom" && <ZoomEditor clip={clip} update={update} />}
       {clip.type === "broll" && <BrollEditor clip={clip} update={update} />}
-      {clip.type === "media" && (
-        <div className={group}>
-          <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onCommit={(volume) => update({ volume })} />
-          <p className="text-[11px] leading-relaxed text-zinc-500">Arraste as bordas do clip na timeline para encurtar ou recuperar material. Clique na timeline e use “Dividir aqui” para separar em dois.</p>
-        </div>
-      )}
-      {clip.type !== "media" && (
+      {clip.type === "media" && <MediaEditor clip={clip} update={update} />}
+      {clip.type === "sfx" && <SfxEditor clip={clip} update={update} />}
+      {clip.type === "impact" && <ImpactEditor clip={clip} update={update} />}
+      {clip.type !== "media" && clip.type !== "sfx" && (
         <div className={group}>
           <h3 className={groupTitle}>
             <Icon.clock size={12} /> Tempo
@@ -112,8 +113,20 @@ function ClipEditor({ clip }: { clip: Clip }) {
             if (!apply([{ op: "delete_clip", clipId: clip.id }])) useEditor.getState().select(null);
           }}
         >
-          <Icon.trash size={14} /> {clip.type === "media" ? "Apagar clip" : clip.type === "zoom" ? "Apagar zoom" : clip.type === "broll" ? "Tirar do vídeo" : "Apagar componente"}
+          <Icon.trash size={14} /> {clip.type === "media" ? "Apagar e fechar o buraco (ripple)" : clip.type === "zoom" ? "Apagar zoom" : clip.type === "broll" ? "Tirar do vídeo" : clip.type === "sfx" ? "Apagar som" : clip.type === "impact" ? "Apagar impacto" : "Apagar componente"}
         </button>
+        {clip.type === "media" && (
+          <button
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/5"
+            data-testid="lift-delete"
+            title="Shift+Delete"
+            onClick={() => {
+              if (!apply([{ op: "delete_clip", clipId: clip.id, ripple: false }])) useEditor.getState().select(null);
+            }}
+          >
+            Apagar e deixar a lacuna
+          </button>
+        )}
       </div>
     </>
   );
@@ -440,9 +453,114 @@ function ZoomEditor({ clip, update }: { clip: ZoomClip; update: (p: Update) => v
         <Slider label="Foco horizontal" value={clip.x} min={0} max={1} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onCommit={(x) => update({ x })} />
         <Slider label="Foco vertical" value={clip.y} min={0} max={1} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onCommit={(y) => update({ y })} />
         <Slider label="Suavização" value={clip.ease} min={0} max={1.5} step={0.05} format={(v) => (v === 0 ? "corte seco" : `${v.toFixed(2)}s`)} onCommit={(ease) => update({ ease })} />
+        <label className="block text-xs text-zinc-400">
+          Curva do movimento
+          <select className="mt-1 w-full rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-xs text-zinc-100" value={clip.easing} onChange={(e) => update({ easing: e.target.value as ZoomClip["easing"] })}>
+            <option value="swift">Decidida (cubic-bezier)</option>
+            <option value="ease_out">Suave (ease-out)</option>
+            <option value="spring">Mola física (spring)</option>
+          </select>
+        </label>
+        <p className="text-[11px] leading-relaxed text-zinc-500">{clip.follow ? "Este zoom acompanha o sujeito detectado. Mexer no foco passa a fixá-lo num ponto." : "Foco fixo num ponto do quadro."}</p>
         <Slider label="Deslocamento lateral" value={clip.panX} min={-0.5} max={0.5} step={0.01} format={(v) => (v === 0 ? "centro" : v < 0 ? `${Math.round(-v * 100)}% esq.` : `${Math.round(v * 100)}% dir.`)} onCommit={(panX) => update({ panX })} />
       </div>
     </>
+  );
+}
+
+// ---------- Clip de vídeo: volume e velocidade ----------
+
+const SPEEDS = [0.5, 0.75, 1, 1.5, 2];
+
+function MediaEditor({ clip, update }: { clip: MediaClip; update: (p: Update) => void }) {
+  const apply = useEditor((s) => s.apply);
+  const speed = hasSpeed(clip) ? rateAverage(clip) : 1;
+  const ramp = (rate: number) => {
+    // A rampa vale para o trecho de origem deste clip; a duração na timeline acompanha.
+    if (!apply([{ op: "speed_ramp", start: clip.start, duration: clip.duration, rate }])) useEditor.getState().select(null);
+  };
+  return (
+    <>
+      <div className={group}>
+        <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onCommit={(volume) => update({ volume })} />
+      </div>
+      <div className={group} data-testid="speed-editor">
+        <h3 className={groupTitle}>
+          <Icon.clock size={12} /> Velocidade
+        </h3>
+        <div className="grid grid-cols-5 gap-1.5">
+          {SPEEDS.map((v) => (
+            <button
+              key={v}
+              aria-pressed={!clip.speedRamp && Math.abs(speed - v) < 0.01}
+              onClick={() => update({ speed: v })}
+              className={`rounded-lg border px-1 py-1.5 text-[11.5px] font-medium transition ${!clip.speedRamp && Math.abs(speed - v) < 0.01 ? "border-brand-400 bg-brand-500/15 text-white" : "border-line bg-ink-900/60 text-zinc-300 hover:border-line-strong"}`}
+            >
+              {v}×
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => ramp(0.5)} className="rounded-xl border border-line bg-ink-900/60 px-3 py-2 text-left transition hover:border-brand-400/60" data-testid="ramp-slow">
+            <span className="block text-xs font-medium text-zinc-100">Rampa: câmera lenta</span>
+            <span className="block text-[10.5px] text-zinc-500">entra em 1×, segura 0,5×, volta</span>
+          </button>
+          <button onClick={() => ramp(1.8)} className="rounded-xl border border-line bg-ink-900/60 px-3 py-2 text-left transition hover:border-brand-400/60" data-testid="ramp-fast">
+            <span className="block text-xs font-medium text-zinc-100">Rampa: acelerar</span>
+            <span className="block text-[10.5px] text-zinc-500">entra em 1×, segura 1,8×, volta</span>
+          </button>
+        </div>
+        <p className="text-[11px] leading-relaxed text-zinc-500">
+          {clip.speedRamp ? `Rampa ativa (${clip.speedRamp.map((p) => `${p.rate}×`).join(" → ")}): ` : ""}
+          {sourceSpan(clip).toFixed(1)}s do vídeo original em {clip.duration.toFixed(1)}s na timeline. O áudio acompanha, com transição suave.
+        </p>
+      </div>
+      <div className={group}>
+        <p className="text-[11px] leading-relaxed text-zinc-500">Arraste o clip para movê-lo (pode deixar lacunas ou soltar entre dois clips). Arraste as bordas para encurtar ou recuperar material. “Dividir aqui” separa em dois.</p>
+      </div>
+    </>
+  );
+}
+
+// ---------- Som e impacto ----------
+
+function SfxEditor({ clip, update }: { clip: SfxClip; update: (p: Update) => void }) {
+  return (
+    <div className={group}>
+      <label className="block text-xs text-zinc-400">
+        Som
+        <select className="mt-1 w-full rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-xs text-zinc-100" value={clip.sfx} onChange={(e) => update({ sfx: e.target.value })}>
+          {Object.keys(SFX_CATALOG).map((id) => (
+            <option key={id} value={id}>
+              {id.replace(/_/g, " ")}
+            </option>
+          ))}
+        </select>
+      </label>
+      <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onCommit={(volume) => update({ volume })} />
+      <Num label="Pico em (s)" value={clip.start} min={0} max={36000} step={0.05} onCommit={(start) => update({ start })} />
+      <p className="text-[11px] leading-relaxed text-zinc-500">O pico do som cai exatamente neste instante. Arraste o bloco na timeline para sincronizar com um corte ou um impacto.</p>
+    </div>
+  );
+}
+
+function ImpactEditor({ clip, update }: { clip: ImpactClip; update: (p: Update) => void }) {
+  const kinds = [
+    { id: "both" as const, name: "Flash + tremida" },
+    { id: "flash" as const, name: "Só flash" },
+    { id: "shake" as const, name: "Só tremida" },
+  ];
+  return (
+    <div className={group}>
+      <div className="grid grid-cols-3 gap-1.5">
+        {kinds.map((k) => (
+          <button key={k.id} aria-pressed={clip.kind === k.id} onClick={() => update({ kind: k.id })} className={`rounded-lg border px-1 py-1.5 text-[11px] font-medium transition ${clip.kind === k.id ? "border-orange-300 bg-orange-400/15 text-white" : "border-line bg-ink-900/60 text-zinc-300"}`}>
+            {k.name}
+          </button>
+        ))}
+      </div>
+      <Slider label="Intensidade" value={clip.intensity} min={0.1} max={2} step={0.05} format={(v) => `${Math.round(v * 100)}%`} onCommit={(intensity) => update({ intensity })} />
+    </div>
   );
 }
 

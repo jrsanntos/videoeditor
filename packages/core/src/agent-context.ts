@@ -1,6 +1,8 @@
-import type { Project, TimeRange } from "./schema";
+import { GENRE_NAMES, type Project, type StyleReferenceProfile, type TimeRange } from "./schema";
 import { findRetakes } from "./retakes";
-import { clipEnd, contextAssets, projectDuration, subjectAt, timelineWords, type TimelineWord } from "./timeline";
+import { clipEnd, contextAssets, hasSpeed, mainClips, mainGaps, projectDuration, projectGenre, r3, sourceEnd, subjectAt, timelineWords, type TimelineWord } from "./timeline";
+import { timelineActionRanges, timelinePeaks, voiceRanges } from "./analysis";
+import { isCloseUp } from "./layout";
 
 /**
  * Serializa o estado da timeline em texto compacto para o agente.
@@ -35,7 +37,12 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
         ? "Tarja de nome/cargo: disponível (executive_lower_third sem params)."
         : "Tarja de nome/cargo: indisponível (sem nome no Brand Kit). Não use e não trate como pendência: abra o vídeo com outro recurso.",
   );
+  lines.push(...genreLines(project));
   lines.push(...framingLines(project));
+  lines.push(
+    `Acabamento atual: tratamento de cor ${project.look.grade}${project.look.vignette ? `, vinheta ${project.look.vignette}` : ""}${project.look.letterbox ? `, letterbox ${project.look.letterbox}` : ""}; trilha de fundo ${project.music.assetId ?? project.music.mood}${project.music.mood !== "none" || project.music.assetId ? (project.music.duck ? " com ducking" : " sem ducking") : ""}.`,
+  );
+  if (project.styleReference) lines.push("", ...styleReferenceLines(project.styleReference));
   lines.push(`Legendas: ${project.captions.enabled ? "ligadas" : "desligadas"} (${JSON.stringify(project.captions.style)})`);
   if (selection)
     lines.push(
@@ -56,7 +63,11 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
           ? `  ${c.id} [${where}] ${c.duration}s zoom ${c.scale}x foco(${c.x},${c.y}) ease ${c.ease}`
           : c.type === "broll"
             ? `  ${c.id} [${where}] ${c.duration}s mídia de contexto ${c.assetId} (${c.layout})`
-            : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
+            : c.type === "sfx"
+              ? `  ${c.id} [${where}] efeito sonoro ${c.sfx} em ${c.start}s`
+              : c.type === "impact"
+                ? `  ${c.id} [${where}] impacto de câmera ${c.kind} em ${c.start}s`
+                : `  ${c.id} [${where}] ${c.duration}s componente ${c.component} ${JSON.stringify(c.params)}`,
       );
     }
   }
@@ -71,9 +82,11 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
       ...media.map((a) => `  ${a.id} | ${a.kind === "image" ? "imagem" : `vídeo de ${Math.round(a.duration * 10) / 10}s`} | ${a.name}${a.description ? ` — ${a.description}` : ""}`),
     );
 
+  lines.push(...actionMapLines(project, selection));
+
   lines.push("", "## Transcrição");
   if (!words.length) {
-    lines.push("(sem transcrição disponível neste trecho)");
+    lines.push("(sem fala neste trecho: ancore pelo tempo do vídeo bruto com atSource/untilSource, usando o mapa de ação acima)");
     return lines.join("\n");
   }
 
@@ -131,6 +144,77 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
   return lines.join("\n");
 }
 
+/** Gênero editorial e o playbook que ele pede. */
+function genreLines(project: Project): string[] {
+  const genre = projectGenre(project);
+  if (!genre) return ["Gênero: não classificado (análise do vídeo indisponível). Deduza pela transcrição: muita fala contínua = talking_head."];
+  const first = mainClips(project)[0];
+  const reason = (first && project.assets[first.assetId]?.analysis?.reason) || "";
+  const playbook: Record<typeof genre, string> = {
+    talking_head: "Playbook de fala: limpe a fala, cortes nas pausas, ênfase onde a voz enfatiza.",
+    action_cinematic:
+      "Playbook de AÇÃO: a edição segue a imagem, não as palavras. NÃO corte pausas sem fala. Use rampas de velocidade (speed_ramp 0.4–0.6 na tensão e no impacto; 1.4–2.0 nos deslocamentos), tratamento de cor (set_look), trilha (set_music action) e SFX/impactos nos picos. Zooms só com motivo: no sujeito, num pico de energia.",
+    tutorial_demo: "Playbook de demonstração: preserve os passos; zooms no detalhe mostrado, callouts e indicador de etapas; legendas discretas embaixo.",
+    vlog_montage: "Playbook de montagem: cortes rítmicos nos picos de energia e mudanças de plano, trilha animada, textos curtos.",
+  };
+  return [`Gênero: ${genre} (${GENRE_NAMES[genre]})${project.genre ? " — definido pelo usuário" : ""}. ${reason}`, playbook[genre]];
+}
+
+/** Referência de inspiração (YouTube) resumida para o Diretor. */
+export function styleReferenceLines(ref: StyleReferenceProfile): string[] {
+  const lines = [
+    "## Referência de inspiração (YouTube)",
+    `"${ref.title}"${ref.channel ? ` — ${ref.channel}` : ""}${ref.durationSec ? ` — ${Math.round(ref.durationSec)}s` : ""}. O usuário quer este RITMO e ESTILO aplicados ao vídeo dele; não copie o conteúdo.`,
+    `Ritmo: ${ref.pacing.cutsPerMin ? `~${ref.pacing.cutsPerMin} cortes/min, ` : ""}${ref.pacing.avgShotSec ? `plano médio de ${ref.pacing.avgShotSec}s, ` : ""}${ref.pacing.wordsPerMin ? `fala a ${ref.pacing.wordsPerMin} palavras/min, ` : ""}energia ${ref.pacing.energy}.`,
+  ];
+  if (ref.cutStyle) lines.push(`Cortes: ${ref.cutStyle}`);
+  if (ref.structure.length) lines.push(`Estrutura: ${ref.structure.map((s) => `${Math.round(s.t)}s ${s.title}`).join(" → ")}`);
+  if (ref.palette.length) lines.push(`Cores: ${ref.palette.join(", ")}`);
+  if (ref.typography) lines.push(`Tipografia: ${ref.typography}`);
+  if (ref.captions) lines.push(`Legendas: ${ref.captions}`);
+  if (ref.guidelines.length) lines.push("Diretrizes:", ...ref.guidelines.map((g) => `- ${g}`));
+  return lines;
+}
+
+/**
+ * Mapa de ação: o que o vídeo tem além da fala. Clips da trilha principal em
+ * tempo de origem, lacunas, trechos de alta atividade visual e os picos de
+ * energia — tudo ancorável com atSource.
+ */
+function actionMapLines(project: Project, selection?: TimeRange | null): string[] {
+  const clips = [...mainClips(project)].sort((a, b) => a.start - b.start);
+  const hasAnalysis = clips.some((c) => project.assets[c.assetId]?.analysis);
+  if (!clips.length) return ["", "## Trilha principal", "(vazia: composição sem vídeo. Componentes, textos e sons podem ser posicionados livremente.)"];
+  const inScope = (t: number) => !selection || (t >= selection.start && t <= selection.end);
+  const lines = ["", "## Vídeo (trilha principal) — tempos do vídeo BRUTO"];
+  if (clips.length <= 40)
+    for (const c of clips)
+      if (!selection || (clipEnd(c) > selection.start && c.start < selection.end))
+        lines.push(`  ${c.id} | bruto ${c.sourceStart}–${sourceEnd(c)}s | timeline ${c.start}–${clipEnd(c)}s${hasSpeed(c) ? ` | velocidade ${c.speedRamp ? `rampa ${c.speedRamp.map((p) => `${p.rate}x`).join("→")}` : `${c.speed}x`}` : ""}`);
+  else lines.push(`  ${clips.length} clips, do bruto ${clips[0]!.sourceStart}s ao ${sourceEnd(clips[clips.length - 1]!)}s`);
+  const gaps = mainGaps(project);
+  if (gaps.length) lines.push(`Lacunas (tela preta, deixadas de propósito): ${gaps.map((g) => `${g.start}–${g.end}s`).join(", ")}`);
+  if (!hasAnalysis) return lines;
+  const voice = voiceRanges(project);
+  const total = projectDuration(project);
+  const spoken = voice.reduce((s, r) => s + r.end - r.start, 0);
+  lines.push(`Voz ativa em ${Math.round((spoken / Math.max(total, 0.001)) * 100)}% da timeline.`);
+  const action = timelineActionRanges(project).filter((r) => inScope(r.start) || inScope(r.end));
+  if (action.length) lines.push(`Alta atividade visual (não cortar como silêncio), timeline: ${action.slice(0, 14).map((r) => `${r.start}–${r.end}s`).join(", ")}`);
+  const peaks = timelinePeaks(project)
+    .filter((p) => inScope(p.t))
+    .slice(0, 14)
+    .sort((a, b) => a.t - b.t);
+  if (peaks.length)
+    lines.push(
+      "Picos de energia (atSource = tempo no bruto | tipo | força 0–1) — é onde impactos, SFX, câmera lenta e cortes rendem mais:",
+      ...peaks.map((p) => `  atSource ${p.source} | ${p.kind === "both" ? "visual+áudio" : p.kind === "visual" ? "visual" : "áudio"} | ${p.strength}`),
+    );
+  const cuts = clips.flatMap((c) => (project.assets[c.assetId]?.analysis?.cuts ?? []).filter((t) => t >= c.sourceStart && t < sourceEnd(c)));
+  if (cuts.length) lines.push(`Mudanças de plano no bruto: ${cuts.slice(0, 30).map((t) => `${r3(t)}s`).join(", ")}`);
+  return lines;
+}
+
 /** Onde o apresentador está no quadro e quanto espaço sobra para texto. */
 function framingLines(project: Project): string[] {
   const duration = projectDuration(project);
@@ -151,6 +235,9 @@ function framingLines(project: Project): string[] {
         ? "Quase não há lateral livre: componentes laterais (acronym_list) exigem pan de câmera para o lado oposto, ou use a parte de baixo."
         : `Lado mais livre: ${left > right ? "esquerda" : "direita"} — é onde componentes laterais atrapalham menos.`
     } Zooms sem x/y já fecham no rosto.`,
+    ...(at.some((b) => isCloseUp(b))
+      ? ["CLOSE-UP: o rosto ocupa mais de 35% da altura do quadro (ou está cortado na borda). Texto atrás da cabeça fica ilegível: a plataforma troca sozinha por um cartão em primeiro plano fora do rosto; prefira textos curtos na área livre."]
+      : []),
   ];
 }
 

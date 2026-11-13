@@ -1,5 +1,69 @@
 import type { BrandKit } from "@videoeditor/core";
-import { type Ctx2D, rgba } from "./draw";
+import { clamp01, type Ctx2D, EASE, rgba, supportsFilter } from "./draw";
+
+/**
+ * Vinheta dinâmica: escurece as bordas e respira com a energia da cena
+ * (`energy` 0–1: movimento medido no vídeo). Em cena parada fica mais aberta;
+ * no pico de ação fecha e concentra o olhar.
+ */
+export function drawVignette(ctx: Ctx2D, width: number, height: number, amount: number, energy = 0, t = 0) {
+  if (amount <= 0) return;
+  const size = Math.max(width, height);
+  const breathe = 0.03 * Math.sin(t * 0.9);
+  const k = clamp01(amount * (0.72 + 0.28 * clamp01(energy)) + breathe * amount);
+  ctx.save();
+  const g = ctx.createRadialGradient(width / 2, height / 2, size * (0.34 - 0.08 * k), width / 2, height / 2, size * 0.78);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(0.6, `rgba(0,0,0,${(0.28 * k).toFixed(3)})`);
+  g.addColorStop(1, `rgba(0,0,0,${(0.86 * k).toFixed(3)})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
+}
+
+/** Altura (px) de cada barra cinemática em `t`: entra animada no começo do vídeo e sai no fim. */
+export function letterboxHeight(amount: number, height: number, t: number, duration: number): number {
+  if (amount <= 0) return 0;
+  const k = Math.min(EASE.snap(clamp01(t / 0.9)), duration > 2 ? EASE.snap(clamp01((duration - t) / 0.6)) : 1);
+  return Math.round(height * amount * k);
+}
+
+/** Barras cinemáticas (letterbox) animadas, por cima do vídeo. */
+export function drawLetterbox(ctx: Ctx2D, width: number, height: number, amount: number, t: number, duration: number) {
+  const h = letterboxHeight(amount, height, t, duration);
+  if (h <= 0) return;
+  ctx.save();
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, width, h);
+  ctx.fillRect(0, height - h, width, h);
+  ctx.restore();
+}
+
+/**
+ * Desfoca o que já está desenhado dentro de um retângulo arredondado
+ * (backdrop blur de cartão). Coordenadas em pixels do quadro. Sem ctx.filter,
+ * cai num escurecimento simples — o cartão continua legível.
+ */
+export function backdropBlur(ctx: Ctx2D, x: number, y: number, w: number, h: number, radius: number, blur: number) {
+  const canvas = (ctx as { canvas?: CanvasImageSource & { width: number; height: number } }).canvas;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, radius);
+  ctx.clip();
+  if (canvas && supportsFilter(ctx)) {
+    ctx.filter = `blur(${Math.max(1, blur).toFixed(1)}px)`;
+    try {
+      ctx.drawImage(canvas, 0, 0);
+    } catch {
+      // contexto sem canvas legível: fica só o escurecimento abaixo
+    }
+    ctx.filter = "none";
+  }
+  ctx.fillStyle = "rgba(8,10,14,0.38)";
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
 
 /**
  * Fundo das cenas de tela cheia: a cor de fundo do Brand Kit com linhas

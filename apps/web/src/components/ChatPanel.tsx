@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, type SkillId } from "@videoeditor/core";
-import { askAgent, runSkill } from "@/lib/actions";
-import { useEditor, type EditPlan } from "@/lib/store";
+import { askAgent, confirmPlan, discardPlan, revisePlan, runSkill } from "@/lib/actions";
+import { useEditor, type ChatMessage, type EditPlan } from "@/lib/store";
 import { formatTime } from "./Player";
 import { Icon } from "./ui";
 
@@ -12,11 +12,13 @@ const SUGGESTIONS = ["Revise os erros de gravação e corte os takes ruins", "Ap
 const SKILL_ICON: Record<SkillId, React.ReactNode> = {
   viral: <Icon.bolt size={15} />,
   autoridade: <Icon.shield size={15} />,
-  vsl: <Icon.chart size={15} />,
+  acao: <Icon.film size={15} />,
   limpeza: <Icon.wand size={15} />,
 };
 
-const ROLE: Record<string, string> = { gancho: "Gancho", contexto: "Contexto", desenvolvimento: "Desenvolvimento", virada: "Virada", prova: "Prova", climax: "Clímax", cta: "Chamada para ação" };
+const ACT: Record<EditPlan["capitulos"][number]["ato"], string> = { gancho: "Gancho", desenvolvimento: "Desenvolvimento", climax: "Clímax", fecho: "Fecho" };
+const ACTS = Object.keys(ACT) as (keyof typeof ACT)[];
+const SPEED: Record<string, string> = { camera_lenta: "câmera lenta", acelerado: "acelerado", mista: "rampas de velocidade" };
 const ENERGY: Record<string, string> = { alta: "bg-rose-400", media: "bg-amber-300", baixa: "bg-sky-300" };
 
 export function ChatPanel() {
@@ -95,7 +97,7 @@ export function ChatPanel() {
               </button>
             ))}
             <p className="pt-2 text-[11px] leading-relaxed text-zinc-600">
-              Edição completa: {formatCredits(fullCost)} créditos neste vídeo — a IA analisa a fala, a voz e o enquadramento, monta um plano de ritmo e revisa o resultado. Ajuste pontual: {PRICING.adjust} crédito. Só é cobrado quando a
+              Edição completa: {formatCredits(fullCost)} créditos neste vídeo — o Diretor analisa fala, movimento e som e propõe um plano por atos; você confirma; o Editor monta e o Crítico revisa. Ajuste pontual: {PRICING.adjust} crédito. Só é cobrado quando a
               timeline muda.
             </p>
           </div>
@@ -103,7 +105,7 @@ export function ChatPanel() {
         {chat.map((m) => (
           <div key={m.id} className={m.role === "user" ? "flex justify-end" : ""}>
             {m.plan ? (
-              <PlanCard plan={m.plan} />
+              <PlanCard message={m} />
             ) : (
               <div
                 className={`max-w-[92%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ${
@@ -176,32 +178,94 @@ export function ChatPanel() {
   );
 }
 
-/** O plano do agente: o que ele entendeu do vídeo e o mapa de ritmo que vai executar. */
-function PlanCard({ plan }: { plan: EditPlan }) {
+/**
+ * O plano do Diretor: o vídeo em quatro atos, com o acabamento escolhido.
+ * Enquanto está pendente, pede a confirmação rápida antes de qualquer edição
+ * (e de qualquer crédito); o usuário pode aprovar, pedir um ajuste ou descartar.
+ */
+function PlanCard({ message }: { message: ChatMessage }) {
+  const plan = message.plan!;
+  const busy = useEditor((s) => s.busy);
+  const [note, setNote] = useState("");
+  const [adjusting, setAdjusting] = useState(false);
+  const pending = !!message.pending;
+  // Fora de ordem no plano? Agrupa por ato, mantendo a ordem dos trechos dentro de cada um.
+  const acts = ACTS.map((ato) => ({ ato, items: plan.capitulos.filter((c) => c.ato === ato) })).filter((a) => a.items.length);
   return (
-    <div className="w-full rounded-2xl border border-brand-500/25 bg-brand-500/[0.06] p-3.5" data-testid="plan">
+    <div className={`w-full rounded-2xl border p-3.5 ${pending ? "border-brand-400/60 bg-brand-500/[0.1] ring-4 ring-brand-500/10" : "border-brand-500/25 bg-brand-500/[0.06]"}`} data-testid="plan">
       <p className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-brand-300">
-        <Icon.sparkles size={12} /> Plano de edição
+        <Icon.sparkles size={12} /> Plano do Diretor{pending ? " · aguardando você" : ""}
       </p>
-      <p className="mt-2 text-[12.5px] leading-relaxed text-zinc-200">{plan.diagnostico}</p>
+      <p className="mt-2 text-[13px] font-medium leading-snug text-white">{plan.resumo}</p>
+      <p className="mt-1.5 flex flex-wrap gap-1.5 text-[10.5px] text-zinc-300">
+        {plan.estilo.look !== "none" && <span className="rounded-md bg-white/8 px-1.5 py-0.5">cor: {plan.estilo.look.replace(/_/g, " ")}</span>}
+        {plan.estilo.musica !== "none" && <span className="rounded-md bg-white/8 px-1.5 py-0.5">trilha: {plan.estilo.musica}</span>}
+        {plan.estilo.legenda && <span className="rounded-md bg-white/8 px-1.5 py-0.5">legenda: {plan.estilo.legenda.replace(/_/g, " ")}</span>}
+      </p>
+      <details className="mt-2" open={!pending}>
+        <summary className="cursor-pointer text-[11px] text-zinc-400 hover:text-zinc-200">Diagnóstico e detalhes</summary>
+        <p className="mt-2 text-[12.5px] leading-relaxed text-zinc-200">{plan.diagnostico}</p>
       {plan.cortes && plan.cortes.toLowerCase() !== "nenhum" && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-zinc-400">
           <b className="font-medium text-zinc-300">Cortes:</b> {plan.cortes}
         </p>
       )}
-      <ol className="mt-3 space-y-2 border-l border-line pl-3">
-        {plan.capitulos.map((c, i) => (
-          <li key={i} className="relative text-[11.5px] leading-snug">
-            <span className={`absolute -left-[16px] top-1 h-1.5 w-1.5 rounded-full ${ENERGY[c.energia] ?? "bg-zinc-400"}`} title={`energia ${c.energia}`} />
-            <span className="font-semibold text-zinc-100">{ROLE[c.papel] ?? c.papel}</span>
-            <span className="text-zinc-500">
-              {" "}
-              · {c.zooms} zoom{c.zooms === 1 ? "" : "s"}, {c.componentes} motion
-            </span>
-            <span className="mt-0.5 block text-zinc-400">{c.tratamento}</span>
-          </li>
+      </details>
+      <div className="mt-3 space-y-2.5">
+        {acts.map(({ ato, items }) => (
+          <div key={ato} data-testid={`act-${ato}`}>
+            <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-400">{ACT[ato]}</p>
+            <ol className="mt-1 space-y-1.5 border-l border-line pl-3">
+              {items.map((c, i) => (
+                <li key={i} className="relative text-[11.5px] leading-snug">
+                  <span className={`absolute -left-[16px] top-1 h-1.5 w-1.5 rounded-full ${ENERGY[c.energia] ?? "bg-zinc-400"}`} title={`energia ${c.energia}`} />
+                  <span className="font-semibold text-zinc-100">{c.titulo}</span>
+                  <span className="text-zinc-500">
+                    {" "}
+                    · {[c.zooms ? `${c.zooms} zoom${c.zooms === 1 ? "" : "s"}` : "", c.componentes ? `${c.componentes} motion` : "", c.sons ? `${c.sons} som${c.sons === 1 ? "" : "s"}` : "", SPEED[c.velocidade] ?? ""].filter(Boolean).join(", ") || "tela limpa"}
+                  </span>
+                  <span className="mt-0.5 block text-zinc-400">{c.tratamento}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
         ))}
-      </ol>
+      </div>
+      {pending && (
+        <div className="mt-3 border-t border-line pt-3">
+          {adjusting ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void revisePlan(message.id, note);
+              }}
+            >
+              <input autoFocus value={note} onChange={(e) => setNote(e.target.value)} placeholder="O que mudar? Ex.: menos texto, mais câmera lenta" className="w-full rounded-lg border border-line bg-ink-900 px-2.5 py-2 text-xs text-zinc-100 outline-none focus:border-brand-400" data-testid="plan-note" />
+              <div className="mt-2 flex gap-2">
+                <button type="submit" disabled={!note.trim() || !!busy} className="btn-brand flex-1 rounded-lg px-3 py-2 text-xs font-semibold">
+                  Refazer o plano
+                </button>
+                <button type="button" onClick={() => setAdjusting(false)} className="rounded-lg border border-line px-3 py-2 text-xs text-zinc-300">
+                  Voltar
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => void confirmPlan(message.id)} disabled={!!busy} className="btn-brand flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold" data-testid="plan-confirm">
+                <Icon.check size={14} /> Confirmar e editar
+              </button>
+              <button onClick={() => setAdjusting(true)} disabled={!!busy} className="rounded-lg border border-line-strong px-3 py-2 text-xs text-zinc-200 hover:bg-white/5" data-testid="plan-adjust">
+                Ajustar
+              </button>
+              <button onClick={() => discardPlan(message.id)} className="rounded-lg px-2 py-2 text-xs text-zinc-500 hover:text-zinc-200" aria-label="Descartar o plano" title="Descartar">
+                <Icon.x size={14} />
+              </button>
+            </div>
+          )}
+          <p className="mt-2 text-[10.5px] text-zinc-500">Nada foi alterado nem cobrado ainda. A edição só começa quando você confirmar.</p>
+        </div>
+      )}
     </div>
   );
 }
