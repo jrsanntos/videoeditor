@@ -1,7 +1,7 @@
 import { PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
 import { Icon } from "./icons";
-import { Reel } from "./LandingReel";
 import { LandingStyles } from "./LandingStyles";
+import { LandingUpload } from "./LandingUpload";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
 const videos = (credits: number) => {
@@ -14,8 +14,8 @@ const h2 = "lp-display mt-4 text-[32px] font-semibold leading-[1.08] sm:text-[46
 const lead = "mt-5 max-w-xl text-[17.5px] leading-relaxed text-haze";
 
 const STEPS = [
-  { title: "Envie o vídeo bruto", text: "Arraste o arquivo gravado no celular ou na câmera. Ele fica no seu navegador: o vídeo original não sobe para nenhum servidor." },
-  { title: "A IA dirige a edição", text: "Ela limpa a fala, entende do que o vídeo trata, planeja o ritmo do gancho ao fecho e monta zooms, legendas e motion design." },
+  { title: "Envie aqui mesmo", text: "Arraste o vídeo gravado no celular ou na câmera para esta página. Em segundos você vê o seu vídeo no estilo escolhido e as pausas que vão sair, sem conta e sem custo." },
+  { title: "Crie a conta e deixe a IA editar", text: `Com Google em um clique ou e-mail. Você ganha ${SIGNUP_CREDITS} créditos e a IA começa na hora: limpa a fala, planeja o ritmo e monta zooms, legendas e motion design.` },
   { title: "Ajuste e exporte", text: "Mude o que quiser na timeline ou direto no vídeo, sem gastar créditos, e exporte em MP4 pelo próprio navegador." },
 ];
 
@@ -36,7 +36,7 @@ const CHAPTERS = [
 const FAQ = [
   {
     q: "Preciso saber editar vídeo?",
-    a: "Não. Você envia o vídeo, clica em Limpeza automática e escolhe um estilo de edição. Se quiser mexer em algo, é só clicar no bloco na timeline ou arrastar o texto no próprio vídeo.",
+    a: "Não. Você envia o vídeo, escolhe um estilo e a IA entrega editado. Se preferir fazer do seu jeito, abra direto no editor: clique num bloco da timeline ou arraste o texto no próprio vídeo.",
   },
   {
     q: "O meu vídeo é enviado para algum servidor?",
@@ -48,7 +48,7 @@ const FAQ = [
   },
   {
     q: "Posso testar sem pagar?",
-    a: `Sim. Ao criar a conta você ganha ${SIGNUP_CREDITS} créditos, sem cartão: o suficiente para editar seus primeiros vídeos e ver o resultado.`,
+    a: `Sim. Envie o vídeo nesta página e veja a prévia do estilo e as pausas encontradas sem criar conta. Para a IA editar, crie a conta grátis (com Google ou e-mail): você ganha ${SIGNUP_CREDITS} créditos, sem cartão, o suficiente para os primeiros vídeos.`,
   },
   {
     q: "Para que tipo de vídeo serve?",
@@ -61,6 +61,7 @@ const FAQ = [
 ];
 
 const NAV = [
+  ["#enviar", "Testar agora"],
   ["#estilos", "Estilos"],
   ["#como-funciona", "Como funciona"],
   ["#recursos", "Recursos"],
@@ -69,8 +70,7 @@ const NAV = [
 ];
 
 /** Página inicial pública: abertura, estilos, como funciona, recursos, planos e perguntas frequentes. */
-export function Landing({ loggedIn }: { loggedIn: boolean }) {
-  const cta = loggedIn ? { href: "/app", label: "Abrir o editor" } : { href: "/login?modo=cadastro", label: "Começar grátis" };
+export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boolean }) {
   return (
     <div className="lp min-h-screen overflow-x-clip pt-3 sm:pt-5">
       <header className={`${wrap} sticky top-3 z-40`}>
@@ -91,60 +91,50 @@ export function Landing({ loggedIn }: { loggedIn: boolean }) {
                 Entrar
               </a>
             )}
-            <a href={cta.href} className="lp-btn lp-btn-primary !px-5 !py-3 text-[14.5px]" data-testid="nav-cta">
-              {cta.label}
+            <a href={loggedIn ? "/app" : "/login?modo=cadastro"} className="lp-btn lp-btn-primary !px-5 !py-3 text-[14.5px]" data-testid="nav-cta">
+              {loggedIn ? "Abrir o editor" : "Criar conta grátis"}
             </a>
           </div>
         </nav>
       </header>
 
       <main>
-        {/* Abertura */}
-        <section className={`${wrap} mt-6 sm:mt-10`}>
-          <div className="overflow-hidden rounded-[28px] border border-edge bg-[linear-gradient(130deg,rgba(246,76,255,0.09),rgba(89,255,205,0.07))] shadow-[0_20px_40px_rgba(0,0,0,0.4)]">
-            <div className="grid lg:grid-cols-[1.05fr_1fr]">
-              <div className="p-7 sm:p-12 lg:py-16 lg:pl-16 lg:pr-4">
-                <p className="lp-overline">Edição de vídeo falado · com IA</p>
-                <h1 className="lp-display mt-4 text-[40px] font-semibold leading-[1.04] sm:text-[58px]">
-                  Você grava.
-                  <br />A IA dirige a edição.
-                </h1>
-                <p className="mt-6 max-w-[520px] text-[18px] leading-relaxed text-haze">
-                  Do vídeo bruto ao vídeo pronto para publicar: cortes, zooms, legendas e motion design montados a partir da sua fala. Você revisa, ajusta o que quiser e exporta.
-                </p>
-                <div className="mt-9 flex flex-wrap gap-3">
-                  <a href={cta.href} className="lp-btn lp-btn-primary text-[16px]" data-testid="hero-cta">
-                    {cta.label}
-                  </a>
-                  <a href="#estilos" className="lp-btn lp-btn-outline text-[16px]">
-                    Ver os estilos
-                  </a>
-                </div>
-                <dl className="mt-12 grid max-w-[520px] grid-cols-3 gap-4">
-                  {[
-                    ["Créditos grátis", String(SIGNUP_CREDITS)],
-                    ["Estilos de edição", String(Object.keys(SKILLS).length)],
-                    ["Para exportar", "R$ 0"],
-                  ].map(([k, v]) => (
-                    <div key={k}>
-                      <dt className="text-[11.5px] uppercase leading-snug tracking-[0.18em] text-haze">{k}</dt>
-                      <dd className="lp-display mt-2 text-[30px] font-semibold leading-none sm:text-[36px]">{v}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-
-              <div className="relative h-[430px] sm:h-[520px] lg:h-auto lg:min-h-[600px]" aria-hidden>
-                <div className="absolute left-1/2 top-1/2 w-[180%] -translate-x-1/2 -translate-y-1/2 -rotate-[54deg] space-y-4">
-                  <Ribbon items={["Corta os erros", "Planeja o ritmo", "Anima na palavra exata"]} />
-                  <Ribbon items={["Reels", "Shorts", "TikTok", "Aulas", "Vídeos de vendas"]} reverse />
-                </div>
-                <FloatCard style="viral" caption="Viral · gancho + legenda pop" className="left-[2%] top-[13%]" tilt={-3} float={8} />
-                <FloatCard style="acao" caption="Ação · câmera lenta e impacto" className="right-[2%] top-[4%]" tilt={3} float={10} />
-                <FloatCard style="autoridade" caption="Autoridade · dados e ritmo sóbrio" className="bottom-[3%] left-[31.5%]" tilt={0} float={9} />
-              </div>
-            </div>
+        {/* Abertura: o envio do vídeo é o próprio chamado */}
+        <section className={`${wrap} relative mt-10 sm:mt-16`}>
+          <div className="pointer-events-none absolute inset-x-0 -top-10 -z-10 mx-auto h-[420px] max-w-[900px] rounded-full bg-[radial-gradient(closest-side,rgba(246,76,255,0.22),transparent)] blur-2xl" aria-hidden />
+          <div className="mx-auto max-w-[880px] text-center">
+            <p className="lp-overline">Editor de vídeo com IA · para quem fala para a câmera</p>
+            <h1 className="lp-display mt-5 text-[42px] font-semibold leading-[1.02] sm:text-[66px]">
+              Envie o vídeo bruto.
+              <br />
+              <span className="bg-[linear-gradient(100deg,#f64cff,#ffd1ff_45%,#59ffcd)] bg-clip-text text-transparent">Receba pronto para postar.</span>
+            </h1>
+            <p className="mx-auto mt-6 max-w-[640px] text-[18px] leading-relaxed text-haze sm:text-[19px]">
+              Cortes, legendas, zooms e motion design montados a partir da sua fala, no estilo que você escolher. Teste agora com o seu próprio vídeo, sem sair desta página.
+            </p>
+            <ul className="mt-7 flex flex-wrap justify-center gap-x-6 gap-y-2 text-[14.5px] text-haze">
+              {[`${SIGNUP_CREDITS} créditos grátis`, "Sem cartão", "Entre com Google", "O vídeo não sai do seu navegador"].map((t) => (
+                <li key={t} className="flex items-center gap-2">
+                  <Icon.check size={16} className="text-neon-mint" /> {t}
+                </li>
+              ))}
+            </ul>
           </div>
+          <div className="mx-auto mt-10 max-w-[1080px] sm:mt-12">
+            <LandingUpload loggedIn={loggedIn} google={google} />
+          </div>
+          <dl className="mx-auto mt-12 grid max-w-[760px] grid-cols-3 gap-4 text-center">
+            {[
+              ["Créditos grátis", String(SIGNUP_CREDITS)],
+              ["Estilos de edição", String(Object.keys(SKILLS).length)],
+              ["Para exportar", "R$ 0"],
+            ].map(([k, v]) => (
+              <div key={k} className="flex flex-col-reverse">
+                <dt className="mt-2 text-[11.5px] uppercase leading-snug tracking-[0.18em] text-haze">{k}</dt>
+                <dd className="lp-display text-[32px] font-semibold leading-none sm:text-[40px]">{v}</dd>
+              </div>
+            ))}
+          </dl>
         </section>
 
         {/* Estilos */}
@@ -329,10 +319,11 @@ export function Landing({ loggedIn }: { loggedIn: boolean }) {
           <div className="flex flex-col gap-8 rounded-[28px] border border-edge bg-[linear-gradient(120deg,rgba(246,76,255,0.22),rgba(89,255,205,0.14))] p-8 sm:p-14 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="lp-overline">Teste com um vídeo que já está gravado</p>
-              <h2 className="lp-display mt-4 max-w-2xl text-[32px] font-semibold leading-[1.08] sm:text-[46px]">Seu próximo vídeo pode sair editado ainda hoje.</h2>
+              <h2 className="lp-display mt-4 max-w-2xl text-[32px] font-semibold leading-[1.08] sm:text-[46px]">Seu próximo vídeo pode sair editado em minutos.</h2>
+              <p className="mt-4 max-w-xl text-[16.5px] text-haze">Envie, escolha o estilo e veja a prévia agora. A conta só é pedida na hora de a IA processar.</p>
             </div>
-            <a href={cta.href} className="lp-btn lp-btn-primary shrink-0 self-start !px-9 !py-5 text-[17px] lg:self-auto">
-              {cta.label}
+            <a href="#enviar" className="lp-btn lp-btn-primary shrink-0 self-start !px-9 !py-5 text-[17px] lg:self-auto">
+              Enviar meu vídeo
             </a>
           </div>
         </section>
@@ -382,15 +373,6 @@ function Ribbon({ items, reverse, solid }: { items: string[]; reverse?: boolean;
           <span key={i}>{text} ·</span>
         ))}
       </div>
-    </div>
-  );
-}
-
-function FloatCard({ style, caption, className, tilt, float }: { style: keyof typeof SKILLS; caption: string; className: string; tilt: number; float: number }) {
-  return (
-    <div className={`lp-float absolute w-[37%] max-w-[215px] rounded-[20px] border border-edge bg-night-800/90 p-2.5 shadow-[0_20px_40px_rgba(0,0,0,0.45)] sm:p-3 ${className}`} style={{ "--tilt": `${tilt}deg`, "--float": `${float}s` } as React.CSSProperties}>
-      <Reel style={style} />
-      <p className="mt-2.5 truncate px-1 pb-0.5 text-[12px] text-haze sm:text-[13px]">{caption}</p>
     </div>
   );
 }

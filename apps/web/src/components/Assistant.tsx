@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { creditCost, formatCredits, GENRE_NAMES, mainClips, projectDuration, projectGenre, skillForGenre, type SkillId } from "@videoeditor/core";
-import { autoCleanOnly, autoEdit, editManually } from "@/lib/actions";
+import { formatCredits, GENRE_NAMES, projectDuration, projectGenre, skillForGenre, type SkillId } from "@videoeditor/core";
+import { autoCleanOnly, autoEdit, autoEditCost, editManually } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime, togglePlay } from "./Player";
 import { Icon } from "./icons";
@@ -36,26 +36,32 @@ function Choose() {
   const project = useEditor((s) => s.project);
   const credits = useEditor((s) => s.credits);
   const unlimited = useEditor((s) => s.unlimited);
+  const preset = useEditor((s) => s.assistantPick);
   // O modelo sugerido segue o gênero medido no vídeo: cena de ação não começa em "talking-head".
   const genre = project ? projectGenre(project) : null;
   const [picked, setPick] = useState<SkillId | null>(null);
-  const pick = picked ?? skillForGenre(genre);
+  const pick = picked ?? preset ?? skillForGenre(genre);
   if (!project) return null;
-  const asset = project.assets[mainClips(project)[0]?.assetId ?? ""];
-  const transcribed = Boolean(asset?.transcript?.words.length);
-  const ingest = transcribed || !asset ? 0 : creditCost({ type: "ingest", durationSec: asset.duration });
-  const total = ingest + creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) });
+  const total = autoEditCost(project);
   const enough = unlimited || credits >= total;
 
   return (
     <div className={backdrop} role="dialog" aria-label="Edição automática" data-testid="assistant">
-      <div className={`${card} max-w-3xl p-7`}>
+      <div className={`${card} relative max-h-[calc(100vh-2rem)] max-w-3xl overflow-y-auto p-7`}>
+        <button
+          onClick={editManually}
+          className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 transition hover:bg-white/8 hover:text-white"
+          aria-label="Fechar e ir para o editor"
+          title="Fechar e ir para o editor"
+        >
+          <Icon.x size={18} />
+        </button>
         <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-300">
           <Icon.sparkles size={14} /> Vídeo recebido
         </p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white">Como você quer o seu vídeo?</h2>
+        <h2 className="mt-2 pr-10 text-2xl font-semibold tracking-tight text-white">Como você quer editar o seu vídeo?</h2>
         <p className="mt-1.5 text-sm text-zinc-400">
-          Escolha um modelo e a IA edita tudo, do começo ao fim. Depois você ainda pode mudar o que quiser.
+          Deixe a IA editar do começo ao fim num estilo, ou vá direto para o editor e faça do seu jeito. Dá para trocar de ideia depois.
           {genre && (
             <span className="ml-1 text-brand-300" data-testid="genre">
               Detectamos: {GENRE_NAMES[genre]}.
@@ -89,36 +95,44 @@ function Choose() {
           ))}
         </ul>
 
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-          <button className="btn-brand flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-[15px] font-semibold" disabled={!enough} onClick={() => void autoEdit(pick)} data-testid="auto-edit">
-            <Icon.wand size={18} /> Editar meu vídeo automaticamente
-          </button>
-          <div className="text-[12.5px] leading-snug text-zinc-400">
-            {unlimited ? (
-              "Sem custo: conta de administrador."
-            ) : enough ? (
-              <>
-                Usa <b className="font-semibold text-white">{formatCredits(total)} créditos</b> dos seus {formatCredits(credits)}.
-                <br />
-                Leva cerca de um a dois minutos.
-              </>
-            ) : (
-              <>
-                Este vídeo precisa de {formatCredits(total)} créditos e você tem {formatCredits(credits)}.{" "}
-                <a href="/planos" className="font-medium text-brand-300 underline-offset-2 hover:underline">
-                  Ver planos
-                </a>
-              </>
-            )}
+        <div className="mt-6 grid gap-3 sm:grid-cols-[1.25fr_1fr]">
+          <div className="flex flex-col gap-2">
+            <button className="btn-brand flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-[15px] font-semibold" disabled={!enough} onClick={() => void autoEdit(pick)} data-testid="auto-edit">
+              <Icon.wand size={18} /> Editar automaticamente com IA
+            </button>
+            <p className="text-center text-[12px] leading-snug text-zinc-400">
+              {unlimited ? (
+                "Sem custo: conta de administrador."
+              ) : enough ? (
+                <>
+                  Usa <b className="font-semibold text-white">{formatCredits(total)} créditos</b> dos seus {formatCredits(credits)} · cerca de 1 a 2 minutos
+                </>
+              ) : (
+                <>
+                  Precisa de {formatCredits(total)} créditos e você tem {formatCredits(credits)}.{" "}
+                  <a href="/planos" className="font-medium text-brand-300 underline-offset-2 hover:underline">
+                    Ver planos
+                  </a>
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <button
+              className="flex items-center justify-center gap-2 rounded-xl border border-line-strong bg-white/[0.04] px-5 py-3.5 text-[15px] font-semibold text-white transition hover:border-brand-400/60 hover:bg-white/[0.08]"
+              onClick={editManually}
+              data-testid="assistant-manual"
+            >
+              <Icon.scissors size={17} /> Ir para o editor
+            </button>
+            <p className="text-center text-[12px] leading-snug text-zinc-400">Edite por conta própria · grátis, sem créditos</p>
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-4 text-[12.5px]">
-          <button className="text-zinc-300 underline-offset-2 hover:text-white hover:underline" onClick={() => void autoCleanOnly()} data-testid="assistant-clean">
-            Só cortar erros e pausas
-          </button>
-          <button className="text-zinc-400 underline-offset-2 hover:text-white hover:underline" onClick={editManually} data-testid="assistant-manual">
-            Quero editar por conta própria
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-x-2 border-t border-line pt-4 text-[12.5px] text-zinc-500">
+          Só quer limpar a gravação?
+          <button className="font-medium text-zinc-200 underline-offset-2 hover:text-white hover:underline" onClick={() => void autoCleanOnly()} data-testid="assistant-clean">
+            Cortar só os erros e as pausas
           </button>
         </div>
       </div>

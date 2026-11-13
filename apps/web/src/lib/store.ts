@@ -8,6 +8,7 @@ import {
   type BrandKit,
   type OperationInput,
   type Project,
+  type SkillId,
   type TimeRange,
 } from "@videoeditor/core";
 import { validateComponent, validateSfx } from "@videoeditor/renderer";
@@ -67,6 +68,8 @@ type State = {
    * choose = escolher o estilo; working = a IA está editando; done = vídeo pronto.
    */
   assistant: "choose" | "working" | "done" | null;
+  /** Estilo já escolhido (na página inicial): o assistente abre com ele marcado. */
+  assistantPick: SkillId | null;
   /** Passo atual do guia inicial; null = fechado. */
   tour: number | null;
   /** Muda a cada vez que um trecho é enviado da timeline ao Diretor de IA (dispara o efeito visual). */
@@ -137,6 +140,7 @@ export const useEditor = create<State>((set, get) => ({
   pxPerSec: 60,
   layout: DEFAULT_LAYOUT,
   assistant: null,
+  assistantPick: null,
   tour: null,
   aiFocus: 0,
   credits: 0,

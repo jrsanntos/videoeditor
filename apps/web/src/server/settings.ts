@@ -25,6 +25,8 @@ export const SETTINGS = {
   PIXABAY_API_KEY: { label: "Pixabay (banco gratuito de vídeos e fotos)", secret: true, env: ["PIXABAY_API_KEY"] },
   RESEND_API_KEY: { label: "Resend (envio de e-mails)", secret: true, env: ["RESEND_API_KEY"] },
   EMAIL_FROM: { label: "Remetente dos e-mails", secret: false, env: ["EMAIL_FROM"] },
+  GOOGLE_CLIENT_ID: { label: "Login com Google: Client ID (…apps.googleusercontent.com)", secret: false, env: ["GOOGLE_CLIENT_ID"] },
+  GOOGLE_CLIENT_SECRET: { label: "Login com Google: Client secret", secret: true, env: ["GOOGLE_CLIENT_SECRET"] },
 } as const;
 export type SettingKey = keyof typeof SETTINGS;
 

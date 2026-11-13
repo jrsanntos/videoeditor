@@ -206,4 +206,12 @@ CREATE TABLE email_verifications (
 CREATE INDEX email_verifications_user_idx ON email_verifications (user_id);
 `,
   },
+  {
+    // Login com Google: a conta pode não ter senha e guarda o "sub" (id estável) da conta Google.
+    id: "006_google_login",
+    sql: `
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE users ADD COLUMN google_sub text UNIQUE;
+`,
+  },
 ];
