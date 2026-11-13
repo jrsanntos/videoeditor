@@ -1,5 +1,7 @@
 import { PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
 import { Icon } from "./icons";
+import { LandingDemo } from "./LandingDemo";
+import { DEMOS } from "./landing-demos";
 import { LandingStyles } from "./LandingStyles";
 import { LandingUpload } from "./LandingUpload";
 
@@ -55,6 +57,18 @@ const FAQ = [
     a: "Vídeo falado para a câmera: Reels, Shorts e TikTok, aulas, vídeos de vendas e conteúdo de especialistas como médicos, advogados, consultores e criadores.",
   },
   {
+    q: "A IA tira “né”, “tipo” e “hum”?",
+    a: "Sim. Sons de hesitação (“hum”, “ahn”, “é…”) saem sempre; “tipo” e “né” saem quando estão soltos na frase, como muleta. Em “um tipo de produto” a palavra fica. No estilo Autoridade, um “né” natural pode ficar.",
+  },
+  {
+    q: "E se a legenda errar uma palavra?",
+    a: "As palavras em que a transcrição ficou em dúvida aparecem destacadas para você conferir em um clique. Nomes, marcas e termos técnicos que você cadastra no vocabulário da sua marca saem escritos do jeito certo nos próximos vídeos.",
+  },
+  {
+    q: "Funciona com vídeo do iPhone?",
+    a: "Funciona com MP4, MOV e WebM. Se o iPhone gravou em HEVC (alta eficiência) e o seu navegador não lê esse formato, avisamos logo no envio e mostramos como resolver: em Ajustes › Câmera › Formatos, escolha “Mais Compatível” para os próximos vídeos.",
+  },
+  {
     q: "E se eu não gostar do que a IA fez?",
     a: "Um Ctrl+Z desfaz o pedido inteiro. Você também pode pedir um ajuste só num trecho: selecione na timeline e diga o que quer mudar.",
   },
@@ -62,6 +76,7 @@ const FAQ = [
 
 const NAV = [
   ["#enviar", "Testar agora"],
+  ...(DEMOS.length ? [["#antes-depois", "Antes e depois"]] : []),
   ["#estilos", "Estilos"],
   ["#como-funciona", "Como funciona"],
   ["#recursos", "Recursos"],
@@ -110,7 +125,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
               <span className="bg-[linear-gradient(100deg,#f64cff,#ffd1ff_45%,#59ffcd)] bg-clip-text text-transparent">Receba pronto para postar.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-[640px] text-[18px] leading-relaxed text-haze sm:text-[19px]">
-              Cortes, legendas, zooms e motion design montados a partir da sua fala, no estilo que você escolher. Teste agora com o seu próprio vídeo, sem sair desta página.
+              A IA tira os erros, as pausas e os “né”, legenda, enquadra e anima o vídeo a partir da sua fala. Você revisa, ajusta o que quiser e posta. Teste agora com um vídeo seu, sem sair desta página.
             </p>
             <ul className="mt-7 flex flex-wrap justify-center gap-x-6 gap-y-2 text-[14.5px] text-haze">
               {[`${SIGNUP_CREDITS} créditos grátis`, "Sem cartão", "Entre com Google", "O vídeo não sai do seu navegador"].map((t) => (
@@ -136,6 +151,18 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
             ))}
           </dl>
         </section>
+
+        {/* Antes e depois: só com vídeos reais exportados pelo editor */}
+        {DEMOS.length > 0 && (
+          <section id="antes-depois" className={`${wrap} scroll-mt-28 pt-24 sm:pt-32`}>
+            <p className="lp-overline">Antes e depois</p>
+            <h2 className={`${h2} max-w-3xl`}>O mesmo vídeo, antes e depois da IA.</h2>
+            <p className={lead}>Vídeo gravado no celular, sem roteiro decorado. À direita, o que o editor entregou e foi exportado como está.</p>
+            <div className="mt-10">
+              <LandingDemo />
+            </div>
+          </section>
+        )}
 
         {/* Estilos */}
         <section id="estilos" className={`${wrap} scroll-mt-28 pt-24 sm:pt-32`}>

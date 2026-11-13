@@ -21,7 +21,7 @@ const ACTS = Object.keys(ACT) as (keyof typeof ACT)[];
 const SPEED: Record<string, string> = { camera_lenta: "câmera lenta", acelerado: "acelerado", mista: "rampas de velocidade" };
 const ENERGY: Record<string, string> = { alta: "bg-rose-400", media: "bg-amber-300", baixa: "bg-sky-300" };
 
-export function ChatPanel() {
+export function ChatPanel({ fluid = false }: { fluid?: boolean } = {}) {
   const chat = useEditor((s) => s.chat);
   const busy = useEditor((s) => s.busy);
   const range = useEditor((s) => s.range);
@@ -73,7 +73,7 @@ export function ChatPanel() {
   };
 
   return (
-    <aside className="flex shrink-0 flex-col bg-ink-900" style={{ width }} data-testid="chat">
+    <aside className={`flex shrink-0 flex-col bg-ink-900 ${fluid ? "h-full w-full" : ""}`} style={fluid ? undefined : { width }} data-testid="chat">
       <div className="flex items-center gap-3 border-b border-line px-4 py-3">
         <span className="btn-brand flex h-8 w-8 items-center justify-center rounded-lg">
           <Icon.sparkles size={16} />
