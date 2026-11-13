@@ -645,6 +645,7 @@ import {
   hasSpeed,
   isCloseUp,
   avoidFaces,
+  faceFromDetection,
   framingObjections,
   localTimeAt,
   mainGaps,
@@ -1153,6 +1154,17 @@ describe("5. legendas e texto atrás da cabeça: guardrails espaciais", () => {
     const busy = [{ x: 0.1, y: 0.78, w: 0.8, h: 0.1 }];
     const moved = placeCaption({ ...base, cy: 0.835, face, busy });
     expect(moved + base.half <= busy[0]!.y || moved - base.half >= busy[0]!.y + busy[0]!.h).toBe(true);
+  });
+
+  it("o rosto do detector vira a caixa do rosto, com folga para cabelo e queixo", () => {
+    const d = { x: 0.3, y: 0.25, w: 0.4, h: 0.3 };
+    const s = { x: 0, y: 0, w: 1, h: 1, ...faceFromDetection(d) };
+    const f = faceBox(s);
+    expect(f.x).toBeLessThan(d.x);
+    expect(f.x + f.w).toBeGreaterThan(d.x + d.w);
+    expect(f.y).toBeLessThan(d.y);
+    expect(f.y + f.h).toBeGreaterThanOrEqual(d.y + d.h - 1e-3);
+    expect(isCloseUp(s)).toBe(true);
   });
 
   it("bloco de texto sai do rosto pelo menor caminho e fica dentro da área segura", () => {

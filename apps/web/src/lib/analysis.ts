@@ -1,7 +1,8 @@
 "use client";
 
-import { classifyGenre, detectCuts, energyPeaks, normalizeMotion, speechProfile, type Asset, type AssetAnalysis, type MotionSample, type Word } from "@videoeditor/core";
+import { classifyGenre, detectCuts, energyPeaks, normalizeMotion, speechProfile, type Asset, type AssetAnalysis, type MotionSample, type Word, faceFromDetection } from "@videoeditor/core";
 import { ensureSegmenter, personMask } from "./segmentation";
+import { detectFace, ensureFaceDetector } from "./face";
 
 /**
  * Análise local do vídeo, no navegador e sem custo: é o que dá "olhos e
@@ -146,6 +147,7 @@ export async function analyzeVideo(file: Blob, assetId: string, samples?: Float3
       v.onerror = () => reject(new Error("vídeo ilegível"));
     });
     const canSegment = opts.segment === false ? false : await ensureSegmenter();
+    const canDetect = canSegment ? await ensureFaceDetector() : false;
     // Com `until`, só o começo do vídeo é medido (referência longa).
     const duration = Math.min(v.duration, opts.until ?? Infinity);
     // ~3 amostras por segundo, limitado para vídeos longos não travarem a análise.
@@ -184,7 +186,10 @@ export async function analyzeVideo(file: Blob, assetId: string, samples?: Float3
         segmented++;
         if (canSegment) {
           const mask = personMask(`subject:${assetId}:${i}`, v, v.videoWidth, v.videoHeight);
-          const subject = mask ? subjectFromMask(mask, t) : null;
+          const silhouette = mask ? subjectFromMask(mask, t) : null;
+          // O rosto medido pelo detector vale mais que o estimado pela silhueta.
+          const face = silhouette && canDetect ? detectFace(v, v.videoWidth, v.videoHeight) : null;
+          const subject = silhouette && face ? { ...silhouette, ...faceFromDetection(face) } : silhouette;
           if (subject) out.subject.push(subject);
         }
         if (frameAt.has(i)) {

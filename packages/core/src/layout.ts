@@ -191,3 +191,17 @@ export function avoidFaces(box: Box, faces: Box[], bounds: Box, pad = 0): Nudge 
   // Nenhum lugar livre: desce até o limite de baixo (cobre o queixo, não os olhos).
   return { dx: 0, dy: Math.max(0, bounds.y + bounds.h - (box.y + box.h)), scale: 0.85 };
 }
+
+/**
+ * Campos de rosto do sujeito a partir da caixa de um detector de rosto (frações
+ * do quadro). A caixa do detector vai da testa ao queixo, sem cabelo nem
+ * orelhas: ganha uma folga (mais em cima, pelo cabelo) para nenhum texto
+ * encostar na cabeça. Segue a convenção de `faceBox` (faceY a 55% da altura).
+ */
+export function faceFromDetection(d: Box): { faceX: number; faceY: number; faceW: number; faceH: number } {
+  const r = (n: number) => Math.round(n * 1000) / 1000;
+  const w = d.w * 1.16;
+  const top = d.y - d.h * 0.22;
+  const h = d.h * 1.3;
+  return { faceX: r(d.x + d.w / 2), faceY: r(top + h * 0.55), faceW: r(w), faceH: r(h) };
+}
