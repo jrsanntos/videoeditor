@@ -19,8 +19,10 @@ export const fastAgentModel = async () => (await getSetting("AGENT_MODEL_FAST"))
 export const editorAgentModel = async () => (await getSetting("AGENT_MODEL_EDITOR")) || EDITOR_DEFAULT;
 /** Crítico visual: confere quadros e corrige defeitos pontuais. */
 export const criticAgentModel = async () => (await getSetting("AGENT_MODEL_CRITIC")) || CRITIC_DEFAULT;
-const EDITOR_DEFAULT = "claude-sonnet-5-5";
-const CRITIC_DEFAULT = "claude-sonnet-5-5";
+// Editor e Crítico executam e conferem o plano do Diretor: no Haiku, a mesma edição sai ~4× mais
+// barata (medido no vídeo real: US$ 0,07–0,11 contra 0,28–0,48 com Sonnet nos três papéis).
+const EDITOR_DEFAULT = "claude-haiku-5-5";
+const CRITIC_DEFAULT = "claude-haiku-5-5";
 
 /** Cliente Anthropic com a chave do painel (ou do ambiente). */
 export async function anthropicClient(): Promise<Anthropic> {

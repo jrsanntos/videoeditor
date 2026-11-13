@@ -231,8 +231,8 @@ describe("agente e créditos", () => {
   it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
     expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(5);
     expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(1);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(24);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(78);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(13);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(40);
     expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
@@ -252,13 +252,13 @@ describe("agente e créditos", () => {
 
   it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
     expect(PLANS.free.monthlyCredits).toBe(0);
-    expect(SIGNUP_CREDITS).toBe(32);
-    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 10, max: 12 });
-    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 30, max: 35 });
+    expect(SIGNUP_CREDITS).toBe(20);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 15, max: 20 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 45, max: 60 });
     expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 1, max: 1 });
     expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
     // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): a edição completa de 1 min
-    // custa até US$ 0,40 em IA (R$ 2,48 no câmbio de segurança) e precisa render mais que 3× isso.
+    // custa ~US$ 0,12 em IA (R$ 0,74 no câmbio de segurança) e precisa render mais que 3× isso.
     const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
     expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(MEASURED_AI_COST_USD.fullEditShort * ECONOMICS.usdBrl * 3);
   });
@@ -1457,6 +1457,10 @@ describe("economia: lucro real depois de taxas, impostos e despesas", () => {
     expect(at("full")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.fullEditShort);
     expect(at("sweep")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.sweepShort);
     expect(at("adjust")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.adjust);
+  });
+
+  it("o Diretor cabe na metade do teto da edição completa (o maior gasto medido dele foi US$ 0,087)", () => {
+    expect(aiBudgetUSD(creditCost({ type: "agent", tier: "full", durationSec: 60 })) * 0.5).toBeGreaterThanOrEqual(0.1);
   });
 
   it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {

@@ -8,8 +8,8 @@
  * regra econômica (ECONOMICS, abaixo): o preço de cada ação dá à IA um teto
  * de custo acima do custo medido, e esse teto é só uma fatia da receita.
  * - transcrição: centavos de dólar por hora → 0,5 crédito por minuto;
- * - edição completa (Diretor + Editor + Crítico, modelo principal): medida
- *   em US$ 0,28 a 0,48 por vídeo curto → base alta + por minuto;
+ * - edição completa (Diretor no Sonnet; Editor e Crítico no Haiku): medida
+ *   em US$ 0,07 a 0,11 por vídeo curto (o Diretor é ~70% disso) → base + por minuto;
  * - passada no vídeo todo (Editor, modelo principal): ~US$ 0,10 a 0,15;
  * - ajuste pontual (modelo rápido): menos de US$ 0,01 → 1 crédito.
  * O teste "economia" no core trava qualquer mudança que derrube a margem.
@@ -19,19 +19,20 @@
 export const CREDIT_PRICE_BRL = 0.385;
 
 /**
- * Custo de IA MEDIDO por ação (US$), com o Sonnet nos três papéis e o vídeo
- * real de teste (79 s): é o que o teto de cada ação precisa cobrir para a IA
- * não ser interrompida no caso comum. Remedir ao trocar modelo ou prompt.
+ * Custo de IA MEDIDO por ação (US$) no vídeo real de teste (79 s), com o
+ * Diretor no Sonnet e Editor/Crítico no Haiku: é o que o teto de cada ação
+ * precisa cobrir para a IA não ser interrompida no caso comum (com folga: o
+ * maior valor medido foi US$ 0,107). Remedir ao trocar modelo ou prompt.
  */
-export const MEASURED_AI_COST_USD = { fullEditShort: 0.4, sweepShort: 0.12, adjust: 0.01 } as const;
+export const MEASURED_AI_COST_USD = { fullEditShort: 0.12, sweepShort: 0.12, adjust: 0.01 } as const;
 
 export const PRICING = {
   /** Upload + transcrição: por minuto de vídeo, arredondado para cima. */
   ingestPerMinute: 0.5,
   /** Edição completa pela IA: parte fixa (o custo de um vídeo curto é quase todo fixo)... */
-  fullEditBase: 18,
+  fullEditBase: 10,
   /** ...mais um valor por minuto de vídeo, arredondado para cima. */
-  fullEditPerMinute: 6,
+  fullEditPerMinute: 3,
   /** Passada no vídeo inteiro sem replanejar (revisar erros, zoom nas ênfases, destacar números): modelo principal, sem Diretor. */
   sweepBase: 6,
   sweepPerMinute: 2,
@@ -153,7 +154,7 @@ export type PlanId = "free" | "creator" | "pro";
  * de IA desses créditos, ~R$ 3 por cadastro); crédito grátis todo mês cria
  * usuário que nunca paga.
  */
-export const SIGNUP_CREDITS = 32;
+export const SIGNUP_CREDITS = 20;
 
 export const PLANS: Record<
   PlanId,
