@@ -33,6 +33,20 @@ export async function anthropicClient(): Promise<Anthropic> {
   return new Anthropic({ apiKey });
 }
 
+/**
+ * A falha da Anthropic justifica seguir no modelo reserva? Sim quando o
+ * problema é do fornecedor (saldo, chave, sobrecarga, fora do ar, rede); não
+ * quando é do pedido (400 comum) ou o usuário cancelou.
+ */
+export function shouldFallBack(e: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return false;
+  if (e instanceof Anthropic.BadRequestError) return /credit balance|billing|quota/i.test(e.message);
+  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError || e instanceof Anthropic.RateLimitError) return true;
+  if (e instanceof Anthropic.APIConnectionError) return true;
+  if (e instanceof Anthropic.APIError) return typeof e.status === "number" && e.status >= 500;
+  return false;
+}
+
 /** Converte falhas da API da Anthropic em mensagens que o usuário entende. */
 export function anthropicError(e: unknown): HttpError | null {
   if (e instanceof Anthropic.AuthenticationError)

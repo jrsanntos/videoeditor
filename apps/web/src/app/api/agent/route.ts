@@ -31,10 +31,11 @@ import {
   type Skill,
 } from "@videoeditor/core";
 import { screenTexts, validateComponent, validateSfx } from "@videoeditor/renderer";
-import { ACT_NAMES, AGENT_ROLES, agentModel, anthropicClient, anthropicError, criticAgentModel, editorAgentModel, fastAgentModel, MAX_WORDS_WINDOW, PlanSchema, ReadWordsSchema, ToolInputSchema, type AgentRole, type EditPlan } from "@/server/ai";
+import { ACT_NAMES, AGENT_ROLES, agentModel, anthropicClient, anthropicError, criticAgentModel, shouldFallBack, editorAgentModel, fastAgentModel, MAX_WORDS_WINDOW, PlanSchema, ReadWordsSchema, ToolInputSchema, type AgentRole, type EditPlan } from "@/server/ai";
 import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
 import { decrypt, encrypt } from "@/server/crypto";
 import { rateLimit } from "@/server/ratelimit";
+import { geminiConfigured, geminiCostUSD, geminiTurn } from "@/server/gemini";
 import { unsealTier } from "@/server/tiers";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
@@ -163,7 +164,17 @@ export async function POST(req: Request) {
     const price = review || phase === "plan" ? 0 : creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
     if (phase === "plan") await rateLimit("agentPlan", user.id);
     if (!review) await assertCredits(user.id, phase === "plan" ? creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) }) : price);
-    const client = await anthropicClient();
+    // Provedor da IA neste pedido: a Anthropic; se ela não atender (sem chave, sem saldo, chave
+    // recusada, sobrecarga, fora do ar) e o Gemini estiver configurado, o pedido segue nele.
+    const reserve = await geminiConfigured();
+    let provider: "anthropic" | "gemini" = "anthropic";
+    let client: Anthropic | null = null;
+    try {
+      client = await anthropicClient();
+    } catch (e) {
+      if (!reserve) throw e;
+      provider = "gemini";
+    }
     const available = await balance(user.id);
 
     const full = tier === "full" && !review;
@@ -204,7 +215,7 @@ export async function POST(req: Request) {
       let first = true;
       for (const [model, tokens] of usageBy) {
         // O custo por modelo é a soma do custo de cada volta (a faixa de preço do Haiku é por requisição).
-        await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens, costUSD: costBy.get(model) ?? 0, credits: first ? credits : 0 });
+        await recordUsage({ userId: user.id, kind: "agent", provider: model.startsWith("gemini") ? "google" : "anthropic", model, tokens, costUSD: costBy.get(model) ?? 0, credits: first ? credits : 0 });
         first = false;
       }
       return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
@@ -216,15 +227,43 @@ export async function POST(req: Request) {
     const effortFor = (role: AgentRole): "high" | "medium" | null =>
       role === "director" ? "high" : role === "critic" || (role === "editor" && (full || tier === "sweep")) ? (process.env.AGENT_EDITOR_EFFORT === "high" ? "high" : "medium") : null;
     const costBy = new Map<string, number>();
-    const runTurn = async (role: AgentRole, messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string) => {
+    const runTurn = async (role: AgentRole, messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string): Promise<Anthropic.Beta.BetaMessage> => {
       const { system, tools } = AGENT_ROLES[role];
+      if (provider === "anthropic" && client) {
+        try {
+          return await anthropicTurn(client, role, system, tools, messages, send, status);
+        } catch (e) {
+          if (!reserve || !shouldFallBack(e, req.signal)) throw e;
+          console.warn("anthropic indisponível; seguindo no modelo reserva (Gemini):", (e as Error).message);
+          provider = "gemini";
+          send({ type: "status", role, text: "Usando o modelo reserva para continuar a edição…" });
+        }
+      }
+      // Modelo reserva: mesma conversa, mesmas ferramentas, mesmo teto de custo.
+      send({ type: "status", role, text: status(role === "director" ? "plan_edit" : "edit_timeline") });
+      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, signal: req.signal });
+      const turn = { input: message.usage.input_tokens, output: message.usage.output_tokens, cacheRead: message.usage.cache_read_input_tokens ?? 0, cacheWrite: 0 };
+      const cost = await geminiCostUSD(turn);
+      account(model, turn, cost, role);
+      return message;
+    };
+
+    const account = (model: string, turn: { input: number; output: number; cacheRead: number; cacheWrite: number }, cost: number, role: AgentRole) => {
+      const acc = usageBy.get(model) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      usageBy.set(model, { input: acc.input + turn.input, output: acc.output + turn.output, cacheRead: acc.cacheRead + turn.cacheRead, cacheWrite: acc.cacheWrite + turn.cacheWrite });
+      costBy.set(model, (costBy.get(model) ?? 0) + cost);
+      spent += cost;
+      if (process.env.NODE_ENV !== "production") console.info(`agente ${role} ${model}: US$ ${cost.toFixed(4)} (total ${spent.toFixed(4)} de ${capUSD.toFixed(4)})`, turn);
+    };
+
+    /** Uma volta de um dos papéis na Anthropic, em streaming: avisa o navegador assim que uma ferramenta começa a ser usada. */
+    const anthropicTurn = async (anthropic: Anthropic, role: AgentRole, system: string, tools: Anthropic.Beta.BetaTool[], messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string) => {
       const model = modelFor[role];
-      const stream = client.beta.messages.stream(
+      const stream = anthropic.beta.messages.stream(
         {
           model,
           max_tokens: 16000,
           system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-          // Raciocínio estendido na direção e na execução completas; o ajuste pontual responde direto.
           ...(effortFor(role) ? { thinking: { type: "adaptive" as const }, output_config: { effort: effortFor(role)! } } : {}),
           tools,
           messages: withCacheBreakpoint(messages),
@@ -238,12 +277,7 @@ export async function POST(req: Request) {
       });
       const response = await stream.finalMessage();
       const turn = { input: response.usage.input_tokens, output: response.usage.output_tokens, cacheRead: response.usage.cache_read_input_tokens ?? 0, cacheWrite: response.usage.cache_creation_input_tokens ?? 0 };
-      const acc = usageBy.get(model) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      usageBy.set(model, { input: acc.input + turn.input, output: acc.output + turn.output, cacheRead: acc.cacheRead + turn.cacheRead, cacheWrite: acc.cacheWrite + turn.cacheWrite });
-      const cost = anthropicCostUSD(model, turn);
-      costBy.set(model, (costBy.get(model) ?? 0) + cost);
-      spent += cost;
-      if (process.env.NODE_ENV !== "production") console.info(`agente ${role} ${model}: US$ ${cost.toFixed(4)} (total ${spent.toFixed(4)} de ${capUSD.toFixed(4)})`, turn);
+      account(model, turn, anthropicCostUSD(model, turn), role);
       return response;
     };
     const textOf = (response: Anthropic.Beta.BetaMessage) =>

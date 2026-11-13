@@ -202,7 +202,7 @@ export const groqCostUSD = (audioSeconds: number) => audioSeconds * GROQ_USD_PER
 export async function recordUsage(e: {
   userId: string | null;
   kind: "agent" | "transcribe" | "template_extract" | "style_reference";
-  provider: "anthropic" | "groq";
+  provider: "anthropic" | "groq" | "google";
   model?: string;
   tokens?: TokenUsage;
   audioSeconds?: number;
