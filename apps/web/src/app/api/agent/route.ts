@@ -23,6 +23,7 @@ import {
   projectDuration,
   wordLines,
   wordsBetween,
+  type AgentTier,
   type OperationInput,
   type PacingProfile,
   type Project,
@@ -32,6 +33,7 @@ import { screenTexts, validateComponent, validateSfx } from "@videoeditor/render
 import { ACT_NAMES, AGENT_ROLES, agentModel, anthropicClient, anthropicError, fastAgentModel, MAX_WORDS_WINDOW, PlanSchema, ReadWordsSchema, ToolInputSchema, type AgentRole, type EditPlan } from "@/server/ai";
 import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
 import { decrypt, encrypt } from "@/server/crypto";
+import { unsealTier } from "@/server/tiers";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
 export const runtime = "nodejs";
@@ -52,6 +54,8 @@ const MAX_TURNS = 8;
 /** Edição completa: etapas de execução e as passagens de revisão. */
 const MAX_TURNS_EDITOR = 18;
 const MAX_TURNS_DIRECTOR = 5;
+/** Passada no vídeo todo: uma tarefa, várias chamadas possíveis (vídeos longos). */
+const MAX_TURNS_SWEEP = 12;
 /** Modelos que aceitam fallback de recusa no servidor. */
 const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
@@ -67,6 +71,8 @@ const RequestSchema = z.object({
   /** Modelo de edição em uso: define o orçamento de ritmo e o acabamento que o Crítico cobra. */
   skill: z.enum(["viral", "acao", "autoridade", "limpeza"]).optional(),
   phase: z.enum(["auto", "plan", "execute"]).default("auto"),
+  /** Passe da classificação por intenção (/api/agent/tier): nível e preço mostrados antes do envio. */
+  tierToken: z.string().max(2000).optional(),
   /** Passe devolvido pela fase "plan": o plano que o usuário confirmou. */
   planToken: z.string().max(12_000).optional(),
   /** Quadros do vídeo (JPEG em base64) para o agente ver o enquadramento e o cenário. */
@@ -121,14 +127,14 @@ export async function POST(req: Request) {
     const skillId = parsed.data.skill ?? (pass?.s as keyof typeof SKILLS | undefined);
     const skill: Skill | undefined = skillId && skillId in SKILLS ? SKILLS[skillId] : undefined;
 
-    // Pedido pontual vai para o modelo rápido; direção do vídeo inteiro, para o principal.
-    // A mesma classificação roda no navegador, então o preço mostrado é o cobrado.
-    const tier = phase === "auto" ? agentTier(message, !!selection) : "full";
+    // Pedido pontual vai para o modelo rápido; passada no vídeo todo e direção completa, para o principal.
+    // O nível vem do passe da classificação por intenção (o preço que o usuário viu); sem ele, da regra determinística.
+    const tier: AgentTier = phase === "auto" ? (unsealTier(parsed.data.tierToken, user.id, message) ?? agentTier(message, !!selection)) : "full";
     // O plano e a revisão fazem parte da edição completa: quem tem preço é a execução.
     const price = review || phase === "plan" ? 0 : creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
     if (!review) await assertCredits(user.id, phase === "plan" ? creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) }) : price);
     const client = await anthropicClient();
-    const model = tier === "full" || review ? await agentModel() : await fastAgentModel();
+    const model = tier !== "adjust" || review ? await agentModel() : await fastAgentModel();
     const available = await balance(user.id);
 
     const full = tier === "full" && !review;
@@ -165,7 +171,7 @@ export async function POST(req: Request) {
           max_tokens: 16000,
           system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
           // Raciocínio estendido na direção e na execução completas; o ajuste pontual responde direto.
-          ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : review ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
+          ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : review || tier === "sweep" ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
           tools,
           messages,
           ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
@@ -236,7 +242,7 @@ export async function POST(req: Request) {
     const edit = async (role: "editor" | "critic", messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void): Promise<string> => {
       let finalText = "";
       let cycles = 0;
-      const maxTurns = full ? MAX_TURNS_EDITOR : MAX_TURNS;
+      const maxTurns = full ? MAX_TURNS_EDITOR : tier === "sweep" ? MAX_TURNS_SWEEP : MAX_TURNS;
       for (let turn = 0; turn < maxTurns; turn++) {
         const response = await runTurn(role, messages, send, (tool) =>
           tool === "read_words" ? "Conferindo a transcrição…" : role === "critic" ? "O Crítico está corrigindo o que viu…" : cycles ? "Corrigindo o que o Crítico apontou…" : log.length ? "Aplicando a próxima etapa…" : "O Editor está montando a edição…",

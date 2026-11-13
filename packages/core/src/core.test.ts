@@ -1339,3 +1339,22 @@ describe("revisão de legenda", () => {
     expect(wordsToReview(fixed)).toEqual([]);
   });
 });
+
+describe("nível do pedido (regra local)", () => {
+  it.each([
+    ["edita tudo pra mim", "full"],
+    ["quero esse vídeo no estilo do Primo Rico", "full"],
+    ["Revise os erros de gravação e corte os takes ruins", "sweep"],
+    ["Aplique zoom nos momentos de ênfase", "sweep"],
+    ["muda a cor da legenda para amarelo", "adjust"],
+    ["tira o zoom do 0:12", "adjust"],
+  ] as const)("%s → %s", (message, tier) => {
+    expect(agentTier(message, false)).toBe(tier);
+  });
+
+  it("passada no vídeo todo custa entre o ajuste e a edição completa", () => {
+    const at = (tier: "full" | "sweep" | "adjust") => creditCost({ type: "agent", tier, durationSec: 60 });
+    expect(at("adjust")).toBeLessThan(at("sweep"));
+    expect(at("sweep")).toBeLessThan(at("full"));
+  });
+});

@@ -35,6 +35,7 @@ import {
   type OperationInput,
   type PlanId,
   type SkillId,
+  type AgentTier,
   type EditTemplate,
   type Project,
   type Transcript,
@@ -464,7 +465,19 @@ type AgentEvent =
  * pergunta, como no assistente de um clique); o Editor executa; o Crítico
  * avalia o resultado em até 3 ciclos de autocorreção.
  */
-export async function askAgent(message: string, label?: string, opts: { skill?: SkillId; confirm?: boolean } = {}) {
+/** Nível e passe de um pedido, classificado pela intenção no servidor. null se não deu (vale a regra local). */
+export async function classifyRequest(message: string, selection: boolean, duration: number, signal?: AbortSignal): Promise<{ tier: AgentTier; token: string } | null> {
+  try {
+    const res = await fetch("/api/agent/tier", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, selection, duration }), signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { tier?: AgentTier; token?: string };
+    return data.tier && data.token ? { tier: data.tier, token: data.token } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function askAgent(message: string, label?: string, opts: { skill?: SkillId; confirm?: boolean; tier?: AgentTier; tierToken?: string } = {}) {
   const s = useEditor.getState();
   if (!s.project || !message.trim()) return;
   const history = s.chat.filter((m) => !m.error && !m.plan).slice(-8).map((m) => ({ role: m.role, text: m.text }));
@@ -476,7 +489,8 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   }
   const project = useEditor.getState().project!;
   const range = useEditor.getState().range;
-  const full = agentTier(message, !!range) === "full";
+  const tier = range ? "adjust" : (opts.tier ?? agentTier(message, false));
+  const full = tier === "full";
   s.setBusy(full ? "Analisando o vídeo…" : "O agente está lendo o vídeo…");
   // Edição completa: o agente recebe quadros do vídeo, o enquadramento e a análise de movimento e som.
   const assetId = primaryAssetId(project);
@@ -498,7 +512,7 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
     }
     return;
   }
-  await executeAgent({ message, history, skill: opts.skill, frames, selection: range, phase: "auto" });
+  await executeAgent({ message, history, skill: opts.skill, frames, selection: range, phase: "auto", tierToken: opts.tierToken });
 }
 
 /** O usuário aprovou o plano no chat: o Editor executa e o Crítico confere. */
@@ -527,7 +541,7 @@ export function discardPlan(messageId: string) {
 
 export const pendingPlanOf = (m: ChatMessage): PendingPlan | undefined => m.pending;
 
-async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string }) {
+async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string; tierToken?: string }) {
   const s = useEditor.getState();
   let applied = false;
   const log: string[] = [];

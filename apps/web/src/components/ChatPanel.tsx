@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, type SkillId } from "@videoeditor/core";
-import { askAgent, confirmPlan, discardPlan, revisePlan, runSkill } from "@/lib/actions";
+import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, TIER_NAMES, type AgentTier, type SkillId } from "@videoeditor/core";
+import { askAgent, classifyRequest, confirmPlan, discardPlan, revisePlan, runSkill } from "@/lib/actions";
 import { useEditor, type ChatMessage, type EditPlan } from "@/lib/store";
 import { formatTime } from "./Player";
 import { Icon } from "./ui";
@@ -32,8 +32,25 @@ export function ChatPanel() {
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
   // O mesmo cálculo do servidor: o preço mostrado é o cobrado.
   const fullCost = creditCost({ type: "agent", tier: "full", durationSec: duration });
-  const tier = agentTier(text, !!range);
-  const cost = tier === "full" ? fullCost : PRICING.adjust;
+  const sweepCost = creditCost({ type: "agent", tier: "sweep", durationSec: duration });
+  // Enquanto a pessoa digita, o servidor classifica o pedido pela intenção e devolve um passe com o nível.
+  // Até a resposta chegar vale a regra local; o envio leva o passe, e o preço cobrado é o mostrado.
+  const [classified, setClassified] = useState<{ text: string; selection: boolean; tier: AgentTier; token: string } | null>(null);
+  const trimmed = text.trim();
+  const current = classified && classified.text === trimmed && classified.selection === !!range ? classified : null;
+  const tier: AgentTier = current?.tier ?? agentTier(trimmed, !!range);
+  const cost = creditCost({ type: "agent", tier, durationSec: duration });
+  useEffect(() => {
+    if (!trimmed || range) return;
+    const ctl = new AbortController();
+    const id = setTimeout(() => {
+      void classifyRequest(trimmed, false, duration, ctl.signal).then((r) => r && setClassified({ text: trimmed, selection: false, ...r }));
+    }, 450);
+    return () => {
+      clearTimeout(id);
+      ctl.abort();
+    };
+  }, [trimmed, range, duration]);
   const end = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -51,7 +68,8 @@ export function ChatPanel() {
   const send = (message: string) => {
     if (!message.trim() || busy) return;
     setText("");
-    void askAgent(message.trim());
+    const pass = current && current.text === message.trim() ? current : null;
+    void askAgent(message.trim(), undefined, pass ? { tier: pass.tier, tierToken: pass.token } : {});
   };
 
   return (
@@ -92,13 +110,14 @@ export function ChatPanel() {
             </div>
             <p className="pt-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-zinc-500">Ou peça o que quiser</p>
             {SUGGESTIONS.map((s) => (
-              <button key={s} onClick={() => send(s)} disabled={!!busy} className="block w-full rounded-lg border border-line px-3 py-2 text-left text-xs text-zinc-300 transition hover:border-line-strong hover:bg-ink-850 disabled:opacity-40">
+              <button key={s} onClick={() => send(s)} disabled={!!busy} className="flex w-full items-center justify-between gap-2 rounded-lg border border-line px-3 py-2 text-left text-xs text-zinc-300 transition hover:border-line-strong hover:bg-ink-850 disabled:opacity-40">
                 {s}
+                <span className="shrink-0 text-[10.5px] text-amber-300/80">{formatCredits(creditCost({ type: "agent", tier: agentTier(s, false), durationSec: duration }))} cr.</span>
               </button>
             ))}
             <p className="pt-2 text-[11px] leading-relaxed text-zinc-600">
-              Edição completa: {formatCredits(fullCost)} créditos neste vídeo — o Diretor analisa fala, movimento e som e propõe um plano por atos; você confirma; o Editor monta e o Crítico revisa. Ajuste pontual: {PRICING.adjust} crédito. Só é cobrado quando a
-              timeline muda.
+              Edição completa: {formatCredits(fullCost)} créditos neste vídeo — o Diretor analisa fala, movimento e som e propõe um plano por atos; você confirma; o Editor monta e o Crítico revisa. Uma tarefa no vídeo todo (revisar erros, zoom nas ênfases):{" "}
+              {formatCredits(sweepCost)} créditos. Ajuste pontual: {PRICING.adjust} crédito. O preço aparece no botão antes de enviar e só é cobrado quando a timeline muda.
             </p>
           </div>
         )}
@@ -171,7 +190,7 @@ export function ChatPanel() {
         />
         <button type="submit" disabled={!text.trim() || !!busy} className="btn-brand mt-2 flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold">
           <Icon.send size={14} />
-          {text.trim() ? `${tier === "full" ? "Edição completa" : "Ajuste"} · ${formatCredits(cost)} ${cost === 1 ? "crédito" : "créditos"}` : "Enviar"}
+          {text.trim() ? `${TIER_NAMES[tier]} · ${formatCredits(cost)} ${cost === 1 ? "crédito" : "créditos"}` : "Enviar"}
         </button>
       </form>
     </aside>

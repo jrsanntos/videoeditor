@@ -22,6 +22,9 @@ export const PRICING = {
   fullEditBase: 12,
   /** ...mais um valor por minuto de vídeo, arredondado para cima. */
   fullEditPerMinute: 3,
+  /** Passada no vídeo inteiro sem replanejar (revisar erros, zoom nas ênfases, destacar números): modelo principal, sem Diretor. */
+  sweepBase: 3,
+  sweepPerMinute: 1,
   /** Ajuste pontual no chat (um trecho selecionado ou um comando simples). */
   adjust: 1,
   /** Clipe generativo (b-roll/áudio IA) de ~5s. */
@@ -34,22 +37,35 @@ export const PRICING = {
 } as const;
 
 /**
- * full: direção do vídeo inteiro (skills, modelos, "edite meu vídeo") — modelo principal.
- * adjust: comando pontual — modelo rápido.
+ * full:   direção do vídeo inteiro (skills, modelos, "edite meu vídeo") — Diretor + Editor + Crítico, modelo principal.
+ * sweep:  uma tarefa aplicada ao vídeo inteiro ("revise os erros", "zoom nas ênfases", "destaque os números") — Editor, modelo principal.
+ * adjust: comando pontual (um trecho, um elemento, uma propriedade) — modelo rápido.
  */
-export type AgentTier = "full" | "adjust";
+export type AgentTier = "full" | "sweep" | "adjust";
+export const AGENT_TIERS: AgentTier[] = ["full", "sweep", "adjust"];
+export const TIER_NAMES: Record<AgentTier, string> = { full: "Edição completa", sweep: "Passada no vídeo todo", adjust: "Ajuste" };
 
 const BROAD_REQUEST =
-  /(v[ií]deo (todo|inteiro|completo)|edi(te|ta|tar|[çc][ãa]o) (o |meu |esse |este |todo o )?v[ií]deo|edi[çc][ãa]o completa|do (in[ií]cio|come[çc]o) ao fim|deix[ea] (o v[ií]deo )?pronto|aplique o modelo|com a skill)/i;
+  /(v[ií]deo (todo|inteiro|completo)|edi(te|ta|tar|[çc][ãa]o) (o |meu |esse |este |todo o )?v[ií]deo|edi(te|ta|tar) tudo|edi[çc][ãa]o completa|do (in[ií]cio|come[çc]o) ao fim|deix[ea] (o v[ií]deo )?pronto|pronto pra postar|pronto para postar|aplique o modelo|com a skill|no estilo d[eoa]|estilo (viral|autoridade|cinema|a[çc][ãa]o)|refa[çz]a (a edi[çc][ãa]o|tudo)|monte (o v[ií]deo|a edi[çc][ãa]o))/i;
+
+/** Tarefa que varre o vídeo todo: plural, "todos/cada", ou uma revisão geral. */
+const SWEEP_REQUEST =
+  /(\b(todos|todas|cada|sempre que|toda vez|em todo|ao longo|nos momentos|nas partes|nos trechos|onde eu)\b|revis[ae]|erros de grava[çc][ãa]o|takes? ruins?|muletas|pausas|sil[êe]ncios|legendas?\b.*\b(todas|corrij|revis)|\bos n[úu]meros\b|\bas ênfases\b)/i;
+
+/** Referência a um ponto específico: tempo ("0:12", "12s"), "aqui", "este trecho", um elemento. */
+const POINT_REQUEST = /(\b\d{1,2}:\d{2}\b|\b\d+(,\d+)?\s?s(eg(undos?)?)?\b|\baqui\b|\bneste trecho\b|\bnesse trecho\b|\beste (zoom|card|cart[ãa]o|t[íi]tulo)\b|\bo [úu]ltimo\b|\bo primeiro\b)/i;
 
 /**
- * Classifica um pedido ao agente. É determinístico e roda igual no navegador e
- * no servidor: o usuário vê o preço antes de enviar e é exatamente o cobrado.
+ * Classificação determinística de um pedido ao agente. É o plano B da
+ * classificação por intenção feita no servidor (que devolve um passe com o
+ * nível e o preço); roda igual no navegador e no servidor.
  */
 export function agentTier(message: string, hasSelection: boolean): AgentTier {
   // Com um trecho selecionado o pedido é, por definição, pontual.
   if (hasSelection) return "adjust";
-  return BROAD_REQUEST.test(message) || message.length > 400 ? "full" : "adjust";
+  if (BROAD_REQUEST.test(message) || message.length > 400) return "full";
+  if (SWEEP_REQUEST.test(message) && !POINT_REQUEST.test(message)) return "sweep";
+  return "adjust";
 }
 
 export type CreditAction =
@@ -67,7 +83,11 @@ export function creditCost(action: CreditAction): number {
     case "ingest":
       return minutes(action.durationSec) * PRICING.ingestPerMinute;
     case "agent":
-      return action.tier === "full" ? PRICING.fullEditBase + minutes(action.durationSec) * PRICING.fullEditPerMinute : PRICING.adjust;
+      return action.tier === "full"
+        ? PRICING.fullEditBase + minutes(action.durationSec) * PRICING.fullEditPerMinute
+        : action.tier === "sweep"
+          ? PRICING.sweepBase + minutes(action.durationSec) * PRICING.sweepPerMinute
+          : PRICING.adjust;
     case "generative":
       return action.clips * PRICING.generativeClip;
     case "cloud_export":
