@@ -368,12 +368,6 @@ export async function removeSilencesLocally(mode: SilenceMode = "natural", opts:
   }
 }
 
-/** Idioma da fala para o transcritor: o do navegador, quando é um dos suportados; o produto é brasileiro, então o padrão é português. */
-function transcriptionLanguage(): string {
-  const nav = typeof navigator === "undefined" ? "" : navigator.language.slice(0, 2).toLowerCase();
-  return ["pt", "en", "es"].includes(nav) ? nav : "pt";
-}
-
 /**
  * Envia só o áudio leve (16 kHz mono) para transcrição com timestamps por
  * palavra e mede a energia da voz em cada uma. Devolve true se deu certo.
@@ -425,7 +419,6 @@ async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolea
     const body = new FormData();
     body.append("file", audio.blob, audio.filename);
     body.append("duration", String(asset.duration));
-    body.append("language", transcriptionLanguage());
     body.append("vocabulary", JSON.stringify(useEditor.getState().project?.brand.vocabulary ?? []));
     const res = await fetch("/api/transcribe", { method: "POST", body });
     const data = (await res.json()) as { transcript?: Transcript; balance?: number; error?: string };

@@ -75,17 +75,9 @@ export function wordConfidence(words: { start: number; end: number }[], segments
   });
 }
 
-/** Transcrição com timestamps por palavra via Groq Whisper. */
-export async function transcribeAudio(file: Blob, opts: { language?: string; vocabulary?: string[] } = {}): Promise<{ transcript: Transcript; seconds: number }> {
-  const key = await getSetting("GROQ_API_KEY");
-  if (!key)
-    throw new HttpError(
-      503,
-      "A transcrição não está configurada: cadastre a chave da Groq no painel de administração (ou defina GROQ_API_KEY). Sem ela, use a remoção local de silêncios e a edição manual.",
-    );
-  if (file.size > MAX_AUDIO_BYTES)
-    throw new HttpError(413, "Áudio acima de 25 MB. Divida o vídeo em partes menores.");
+type Pass = { language?: string; prompt?: string };
 
+async function whisper(key: string, file: Blob, pass: Pass): Promise<GroqVerbose> {
   const body = new FormData();
   // O provedor identifica o formato pela extensão do nome.
   body.append("file", file, file.type.includes("webm") ? "audio.webm" : "audio.wav");
@@ -93,15 +85,8 @@ export async function transcribeAudio(file: Blob, opts: { language?: string; voc
   body.append("response_format", "verbose_json");
   body.append("timestamp_granularities[]", "word");
   body.append("timestamp_granularities[]", "segment");
-  const language = opts.language && TRANSCRIBE_LANGUAGES.includes(opts.language) ? opts.language : undefined;
-  if (language) {
-    body.append("language", language);
-    // Vocabulário do usuário entra na dica: nomes e termos saem escritos do jeito certo.
-    // O transcritor só lê o fim de uma dica longa, então ela é curta.
-    const vocabulary = (opts.vocabulary ?? []).map((v) => v.trim()).filter(Boolean).join(", ").slice(0, 500);
-    body.append("prompt", vocabulary ? `${VERBATIM_HINT[language]} ${vocabulary}.` : VERBATIM_HINT[language]!);
-  }
-
+  if (pass.language) body.append("language", pass.language);
+  if (pass.prompt) body.append("prompt", pass.prompt);
   const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST",
     headers: { authorization: `Bearer ${key}` },
@@ -116,14 +101,59 @@ export async function transcribeAudio(file: Blob, opts: { language?: string; voc
     console.error("transcribe error", res.status, await res.text().catch(() => ""));
     throw new HttpError(502, "O serviço de transcrição falhou. Tente novamente.");
   }
-  const data = (await res.json()) as GroqVerbose;
+  return (await res.json()) as GroqVerbose;
+}
+
+/** Nome de idioma devolvido pelo transcritor ("Portuguese") → código ("pt"). */
+const LANGUAGE_CODES: Record<string, string> = { portuguese: "pt", english: "en", spanish: "es" };
+const languageCode = (l?: string) => (l ? (LANGUAGE_CODES[l.toLowerCase()] ?? (l.length <= 3 ? l.toLowerCase() : undefined)) : undefined);
+
+/**
+ * Transcrição com timestamps por palavra via Groq Whisper.
+ *
+ * O idioma vem do PRÓPRIO ÁUDIO, nunca do navegador: com o idioma errado
+ * fixado o Whisper traduz a fala (um brasileiro com o sistema em inglês
+ * receberia legendas em inglês). Primeiro passe sem idioma, só para detectar;
+ * se for um idioma com dica de fala literal, um segundo passe com o idioma e a
+ * dica (preserva hesitações e repetições, que a limpeza precisa ver). O custo
+ * da transcrição é ínfimo perto da edição; o segundo passe vale a pena.
+ */
+export async function transcribeAudio(file: Blob, opts: { language?: string; vocabulary?: string[] } = {}): Promise<{ transcript: Transcript; seconds: number }> {
+  const key = await getSetting("GROQ_API_KEY");
+  if (!key)
+    throw new HttpError(
+      503,
+      "A transcrição não está configurada: cadastre a chave da Groq no painel de administração (ou defina GROQ_API_KEY). Sem ela, use a remoção local de silêncios e a edição manual.",
+    );
+  if (file.size > MAX_AUDIO_BYTES)
+    throw new HttpError(413, "Áudio acima de 25 MB. Divida o vídeo em partes menores.");
+
+  // Idioma escolhido explicitamente pelo usuário vale; senão, o detectado no áudio.
+  let data: GroqVerbose | null = null;
+  let language = opts.language && TRANSCRIBE_LANGUAGES.includes(opts.language) ? opts.language : undefined;
+  if (!language) {
+    data = await whisper(key, file, {});
+    language = languageCode(data.language);
+  }
+  if (language && TRANSCRIBE_LANGUAGES.includes(language)) {
+    // Vocabulário do usuário entra na dica: nomes e termos saem escritos do jeito certo.
+    // O transcritor só lê o fim de uma dica longa, então ela é curta.
+    const vocabulary = (opts.vocabulary ?? []).map((v) => v.trim()).filter(Boolean).join(", ").slice(0, 500);
+    const verbatim = await whisper(key, file, { language, prompt: vocabulary ? `${VERBATIM_HINT[language]} ${vocabulary}.` : VERBATIM_HINT[language] }).catch((e: unknown) => {
+      // O primeiro passe já serve: a dica é uma melhoria, não um requisito.
+      if (data) return data;
+      throw e;
+    });
+    data = verbatim;
+  }
+  if (!data) data = await whisper(key, file, {});
   // Vídeo sem fala (cena de ação, b-roll, demonstração muda) é um vídeo válido: transcrição vazia, não erro.
   // Pontuação solta ("." num trecho de ruído) não é palavra.
   const raw = (data.words ?? []).filter((w) => /[\p{L}\p{N}]/u.test(w.word));
   const confidence = wordConfidence(raw, data.segments);
   const words = raw.map((w, i) => ({ id: `w${i}`, text: w.word.trim(), start: w.start, end: w.end, ...(confidence[i] !== undefined ? { confidence: confidence[i] } : {}) }));
   return {
-    transcript: { language: data.language, words },
+    transcript: { language: language ?? data.language, words },
     seconds: data.duration ?? words[words.length - 1]?.end ?? 0,
   };
 }

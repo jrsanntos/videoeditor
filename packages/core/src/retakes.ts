@@ -61,6 +61,9 @@ const MARKERS = [
   ["apaga", "isso"],
 ].sort((a, b) => b.length - a.length);
 
+/** Conjunções que introduzem um paralelismo ("estão causando X e estão causando Y"): repetição de propósito. */
+const PARALLEL = new Set(["e", "ou", "mas", "nem", "que", "porque", "quando", "como", "se", "pois"]);
+
 /** Expressões de autocorreção, já normalizadas. */
 const CORRECTIONS = [["quer", "dizer"], ["na", "verdade"], ["alias"], ["ou", "melhor"], ["melhor", "dizendo"], ["corrigindo"], ["digo"]].sort((a, b) => b.length - a.length);
 
@@ -177,10 +180,16 @@ export function findRetakes(words: TimelineWord[]): Retake[] {
         i = j;
         continue;
       }
-      // Take abandonado (sem ponto final antes do recomeço) é erro quase certo;
-      // frase completa repetida pode ser ênfase.
-      const abandoned = !endsSentence(words[j - 1]!.text);
-      const confidence = adjacent || (abandoned && j - i <= 12) ? "alta" : "media";
+      // Fala natural repete o tempo todo ("a guarnição…, evitando que a guarnição", "aquele indivíduo X,
+      // aquele indivíduo Y", "estão causando X e estão causando Y"). Só é erro CERTO o take claramente
+      // abandonado: curto, sem pontuação (o transcritor pontua o que foi concluído) e sem conjunção de
+      // paralelismo logo antes da repetição. O resto vai para a leitura do agente.
+      const span = words.slice(i, j);
+      const punctuated = span.some((w) => /[,.;:!?…]$/.test(w.text.trim()));
+      // Com acento: o verbo "é" não é a conjunção "e".
+      const parallel = PARALLEL.has(words[j - 1]!.text.toLowerCase().replace(/[^\p{L}]/gu, ""));
+      const abandoned = !punctuated && !parallel && j - (i + k) <= 3 && j - i <= 8;
+      const confidence = adjacent || abandoned ? "alta" : "media";
       push(adjacent && k === 1 ? "stutter" : "restart", confidence, i, j);
       i = j;
       continue;

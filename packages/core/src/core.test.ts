@@ -1358,3 +1358,17 @@ describe("nível do pedido (regra local)", () => {
     expect(at("sweep")).toBeLessThan(at("full"));
   });
 });
+
+describe("repetição natural não é erro de gravação (vídeo real, fala fluente)", () => {
+  const take = (text: string) =>
+    findRetakes(text.split(" ").map((t, i) => ({ id: `w${i}`, text: t, start: i * 0.3, end: i * 0.3 + 0.25, clipId: "c", assetId: "a" })));
+
+  it.each([
+    "estão causando problemas para a guarnição, evitando que a guarnição entre em confronto físico direto.",
+    "Aquele indivíduo em surto psicótico, aquele indivíduo agressor, aquele indivíduo que recusa a obediência",
+    "indivíduos que estão causando distúrbios e estão causando problemas para a guarnição",
+    "jamais poderá ser utilizada em manifestações públicas e não deve ser utilizada quando há risco à vida",
+  ])("%s", (text) => {
+    expect(take(text).filter((r) => r.confidence === "alta")).toEqual([]);
+  });
+});
