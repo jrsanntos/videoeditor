@@ -17,6 +17,16 @@
   --color-brand-600: #6548f0;
   --color-sky-brand: #4f9dff;
   --font-display: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* Página inicial: paleta e tipografia próprias, separadas do editor. */
+  --color-night-950: #07030a;
+  --color-night-900: #11101a;
+  --color-night-800: #1d1a2f;
+  --color-neon-pink: #f64cff;
+  --color-neon-mint: #59ffcd;
+  --color-haze: rgba(247, 243, 255, 0.68);
+  --color-edge: rgba(255, 255, 255, 0.14);
+  --font-grotesk: "Space Grotesk", "Urbanist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-urbanist: "Urbanist", "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 html,
@@ -201,4 +211,296 @@ body {
 
 input[type="range"] {
   accent-color: #8f7bff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Página inicial                                                      */
+/* ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/space-grotesk-latin-wght-normal.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Urbanist";
+  src: url("/fonts/urbanist-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+/* Fontes de legenda do próprio editor, com nomes próprios para não colidir
+   com as que o editor registra pela FontFace API. */
+@font-face {
+  font-family: "LP Anton";
+  src: url("/fonts/anton-latin-400-normal.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "LP Bebas";
+  src: url("/fonts/bebas-neue-latin-400-normal.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "LP Playfair";
+  src: url("/fonts/playfair-display-latin-wght-italic.woff2") format("woff2");
+  font-weight: 400 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@layer components {
+.lp {
+  font-family: var(--font-urbanist);
+  color: #f7f3ff;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(89, 255, 205, 0.09) 0, transparent 38%),
+    radial-gradient(circle at 88% 0, rgba(246, 76, 255, 0.17) 0, transparent 46%),
+    #07030a;
+}
+.lp ::selection {
+  background: rgba(246, 76, 255, 0.4);
+}
+.lp-display {
+  font-family: var(--font-grotesk);
+  letter-spacing: -0.02em;
+}
+.lp-overline {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #59ffcd;
+}
+.lp-panel {
+  background: rgba(17, 16, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.lp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  padding: 0.85rem 1.6rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+.lp-btn:hover {
+  transform: translateY(-2px);
+}
+.lp-btn:focus-visible,
+.lp-chip:focus-visible {
+  outline: 2px solid #59ffcd;
+  outline-offset: 3px;
+}
+.lp-btn-primary {
+  background: linear-gradient(120deg, #f64cff, #59ffcd, #f64cff);
+  background-size: 200% 200%;
+  color: #07030a;
+  box-shadow: 0 18px 38px -10px rgba(246, 76, 255, 0.5);
+  animation: lp-wave 5s ease infinite;
+}
+.lp-btn-outline {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f7f3ff;
+}
+.lp-btn-outline:hover {
+  border-color: #59ffcd;
+}
+.lp-btn-ghost {
+  background: rgba(255, 255, 255, 0.07);
+  color: #f7f3ff;
+}
+.lp-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+@keyframes lp-wave {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.lp-chip {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.6rem 1.25rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+.lp-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.lp-chip[aria-selected="true"] {
+  background: #f64cff;
+  color: #07030a;
+  font-weight: 600;
+}
+
+/* Faixas de texto corrido. */
+.lp-ribbon {
+  overflow: hidden;
+  padding: 0.8rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(120deg, rgba(246, 76, 255, 0.2), rgba(89, 255, 205, 0.13));
+  box-shadow: 0 12px 40px rgba(6, 3, 20, 0.45);
+}
+.lp-ribbon-solid {
+  background: #f64cff;
+  color: #07030a;
+  border-color: transparent;
+}
+.lp-ribbon-track {
+  display: flex;
+  width: max-content;
+  gap: 2.5rem;
+  padding-left: 2.5rem;
+  font-family: var(--font-grotesk);
+  font-weight: 600;
+  font-size: 0.85rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  animation: lp-marquee 36s linear infinite;
+}
+.lp-ribbon-reverse .lp-ribbon-track {
+  animation-direction: reverse;
+}
+@keyframes lp-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* Cartões de vídeo da abertura. */
+@keyframes lp-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--tilt, 0deg));
+  }
+  50% {
+    transform: translateY(-14px) rotate(var(--tilt, 0deg));
+  }
+}
+.lp-float {
+  animation: lp-float var(--float, 8s) ease-in-out infinite;
+}
+
+.lp-reel {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  overflow: hidden;
+  border-radius: 14px;
+  isolation: isolate;
+}
+.lp-reel::after {
+  /* Vinheta: escurece a base para a legenda ler bem, como no vídeo real. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, transparent 22%, transparent 48%, rgba(0, 0, 0, 0.82) 100%);
+}
+.lp-reel-viral {
+  background:
+    radial-gradient(circle at 70% 25%, #ff7a3d 0, transparent 45%),
+    radial-gradient(circle at 20% 80%, #f64cff 0, transparent 55%),
+    #2a0a3d;
+}
+.lp-reel-autoridade {
+  background:
+    radial-gradient(circle at 75% 20%, #3d5a80 0, transparent 50%),
+    radial-gradient(circle at 15% 85%, #1f4d47 0, transparent 55%),
+    #0e1622;
+}
+.lp-reel-vsl {
+  background:
+    radial-gradient(circle at 25% 20%, #59ffcd 0, transparent 42%),
+    radial-gradient(circle at 80% 75%, #1c6dd0 0, transparent 55%),
+    #06222b;
+}
+.lp-reel-limpeza img {
+  /* Material bruto: sem tratamento de cor. */
+  filter: saturate(0.35) brightness(0.85);
+}
+.lp-reel-limpeza {
+  background:
+    radial-gradient(circle at 70% 30%, #6b5b95 0, transparent 50%),
+    radial-gradient(circle at 20% 75%, #3a3355 0, transparent 55%),
+    #15121f;
+}
+.lp-reel img,
+.lp-reel video {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Legenda que acende palavra por palavra (quatro palavras por ciclo). */
+@keyframes lp-word {
+  0%,
+  24% {
+    color: var(--hi, #facc15);
+    transform: scale(1.08);
+  }
+  25%,
+  100% {
+    color: inherit;
+    transform: none;
+  }
+}
+.lp-word {
+  display: inline-block;
+  animation: lp-word 2.4s steps(1, end) infinite;
+  animation-delay: calc(var(--i) * 0.6s);
+}
+
+@keyframes lp-cut {
+  0%,
+  45% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  60%,
+  100% {
+    opacity: 0.18;
+    transform: scaleX(0.2);
+  }
+}
+.lp-cut {
+  transform-origin: left center;
+  animation: lp-cut 4s ease-in-out infinite alternate;
+}
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-btn-primary,
+  .lp-ribbon-track,
+  .lp-float,
+  .lp-word,
+  .lp-cut {
+    animation: none;
+  }
+  .lp-btn:hover {
+    transform: none;
+  }
 }
