@@ -404,7 +404,8 @@ const socialProofToast = define({
     const textW = w - pad * 3 - iconR * 2;
     const msg = fitRich(ctx, params.message, { size: 38 * u, weight: 600, color: brand.textColor, emphColor: brand.primaryColor }, textW, 2, 26 * u);
     const h = Math.max(iconR * 2, 46 * u + msg.height) + pad * 2;
-    const x = safe.left + (W - safe.left - safe.right - w) / 2;
+    // No vertical, centralizado; no horizontal o centro é onde fica o rosto, então a notificação vai para o canto direito.
+    const x = vertical ? safe.left + (W - safe.left - safe.right - w) / 2 : W - safe.right - w;
     const top = params.position === "top";
     const y = top ? safe.top + 16 * u : H - safe.bottom - h - (vertical ? 170 * u : 30 * u);
     const from = (top ? -1 : 1) * (h + 80 * u);

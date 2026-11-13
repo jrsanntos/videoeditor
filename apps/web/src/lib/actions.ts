@@ -305,7 +305,10 @@ export async function transcribe(opts: { captions?: boolean } = {}): Promise<boo
   if (!project) return false;
   const assetId = primaryAssetId(project);
   const asset = assetId ? project.assets[assetId] : null;
-  if (!assetId || !asset) return false;
+  if (!assetId || !asset) {
+    setNotice("Adicione um vídeo à timeline primeiro (aba Mídia, ou arraste um arquivo para a trilha de vídeo).");
+    return false;
+  }
   // O mesmo arquivo já foi transcrito antes (cache por SHA-256): reaproveita, sem créditos.
   const cached = await cacheGet(asset.hash);
   if (cached?.transcript) {

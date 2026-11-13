@@ -52,6 +52,8 @@ export const CAPTION_PRESETS: Record<CaptionPreset, PresetSpec> = {
   clean: { name: "Limpa", size: 52, weight: 600, upper: false, maxWidth: 0.96 },
 };
 
+const SPACING: Partial<Record<CaptionPreset, number>> = { viral_pop: 3, comic_bounce: 2.4, karaoke_pill: 1.6, neon_subtitle: 1.3 };
+
 const groupCache = new WeakMap<Project, CaptionGroup[]>();
 
 /**
@@ -136,7 +138,8 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
 
   const measure = () => {
     ctx.font = font(spec.weight, size);
-    const space = ctx.measureText(" ").width * (style.preset === "karaoke_pill" ? 1.5 : 1);
+    // Estilos em que a palavra ativa cresce, ganha contorno espesso ou uma pílula precisam de mais ar entre as palavras.
+    const space = ctx.measureText(" ").width * (SPACING[style.preset] ?? 1);
     const widths = texts.map((s) => ctx.measureText(s).width);
     return { space, widths, total: widths.reduce((a, b) => a + b, 0) + space * (texts.length - 1) };
   };

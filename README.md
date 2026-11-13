@@ -101,3 +101,21 @@ Contas, limite de requisições, recuperação de senha, renovação mensal e os
 Implementado mas **ainda não exercitado contra as APIs reais** (faltavam chaves no ambiente de desenvolvimento): o Checkout/Portal do Stripe e o envio de e-mail pelo Resend.
 
 Ainda não existe: projetos e armazenamento em nuvem, render em nuvem. Ver o roadmap.
+
+## O que mudou na evolução "padrão ouro"
+
+| Épico | Onde está |
+| --- | --- |
+| Entrada: pular o upload, tarja desligada por padrão, URL do YouTube de inspiração | `components/Editor.tsx`, `components/MediaPanel.tsx`, `server/style-reference.ts`, `api/style-reference` |
+| Gênero do material, picos de energia visual/acústica, cache por SHA-256 | `core/analysis.ts`, `web/lib/analysis.ts`, `web/lib/cache.ts` |
+| Diretor → Editor → Crítico, plano por atos com confirmação no chat | `server/agents.ts`, `api/agent/route.ts`, `core/critic.ts`, `components/ChatPanel.tsx` |
+| Rampas de velocidade, looks (LUT), vinheta, letterbox, impactos, zoom com rastreamento | `core/timeline.ts`, `core/ops.ts`, `renderer/draw.ts`, `renderer/background.ts`, `renderer/camera.ts` |
+| Timeline NLE: lacunas, inserir entre clipes, ripple delete, snapping, marcadores, `.otio` | `core/ops.ts` (`move_clip`, `insert_clip`), `core/otio.ts`, `components/Timeline.tsx` |
+| Silêncios com VAD adaptativo e proteções; micro-fade de 30 ms; ducking de −14 dB | `core/silence.ts`, `renderer/music.ts`, `web/lib/export.ts` |
+| Segmentação refinada, guardrail do texto atrás da cabeça, legendas na base | `renderer/mask.ts`, `core/layout.ts`, `renderer/captions.ts` |
+| Cards novos, `custom_motion_graphic`, 3 modelos prontos | `renderer/components/v2.ts`, `core/motion-graphic.ts`, `core/skills.ts`, `core/template.ts` |
+
+Limites conhecidos: as grades de cor são aproximações em Canvas 2D (filtro + camadas), não LUTs 3D;
+a trilha de fundo é um loop sintetizado por clima (não há biblioteca de músicas no repositório);
+na câmera lenta o áudio desce de tom junto (sem preservação de pitch); o ritmo de cortes de uma
+referência do YouTube é estimado por metadados, legendas e miniatura, não medido quadro a quadro.
