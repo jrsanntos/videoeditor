@@ -10,6 +10,12 @@ export type Box = { x: number; y: number; w: number; h: number };
 
 /** Acima disto (fração da altura do quadro) o rosto é close-up: texto atrás da cabeça fica ilegível. */
 export const CLOSE_UP_FACE_HEIGHT = 0.35;
+/**
+ * Acima disto (fração da LARGURA do quadro) também é close-up: a cabeça tapa o
+ * miolo de qualquer título atrás dela, e não sobra lateral para texto ao lado.
+ * É o caso típico da gravação de celular reenquadrada para 9:16.
+ */
+export const CLOSE_UP_FACE_WIDTH = 0.3;
 
 const intersects = (a: Box, b: Box, pad = 0) => a.x < b.x + b.w + pad && a.x + a.w > b.x - pad && a.y < b.y + b.h + pad && a.y + a.h > b.y - pad;
 
@@ -27,7 +33,7 @@ export function faceBox(s: SubjectBox, aspect = 9 / 16): Box {
 /** Close-up próximo, ou rosto cortado na borda superior/lateral do quadro. */
 export function isCloseUp(s: SubjectBox, aspect = 9 / 16): boolean {
   const f = faceBox(s, aspect);
-  if (f.h > CLOSE_UP_FACE_HEIGHT) return true;
+  if (f.h > CLOSE_UP_FACE_HEIGHT || f.w > CLOSE_UP_FACE_WIDTH) return true;
   // Cabeça encostada no topo = cortada pela borda. Idem nas laterais.
   return f.y <= 0.012 || f.x <= 0.005 || f.x + f.w >= 0.995;
 }
@@ -142,4 +148,46 @@ export function captionAlpha(ranges: TimeRange[], t: number, fade = 0.2): number
     alpha = Math.min(alpha, d / fade);
   }
   return Math.max(0, Math.min(1, alpha));
+}
+
+export type Nudge = { dx: number; dy: number; scale: number };
+
+/**
+ * Para onde mover um bloco de texto/cartão (`box`) para que ele não cubra
+ * nenhum dos rostos (`faces`, todos na mesma unidade), sem sair de `bounds`.
+ * Escolhe o menor deslocamento: para baixo do queixo, para cima da cabeça ou
+ * para o lado. Se nada couber no tamanho original, tenta menor (até 70%).
+ * Sem colisão, não mexe. Sem saída nenhuma, fica onde cobre menos o rosto.
+ */
+export function avoidFaces(box: Box, faces: Box[], bounds: Box, pad = 0): Nudge {
+  const none: Nudge = { dx: 0, dy: 0, scale: 1 };
+  if (!faces.length || !faces.some((f) => intersects(box, f, pad))) return none;
+  const top = Math.min(...faces.map((f) => f.y)) - pad;
+  const bottom = Math.max(...faces.map((f) => f.y + f.h)) + pad;
+  const left = Math.min(...faces.map((f) => f.x)) - pad;
+  const right = Math.max(...faces.map((f) => f.x + f.w)) + pad;
+  const inside = (b: Box) => b.x >= bounds.x - 1e-6 && b.y >= bounds.y - 1e-6 && b.x + b.w <= bounds.x + bounds.w + 1e-6 && b.y + b.h <= bounds.y + bounds.h + 1e-6;
+  const clear = (b: Box) => !faces.some((f) => intersects(b, f, pad));
+  for (const scale of [1, 0.85, 0.7]) {
+    // Escala em torno do centro do bloco.
+    const w = box.w * scale;
+    const h = box.h * scale;
+    const x0 = box.x + (box.w - w) / 2;
+    const y0 = box.y + (box.h - h) / 2;
+    const clampX = (x: number) => Math.min(Math.max(x, bounds.x), bounds.x + bounds.w - w);
+    const options: { x: number; y: number }[] = [
+      { x: clampX(x0), y: bottom },
+      { x: clampX(x0), y: top - h },
+      { x: right, y: y0 },
+      { x: left - w, y: y0 },
+    ];
+    const fits = options
+      .map((o) => ({ ...o, b: { x: o.x, y: o.y, w, h } }))
+      .filter((o) => inside(o.b) && clear(o.b))
+      .sort((a, b) => Math.hypot(a.x - x0, a.y - y0) - Math.hypot(b.x - x0, b.y - y0));
+    const best = fits[0];
+    if (best) return { dx: best.x - x0, dy: best.y - y0, scale };
+  }
+  // Nenhum lugar livre: desce até o limite de baixo (cobre o queixo, não os olhos).
+  return { dx: 0, dy: Math.max(0, bounds.y + bounds.h - (box.y + box.h)), scale: 0.85 };
 }

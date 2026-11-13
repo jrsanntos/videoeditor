@@ -644,6 +644,8 @@ import {
   faceBox,
   hasSpeed,
   isCloseUp,
+  avoidFaces,
+  framingObjections,
   localTimeAt,
   mainGaps,
   MotionGraphicSchema,
@@ -1153,11 +1155,41 @@ describe("5. legendas e texto atrás da cabeça: guardrails espaciais", () => {
     expect(moved + base.half <= busy[0]!.y || moved - base.half >= busy[0]!.y + busy[0]!.h).toBe(true);
   });
 
+  it("bloco de texto sai do rosto pelo menor caminho e fica dentro da área segura", () => {
+    const bounds = { x: 0.05, y: 0.08, w: 0.9, h: 0.8 };
+    const f = { x: 0.27, y: 0.14, w: 0.46, h: 0.33 };
+    const list = { x: 0.55, y: 0.45, w: 0.38, h: 0.12 };
+    const n = avoidFaces(list, [f], bounds, 0.01);
+    const moved = { x: list.x + n.dx, y: list.y + n.dy, w: list.w, h: list.h };
+    expect(moved.y).toBeGreaterThanOrEqual(f.y + f.h);
+    expect(moved.y + moved.h).toBeLessThanOrEqual(bounds.y + bounds.h + 1e-9);
+    // Sem colisão: não mexe.
+    expect(avoidFaces({ ...list, y: 0.7 }, [f], bounds, 0.01)).toEqual({ dx: 0, dy: 0, scale: 1 });
+  });
+
+  it("o título gigante atrás da cabeça é recusado em close-up, com o porquê; em plano aberto passa", () => {
+    const withSubject = (s: typeof medium) => {
+      const p = fixture();
+      const asset = Object.values(p.assets)[0]!;
+      asset.width = 1080;
+      asset.height = 1920;
+      asset.subject = [{ t: 0, ...s }, { t: 10, ...s }];
+      return applyOperations(p, [{ op: "set_format", aspectRatio: "9:16" }, { op: "add_component", component: "depth_hook_title", start: 0, duration: 2.5, params: { title: "Taser" } }]).project;
+    };
+    const tight = framingObjections(withSubject({ ...medium, faceW: 0.46, faceH: 0.3 }));
+    expect(tight).toHaveLength(1);
+    expect(tight[0]!.message).toContain("close-up");
+    expect(framingObjections(withSubject(medium))).toEqual([]);
+    expect(critiqueEdit(withSubject({ ...medium, faceW: 0.46, faceH: 0.3 })).some((i) => i.code === "sem_espaco_no_quadro")).toBe(true);
+  });
+
   it("texto atrás da cabeça: em close-up (> 35% da altura) ou rosto cortado, vira cartão na área livre", () => {
     expect(isCloseUp(medium)).toBe(false);
     expect(isCloseUp(closeUp)).toBe(true);
     // Rosto cortado na borda de cima também conta.
     expect(isCloseUp({ ...medium, y: 0, faceY: 0.06 })).toBe(true);
+    // Rosto largo (gravação de celular reenquadrada) também é close-up, mesmo sem passar de 35% da altura.
+    expect(isCloseUp({ ...medium, faceW: 0.45, faceH: 0.3 })).toBe(true);
     expect(depthPlacement(medium, true, safe)).toEqual({ mode: "behind" });
     const placed = depthPlacement(closeUp, true, safe);
     expect(placed.mode).toBe("card");

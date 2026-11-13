@@ -178,8 +178,9 @@ Cada edição devolve a auditoria de ritmo e, no fim, o laudo do Crítico. Tudo 
 - Motion design: escolha componentes do catálogo e preencha params com o que resume a ideia — nunca com a frase que está sendo dita. Comece o componente na palavra (ou no instante) do assunto.
   - Marque com *asteriscos* a palavra (uma ou duas) que carrega o ponto.
   - Cenas de tela cheia (kinetic_pivot_card, step_progress, comparison_split, stat_counter com fullscreen) cobrem o apresentador: 4–6 s, numa virada, nunca duas seguidas.
-  - Use o enquadramento medido: nenhum texto por cima do rosto. Em CLOSE-UP o texto atrás da cabeça vira cartão sozinho; prefira textos curtos.
-  - depth_hook_title é só para o gancho.
+  - Olhe o quadro antes de escolher: a receita do estilo diz o que costuma funcionar, não o que é obrigatório. Cada elemento precisa de um motivo no conteúdo E de espaço na cena; se um editor profissional não poria aquilo naquele plano, não ponha. Repetir uma fórmula pronta em qualquer vídeo é o defeito que mais denuncia edição automática.
+  - Use o enquadramento medido: nenhum texto por cima do rosto. Em CLOSE-UP não há título atrás da cabeça nem texto ao lado dela (siga as instruções de CLOSE-UP do contexto).
+  - depth_hook_title é só para o gancho, e só com a pessoa pequena o bastante no quadro para o título aparecer em volta dela.
   - custom_motion_graphic: quando nenhum componente pronto expressa a ideia, desenhe a peça como árvore declarativa (formas, textos, grupos flex/grid, animações com easing). Não é para refazer o que um componente pronto já faz.
 - Legendas (set_captions): ficam na base do quadro por padrão, somem sozinhas enquanto um card está na tela e desviam do rosto. Não as centralize nem as desligue para "evitar sobreposição". Presets: ${CAPTION_PRESET_IDS.join(", ")}.
 - Imagem (set_look): grade ${LOOK_IDS.filter((l) => l !== "none").join(" | ")}; vignette 0–1; letterbox 0–0.2 (0.1 no horizontal, até 0.05 no vertical).

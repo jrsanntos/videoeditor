@@ -12,6 +12,7 @@ import {
   DEFAULT_PACING,
   enforcePacing,
   ensureLowerThird,
+  framingObjections,
   mainClips,
   MAX_CRITIC_CYCLES,
   pacingReport,
@@ -26,6 +27,7 @@ import {
   wordLines,
   wordsBetween,
   type AgentTier,
+  type ComponentClip,
   type OperationInput,
   type PacingProfile,
   type Project,
@@ -198,7 +200,15 @@ export async function POST(req: Request) {
     const log: string[] = [];
     // Uso por modelo (cada um tem o seu preço).
     const usageBy = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
-    const apply = (ops: OperationInput[]) => applyOperations(working, ops, { validateComponent, validateSfx });
+    /** Aplica as operações do agente; o que não cabe no quadro volta como erro, com o porquê. */
+    const apply = (ops: OperationInput[]) => {
+      const result = applyOperations(working, ops, { validateComponent, validateSfx });
+      const before = new Set(working.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+      const added = result.project.tracks.flatMap((t) => t.clips).filter((c): c is ComponentClip => c.type === "component" && !before.has(c.id));
+      const objections = framingObjections(result.project, added);
+      if (objections.length) throw new Error(objections.map((o) => o.message).join("\n"));
+      return result;
+    };
     /** Laudo determinístico do Crítico: ritmo + direção de arte + colisões medidas no quadro. */
     const critique = () => critiqueEdit(working, { skill, screen: screenTexts(working) });
 

@@ -102,7 +102,7 @@ export function templatePrompt(template: EditTemplate): string {
 }
 
 const WHEN: Record<string, string> = {
-  depth_hook_title: "no gancho, nos 2 primeiros segundos, com a promessa em 1 a 3 palavras",
+  depth_hook_title: "no gancho, nos 2 primeiros segundos, com a promessa em 1 a 3 palavras, só se a pessoa estiver pequena no quadro (nunca em close-up)",
   stat_counter_card: "sempre que a fala citar um número forte",
   social_proof_toast: "quando citar um resultado, depoimento ou prova social",
   kinetic_pivot_card: "numa virada de raciocínio (problema → solução)",
