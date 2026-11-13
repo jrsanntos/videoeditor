@@ -47,6 +47,7 @@ import {
   jumpsBefore,
   DEFAULT_PACING,
   type Project,
+  ensureLowerThird,
 } from "./index";
 
 function fixture(): Project {
@@ -697,6 +698,23 @@ describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", (
     expect(ctx).toContain("Tarja de nome/cargo: DESLIGADA");
     const on = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Dra. Ana" } }]).project;
     expect(buildAgentContext(on)).toContain("Tarja de nome/cargo: disponível");
+  });
+
+  it("o nome informado sempre vira tarja, mesmo se a IA esquecer; sem nome ou desligada, nada muda", () => {
+    const named = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Sgt. Lima", credential: "Instrutor" } }]).project;
+    const tarjas = (p: Project) => p.tracks.flatMap((t) => t.clips).filter((c) => c.type === "component" && c.component === "executive_lower_third");
+    // Um cartão no começo: a tarja vai para a primeira janela livre depois dele.
+    const busy = applyOperations(named, [{ op: "add_component", component: "kinetic_pivot_card", start: 1, duration: 2.5, params: {} }]).project;
+    const out = ensureLowerThird(busy);
+    expect(tarjas(out.project)).toHaveLength(1);
+    expect(tarjas(out.project)[0]!.start).toBe(3.5);
+    expect(out.log[0]).toContain("Sgt. Lima");
+    // Já tem tarja: nada muda.
+    expect(ensureLowerThird(out.project).log).toEqual([]);
+    expect(tarjas(ensureLowerThird(out.project).project)).toHaveLength(1);
+    // Sem nome, ou com a tarja desligada: nunca cria.
+    expect(ensureLowerThird(applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true } }]).project).log).toEqual([]);
+    expect(ensureLowerThird(applyOperations(fixture(), [{ op: "set_brand", brand: { displayName: "Sgt. Lima" } }]).project).log).toEqual([]);
   });
 
   it("o StyleReferenceProfile do YouTube entra no contexto do Diretor", () => {

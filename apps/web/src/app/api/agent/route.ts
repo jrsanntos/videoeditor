@@ -11,6 +11,7 @@ import {
   critiqueReport,
   DEFAULT_PACING,
   enforcePacing,
+  ensureLowerThird,
   mainClips,
   MAX_CRITIC_CYCLES,
   pacingReport,
@@ -506,10 +507,13 @@ export async function POST(req: Request) {
       // O que ainda colide depois da revisão é podado de forma determinística.
       if (log.length) {
         const pruned = enforcePacing(working, profile);
-        if (pruned.log.length) {
-          working = pruned.project;
-          log.push(...pruned.log);
-          send({ type: "ops", project: working, log: pruned.log });
+        // O nome informado pela pessoa aparece sempre: a tarja não depende de o modelo lembrar.
+        const named = ensureLowerThird(pruned.project);
+        const fixed = [...pruned.log, ...named.log];
+        if (fixed.length) {
+          working = named.project;
+          log.push(...fixed);
+          send({ type: "ops", project: working, log: fixed });
         }
       }
       const bill = await settle();

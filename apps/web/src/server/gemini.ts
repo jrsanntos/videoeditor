@@ -144,6 +144,8 @@ function declarations(tools: Tool[], compat: boolean) {
   ];
 }
 
+/** Espera máxima (s) antes de repetir uma volta recusada por limite de requisições. */
+const MAX_RETRY_WAIT_S = 30;
 const REFUSAL = new Set(["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"]);
 let seq = 0;
 
@@ -181,6 +183,19 @@ export async function geminiTurn(req: { system: string; tools: Tool[]; messages:
     else {
       console.error("gemini error 400", body.slice(0, 500));
       throw new HttpError(502, "O modelo reserva recusou o pedido.");
+    }
+  }
+  // Limite por minuto: o Google diz quanto esperar. Se for pouco, espera e tenta uma vez mais.
+  if (res && res.status === 429) {
+    const body = await res.text().catch(() => "");
+    const wait = Number(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(body)?.[1] ?? NaN);
+    if (Number.isFinite(wait) && wait <= MAX_RETRY_WAIT_S && !req.signal?.aborted) {
+      console.warn(`gemini 429: nova tentativa em ${wait}s`);
+      await new Promise((r) => setTimeout(r, (wait + 0.5) * 1000));
+      res = await call(false);
+    } else {
+      console.error("gemini error 429", body.slice(0, 500));
+      throw new HttpError(429, "Os serviços de IA estão sobrecarregados. Tente de novo em alguns segundos.");
     }
   }
   if (!res) throw new HttpError(502, "Não foi possível conectar ao modelo reserva.");
