@@ -7,14 +7,19 @@ import type { TimelineWord } from "./timeline";
  *   ficando o último take.
  * - "stutter": a mesma palavra dita duas vezes seguidas, ou uma palavra truncada.
  * - "marker": a pessoa avisa que errou ("errei", "de novo", "corta"). O corte
- *   sugerido vai do início da frase até o aviso.
+ *   sugerido vai do início da frase até o aviso — ou, quando a pessoa recomeça
+ *   depois do aviso, do início do take abandonado até o recomeço.
+ * - "correction": a pessoa se corrige no meio da frase ("são três, quer dizer,
+ *   na verdade são quatro"). A informação nova fica entre o aviso e a
+ *   repetição, então o corte certo depende de leitura: sempre "media".
  *
  * É determinístico e roda no navegador (0 créditos). "alta" pode ser cortado
  * direto; "media" precisa do julgamento do agente ou do usuário, porque
  * repetição também é recurso retórico ("você precisa de foco, você precisa de método").
  */
 export type Retake = {
-  kind: "restart" | "stutter" | "marker";
+  /** correction: autocorreção ("três, quer dizer, quatro") — nunca é cortada sozinha, porque a parte nova fica no meio. */
+  kind: "restart" | "stutter" | "marker" | "correction";
   confidence: "alta" | "media";
   /** Primeira e última palavra a cortar (inclusive). */
   from: string;
@@ -56,6 +61,9 @@ const MARKERS = [
   ["apaga", "isso"],
 ].sort((a, b) => b.length - a.length);
 
+/** Expressões de autocorreção, já normalizadas. */
+const CORRECTIONS = [["quer", "dizer"], ["na", "verdade"], ["alias"], ["ou", "melhor"], ["melhor", "dizendo"], ["corrigindo"], ["digo"]].sort((a, b) => b.length - a.length);
+
 /** Recomeço procurado até esta distância (palavras / segundos) do início do take ruim. */
 const MAX_LOOKAHEAD_WORDS = 30;
 const MAX_LOOKAHEAD_SEC = 20;
@@ -82,6 +90,26 @@ export function findRetakes(words: TimelineWord[]): Retake[] {
     let s = i;
     while (s > 0 && !endsSentence(words[s - 1]!.text) && words[s]!.start - words[s - 1]!.end < 1) s--;
     return s;
+  };
+
+  /** Primeira ocorrência de alguma sequência de `list` que começa em [a, b). */
+  const seqIn = (list: string[][], a: number, b: number) => {
+    for (let x = a; x < b; x++) {
+      const m = list.find((seq) => seq.every((tok, k) => n[x + k] === tok));
+      if (m) return { at: x, end: x + m.length, seq: m };
+    }
+    return null;
+  };
+  /** Aviso de erro "forte" (não ambíguo) dentro do trecho. */
+  const strongMarkerIn = (a: number, b: number) => {
+    for (let x = a; x < b; x++) {
+      const m = MARKERS.find((seq) => seq.every((tok, k) => n[x + k] === tok));
+      if (!m) continue;
+      const end = x + m.length;
+      const isolated = end >= words.length || endsSentence(words[end - 1]!.text) || /,$/.test(words[end - 1]!.text.trim()) || words[end]!.start - words[end - 1]!.end > 0.4;
+      if (m[0] === "errei" || m.length >= 3 || isolated) return true;
+    }
+    return false;
   };
 
   let i = 0;
@@ -132,6 +160,23 @@ export function findRetakes(words: TimelineWord[]): Retake[] {
     if (best) {
       const { j, k } = best;
       const adjacent = k === j - i;
+      // Aviso de erro entre o take abandonado e o recomeço ("como apre… pera, errei. Eu vou mostrar como"):
+      // é erro certo, e o corte vai do começo do take ruim até o recomeço.
+      if (strongMarkerIn(i + 1, j)) {
+        push("marker", "alta", i, j);
+        i = j;
+        continue;
+      }
+      // Autocorreção ("três formas, quer dizer, na verdade são quatro formas"): cortar até o recomeço
+      // apagaria a correção. Vai para revisão. O corte sugerido leva a palavra corrigida (logo antes da
+      // repetição) e a expressão, e deixa a palavra nova (logo antes do recomeço): "três formas…, quer
+      // dizer, na verdade são | quatro formas de ganhar dinheiro".
+      const cue = seqIn(CORRECTIONS, i + 1, j);
+      if (cue) {
+        push("correction", "media", Math.max(sentenceStart(i), i - 1), Math.max(cue.end, j - 1));
+        i = j;
+        continue;
+      }
       // Take abandonado (sem ponto final antes do recomeço) é erro quase certo;
       // frase completa repetida pode ser ênfase.
       const abandoned = !endsSentence(words[j - 1]!.text);

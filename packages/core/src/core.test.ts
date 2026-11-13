@@ -1254,3 +1254,42 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     expect(templatePrompt(action)).toContain("Rampas de velocidade");
   });
 });
+
+describe("takes ruins com transcrições reais (Groq Whisper)", () => {
+  // Formato "palavra[início-fim]", copiado da saída do serviço de transcrição.
+  const real = (s: string) =>
+    findRetakes(
+      s
+        .trim()
+        .split(/\s+/)
+        .map((tok, i) => {
+          const m = /^(.*)\[(.*)-(.*)\]$/.exec(tok)!;
+          return { id: `w${i}`, text: m[1]!, start: Number(m[2]), end: Number(m[3]), clipId: "c", assetId: "a" };
+        }),
+    );
+
+  it("aviso de erro seguido de recomeço é erro certo, mesmo com o take truncado virando outra palavra", () => {
+    const r = real(
+      "Eu[0.00-0.16] vou[0.16-0.38] mostrar[0.38-0.84] como[0.84-1.24] abre.[1.24-1.80] Aprender[1.92-2.54] inglês[2.54-3.02] rápido.[3.02-3.78] Não,[3.96-4.60] pera,[4.60-5.10] errei.[5.10-5.64] Eu[5.86-6.06] vou[6.06-6.32] mostrar[6.32-6.76] como[6.76-7.14] aprender[7.14-7.64] inglês[7.64-8.28] em[8.28-8.52] 30[8.52-8.88] dias.[8.88-9.32]",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "marker", confidence: "alta", from: "w0", to: "w10" });
+    expect(r[0]!.keepText).toBe("Eu vou mostrar como aprender inglês");
+  });
+
+  it("autocorreção nunca é corte automático e o corte sugerido mantém a informação corrigida", () => {
+    const r = real(
+      "Hoje[0.0-0.3] eu[0.3-0.4] vou[0.4-0.6] te[0.6-0.7] ensinar[0.7-1.2] três[1.2-1.5] formas[1.5-1.9] de[1.9-2.0] ganhar,[2.0-2.5] quer[3.4-3.6] dizer,[3.6-3.9] na[3.9-4.0] verdade[4.0-4.4] são[4.4-4.6] quatro[4.6-5.0] formas[5.0-5.4] de[5.4-5.5] ganhar[5.5-5.9] dinheiro[5.9-6.4] com[6.4-6.6] vídeo.[6.6-7.1]",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "correction", confidence: "media", cutText: "três formas de ganhar, quer dizer, na verdade são" });
+    expect(r[0]!.keepText).toMatch(/^quatro formas de ganhar dinheiro/);
+  });
+
+  it("frase recomeçada logo em seguida continua sendo corte certo", () => {
+    const r = real(
+      "Então,[0.00-0.56] o[0.56-0.86] segredo[0.86-1.52] do[1.52-1.68] sucesso,[1.68-2.34] o[2.34-2.56] segredo[2.56-3.10] do[3.10-3.28] sucesso[3.28-3.70] é[3.70-3.96] consistência.[3.96-5.44]",
+    );
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", cutText: "o segredo do sucesso," });
+  });
+});

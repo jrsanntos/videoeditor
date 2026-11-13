@@ -136,7 +136,7 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
     lines.push(
       "",
       "## Takes ruins detectados",
-      "Erros de gravação prováveis, já com o corte exato (mantém o último take). confiança alta: corte. confiança media: leia o trecho e decida — repetição também pode ser ênfase intencional.",
+      "Erros de gravação prováveis, já com o corte exato (mantém o último take). confiança alta: corte. confiança media: leia o trecho e decida — repetição também pode ser ênfase intencional. correction: a pessoa se corrigiu no meio da frase; a informação certa é a que vem DEPOIS da expressão de correção — confira o corte sugerido para manter a frase com sentido e com o dado corrigido.",
     );
     for (const r of takes)
       lines.push(`${r.confidence} | ${r.kind} | cortar {"from":"${r.from}","to":"${r.to}"} "${r.cutText}" → fica "${r.keepText}"`);
