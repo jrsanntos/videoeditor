@@ -1,4 +1,4 @@
-import { PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
+import { creditCost, formatCredits, PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
 import { Icon } from "./icons";
 import { LandingDemo } from "./LandingDemo";
 import { DEMOS } from "./landing-demos";
@@ -10,6 +10,9 @@ const videos = (credits: number) => {
   const { min, max } = videosEstimate(credits);
   return min === max ? String(max) : `${min} a ${max}`;
 };
+
+/** Transcrição + edição completa de um vídeo de até 1 minuto: o número da tabela, não um texto fixo. */
+const SHORT_VIDEO_CREDITS = creditCost({ type: "ingest", durationSec: 60 }) + creditCost({ type: "agent", tier: "full", durationSec: 60 });
 
 const wrap = "mx-auto w-full max-w-[1240px] px-4 sm:px-6";
 const h2 = "lp-display mt-4 text-[32px] font-semibold leading-[1.08] sm:text-[46px]";
@@ -46,11 +49,11 @@ const FAQ = [
   },
   {
     q: "Como funcionam os créditos?",
-    a: "Créditos pagam o que usa inteligência artificial: transcrição, edição completa e ajustes por texto. Tudo que você faz à mão na timeline e a exportação no navegador são gratuitos. Um vídeo curto, do bruto ao pronto, costuma gastar de 20 a 28 créditos.",
+    a: `Créditos pagam o que usa inteligência artificial: transcrição, edição completa e ajustes por texto. Tudo que você faz à mão na timeline e a exportação no navegador são gratuitos. Um vídeo de até 1 minuto, do bruto ao pronto, gasta ${formatCredits(SHORT_VIDEO_CREDITS)} créditos, mais 1 por ajuste que você pedir por texto.`,
   },
   {
     q: "Posso testar sem pagar?",
-    a: `Sim. Envie o vídeo nesta página e veja a prévia do estilo e as pausas encontradas sem criar conta. Para a IA editar, crie a conta grátis (com Google ou e-mail): você ganha ${SIGNUP_CREDITS} créditos, sem cartão, o suficiente para os primeiros vídeos.`,
+    a: `Sim. Envie o vídeo nesta página e veja a prévia do estilo e as pausas encontradas sem criar conta. Para a IA editar, crie a conta grátis (com Google ou e-mail): você ganha ${SIGNUP_CREDITS} créditos, sem cartão, o suficiente para a IA editar um vídeo de até ${PLANS.free.maxUploadMinutes} minutos.`,
   },
   {
     q: "Para que tipo de vídeo serve?",
@@ -293,7 +296,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
                     {plan.priceBRL > 0 && <span className="text-haze">/mês</span>}
                   </p>
                   <p className="mt-3 text-[15px] leading-snug text-haze">
-                    {id === "free" ? `${SIGNUP_CREDITS} créditos de boas-vindas: ${videos(SIGNUP_CREDITS)} vídeos curtos para testar` : `${plan.monthlyCredits.toLocaleString("pt-BR")} créditos por mês: cerca de ${videos(plan.monthlyCredits)} vídeos curtos`}
+                    {id === "free" ? `${SIGNUP_CREDITS} créditos de boas-vindas: ${videos(SIGNUP_CREDITS) === "1" ? "1 vídeo editado pela IA" : `${videos(SIGNUP_CREDITS)} vídeos curtos`} para testar` : `${plan.monthlyCredits.toLocaleString("pt-BR")} créditos por mês: cerca de ${videos(plan.monthlyCredits)} vídeos curtos`}
                   </p>
                   <ul className="mt-7 flex-1 space-y-3 border-t border-edge pt-6 text-[15.5px]">
                     {[

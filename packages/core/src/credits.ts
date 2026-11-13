@@ -4,27 +4,37 @@
  * só inteligência (LLM/transcrição), mídia generativa e render em nuvem cobram.
  * Desenhar componentes, zooms e tarjas é Canvas 2D local: não entra na conta.
  *
- * A tabela segue o custo real medido por chamada (ver usage_events):
- * - transcrição custa centavos → 1 crédito por minuto;
- * - uma edição completa (skill ou direção do vídeo inteiro) usa o modelo
- *   principal e custa mais quanto mais longo o vídeo → base + por minuto;
- * - um ajuste pontual vai para o modelo rápido, ~20× mais barato → 1 crédito.
- * Com isso um Reel de até 1 minuto, do bruto ao pronto, sai por 20 a 28
- * créditos, e cada linha da tabela fica com margem em todos os planos.
+ * A tabela parte do custo real medido com vídeo real (usage_events) e da
+ * regra econômica (ECONOMICS, abaixo): o preço de cada ação dá à IA um teto
+ * de custo acima do custo medido, e esse teto é só uma fatia da receita.
+ * - transcrição: centavos de dólar por hora → 0,5 crédito por minuto;
+ * - edição completa (Diretor + Editor + Crítico, modelo principal): medida
+ *   em US$ 0,28 a 0,48 por vídeo curto → base alta + por minuto;
+ * - passada no vídeo todo (Editor, modelo principal): ~US$ 0,10 a 0,15;
+ * - ajuste pontual (modelo rápido): menos de US$ 0,01 → 1 crédito.
+ * O teste "economia" no core trava qualquer mudança que derrube a margem.
  */
 
-export const CREDIT_PRICE_BRL = 0.15;
+/** Valor de referência de um crédito (plano Creator), para relatórios. */
+export const CREDIT_PRICE_BRL = 0.385;
+
+/**
+ * Custo de IA MEDIDO por ação (US$), com o Sonnet nos três papéis e o vídeo
+ * real de teste (79 s): é o que o teto de cada ação precisa cobrir para a IA
+ * não ser interrompida no caso comum. Remedir ao trocar modelo ou prompt.
+ */
+export const MEASURED_AI_COST_USD = { fullEditShort: 0.4, sweepShort: 0.12, adjust: 0.01 } as const;
 
 export const PRICING = {
   /** Upload + transcrição: por minuto de vídeo, arredondado para cima. */
-  ingestPerMinute: 1,
-  /** Edição completa pela IA: parte fixa... */
-  fullEditBase: 12,
+  ingestPerMinute: 0.5,
+  /** Edição completa pela IA: parte fixa (o custo de um vídeo curto é quase todo fixo)... */
+  fullEditBase: 18,
   /** ...mais um valor por minuto de vídeo, arredondado para cima. */
-  fullEditPerMinute: 3,
+  fullEditPerMinute: 6,
   /** Passada no vídeo inteiro sem replanejar (revisar erros, zoom nas ênfases, destacar números): modelo principal, sem Diretor. */
-  sweepBase: 3,
-  sweepPerMinute: 1,
+  sweepBase: 6,
+  sweepPerMinute: 2,
   /** Ajuste pontual no chat (um trecho selecionado ou um comando simples). */
   adjust: 1,
   /** Clipe generativo (b-roll/áudio IA) de ~5s. */
@@ -100,13 +110,15 @@ export function creditCost(action: CreditAction): number {
 
 /**
  * Quantos vídeos curtos (até 1 min) um saldo rende: transcrição + uma edição
- * completa + de 4 a 12 ajustes. Arredondado para baixo, para a promessa da
- * tela de planos nunca ser maior que a entrega.
+ * completa + de 2 a 8 ajustes. Arredondado para baixo, para a promessa da
+ * tela de planos nunca ser maior que a entrega (no mínimo 1 quando o saldo
+ * cobre a edição).
  */
 export function videosEstimate(credits: number): { min: number; max: number } {
   const base = creditCost({ type: "ingest", durationSec: 60 }) + creditCost({ type: "agent", tier: "full", durationSec: 60 });
   const round = (n: number) => (n >= 100 ? Math.floor(n / 10) * 10 : n >= 20 ? Math.floor(n / 5) * 5 : Math.floor(n));
-  return { min: round(credits / (base + 12 * PRICING.adjust)), max: round(credits / (base + 4 * PRICING.adjust)) };
+  const floor = credits >= base ? 1 : 0;
+  return { min: Math.max(floor, round(credits / (base + 8 * PRICING.adjust))), max: Math.max(floor, round(credits / (base + 2 * PRICING.adjust))) };
 }
 
 /**
@@ -114,7 +126,7 @@ export function videosEstimate(credits: number): { min: number; max: number } {
  * impostos e despesas, e quanto PODE ir para IA. O custo de IA de um pedido
  * nunca passa do teto que estes números dão para o preço dele (a rota do
  * agente para antes), então a margem existe por construção, mesmo no pior
- * caso (todos os créditos gastos, nos pedidos mais caros).
+ * caso (todos os créditos gastos, nos pedidos mais caros, no câmbio alto).
  */
 export const ECONOMICS = {
   /** Cartão no Stripe Brasil (~3,99% + R$ 0,39) com folga. */
@@ -124,7 +136,7 @@ export const ECONOMICS = {
   /** Infra, banco, e-mail, transcrição, estornos e suporte. */
   overhead: 0.1,
   /** Teto do custo de IA sobre a receita bruta de cada crédito. */
-  aiShare: 0.25,
+  aiShare: 0.3,
   /** Câmbio de segurança para o teto (a cotação real fica no painel; o teto usa esta, mais alta). */
   usdBrl: 6.2,
 } as const;
@@ -136,10 +148,12 @@ export type PlanId = "free" | "creator" | "pro";
 
 /**
  * Créditos de boas-vindas do plano Free: dados uma vez, no cadastro, e não
- * renovam — o suficiente para editar dois ou três vídeos curtos e ver o
- * resultado (com marca d'água). Crédito grátis todo mês cria usuário que nunca paga.
+ * renovam — o suficiente para UMA edição completa de um vídeo de até 2 minutos
+ * e alguns ajustes, com marca d'água. É custo de aquisição (pior caso: o teto
+ * de IA desses créditos, ~R$ 3 por cadastro); crédito grátis todo mês cria
+ * usuário que nunca paga.
  */
-export const SIGNUP_CREDITS = 60;
+export const SIGNUP_CREDITS = 32;
 
 export const PLANS: Record<
   PlanId,
@@ -162,7 +176,7 @@ export const PLANS: Record<
     name: "Free",
     priceBRL: 0,
     monthlyCredits: 0,
-    maxUploadMinutes: 3,
+    maxUploadMinutes: 2,
     maxExportHeight: 720,
     watermark: true,
     rawRetentionDays: 3,
@@ -172,7 +186,7 @@ export const PLANS: Record<
   creator: {
     name: "Creator",
     priceBRL: 127,
-    monthlyCredits: 1000,
+    monthlyCredits: 330,
     maxUploadMinutes: 60,
     maxExportHeight: 1080,
     watermark: false,
@@ -183,7 +197,7 @@ export const PLANS: Record<
   pro: {
     name: "Pro / Studio",
     priceBRL: 347,
-    monthlyCredits: 3500,
+    monthlyCredits: 1000,
     maxUploadMinutes: 180,
     maxExportHeight: 2160,
     watermark: false,
@@ -193,7 +207,7 @@ export const PLANS: Record<
   },
 };
 
-export const TOPUPS = [{ credits: 500, priceBRL: 79, expiresInDays: 90 }] as const;
+export const TOPUPS = [{ credits: 180, priceBRL: 79, expiresInDays: 90 }] as const;
 
 /** Menor receita por crédito entre tudo que se vende (plano mais barato por crédito ou pacote). */
 export function minRevenuePerCreditBRL(): number {

@@ -41,7 +41,7 @@ Etapa 3 — renderer (feito)
 - [ ] Testar com gravações reais: segmentação com pessoa em movimento, velocidade de exportação com GPU, mixagem dos efeitos por ouvido
 - [x] Tabela de créditos revista com o custo real medido; modelo rápido para ajustes pontuais
 - [x] Catálogo de efeitos sonoros (23 arquivos) no lugar dos sons sintetizados
-- [x] Free com 60 créditos únicos, limite de 3 min, 720p e marca d'água; estimativa de vídeos na tela de planos; Brand Kits por plano (1 / 1 / 10)
+- [x] Free com 32 créditos únicos (uma edição completa), limite de 2 min, 720p e marca d'água; estimativa de vídeos na tela de planos; Brand Kits por plano (1 / 1 / 10)
 - [ ] Confirmar a licença de uso comercial dos efeitos sonoros antes do lançamento
 
 ## Fase 1 — Agente de verdade

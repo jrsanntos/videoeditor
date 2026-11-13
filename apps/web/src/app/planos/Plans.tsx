@@ -142,7 +142,7 @@ export function Plans({ status }: { status?: "sucesso" | "cancelado" }) {
                       </b>
                       <span className="block text-xs text-zinc-500">
                         {id === "free"
-                          ? `${videos(SIGNUP_CREDITS)} vídeos curtos para testar · não renovam`
+                          ? `${videos(SIGNUP_CREDITS) === "1" ? "1 vídeo editado pela IA" : `${videos(SIGNUP_CREDITS)} vídeos curtos`} para testar · não renovam`
                           : `cerca de ${videos(plan.monthlyCredits)} ${plan.monthlyCredits >= 2000 ? "vídeos" : "Reels"} por mês`}
                       </span>
                     </li>

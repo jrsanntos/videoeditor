@@ -47,14 +47,21 @@ export function shouldFallBack(e: unknown, signal?: AbortSignal): boolean {
   return false;
 }
 
-/** Converte falhas da API da Anthropic em mensagens que o usuário entende. */
+/**
+ * Converte falhas da API da Anthropic em mensagens que o USUÁRIO entende.
+ * Detalhe operacional (saldo da conta, chave recusada) vai só para o log do
+ * servidor: o cliente vê que o serviço está indisponível e que nada foi cobrado.
+ */
 export function anthropicError(e: unknown): HttpError | null {
-  if (e instanceof Anthropic.AuthenticationError)
-    return new HttpError(503, "A chave da Anthropic configurada foi recusada. Atualize-a no painel de administração.");
-  if (e instanceof Anthropic.RateLimitError)
-    return new HttpError(429, "Muitas requisições ao agente. Aguarde alguns segundos e tente de novo.");
-  if (e instanceof Anthropic.BadRequestError && /credit balance/i.test(e.message))
-    return new HttpError(503, "A conta da Anthropic está sem saldo. Adicione créditos no Console da Anthropic.");
+  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
+    console.error("ALERTA OPERACIONAL: a chave da Anthropic foi recusada. Atualize-a no painel de administração.", e.message);
+    return new HttpError(503, "O serviço de IA está indisponível no momento. Nada foi cobrado. Tente de novo em alguns minutos.");
+  }
+  if (e instanceof Anthropic.RateLimitError) return new HttpError(429, "Muitas pessoas usando a IA agora. Aguarde alguns segundos e tente de novo.");
+  if (e instanceof Anthropic.BadRequestError && /credit balance|billing|quota/i.test(e.message)) {
+    console.error("ALERTA OPERACIONAL: a conta da Anthropic está sem saldo. Adicione créditos no Console da Anthropic (ou configure o modelo reserva GEMINI_API_KEY).", e.message);
+    return new HttpError(503, "O serviço de IA está indisponível no momento. Nada foi cobrado. Tente de novo em alguns minutos.");
+  }
   if (e instanceof Anthropic.APIError) {
     console.error("anthropic api error", e.status, e.message);
     return new HttpError(502, "O serviço de IA falhou ao processar o pedido. Tente novamente.");

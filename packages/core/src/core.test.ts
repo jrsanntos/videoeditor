@@ -18,9 +18,15 @@ import {
   clipEnd,
   createProject,
   agentTier,
-  creditCost,
+  aiBudgetUSD,
+  ECONOMICS,
+  MEASURED_AI_COST_USD,
+  MIN_NET_MARGIN,
+  minRevenuePerCreditBRL,
   PLANS,
   SIGNUP_CREDITS,
+  TOPUPS,
+  creditCost,
   SKILLS,
   skillPrompt,
   videosEstimate,
@@ -222,10 +228,10 @@ describe("agente e créditos", () => {
   });
 
   it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
-    expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(10);
-    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(2);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(15);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(42);
+    expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(5);
+    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(1);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(24);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(78);
     expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
@@ -245,15 +251,15 @@ describe("agente e créditos", () => {
 
   it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
     expect(PLANS.free.monthlyCredits).toBe(0);
-    expect(SIGNUP_CREDITS).toBe(60);
-    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 35, max: 50 });
-    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 120, max: 170 });
-    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 2, max: 3 });
+    expect(SIGNUP_CREDITS).toBe(32);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 10, max: 12 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 30, max: 35 });
+    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 1, max: 1 });
     expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
-    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): edição completa de 1 min
-    // custa ~R$ 0,31 em IA e rende 15 créditos.
+    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): a edição completa de 1 min
+    // custa até US$ 0,40 em IA (R$ 2,48 no câmbio de segurança) e precisa render mais que 3× isso.
     const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(0.31 * 3);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(MEASURED_AI_COST_USD.fullEditShort * ECONOMICS.usdBrl * 3);
   });
 
   it("débito consome o saldo do plano antes do extra", () => {
@@ -1370,5 +1376,29 @@ describe("repetição natural não é erro de gravação (vídeo real, fala flue
     "jamais poderá ser utilizada em manifestações públicas e não deve ser utilizada quando há risco à vida",
   ])("%s", (text) => {
     expect(take(text).filter((r) => r.confidence === "alta")).toEqual([]);
+  });
+});
+
+describe("economia: lucro real depois de taxas, impostos e despesas", () => {
+  it("a margem líquida no pior caso fica acima de 35%", () => {
+    expect(MIN_NET_MARGIN).toBeGreaterThanOrEqual(0.35);
+  });
+
+  it("todo plano pago e todo pacote rende pelo menos a receita por crédito usada no teto", () => {
+    const floor = minRevenuePerCreditBRL();
+    for (const plan of Object.values(PLANS)) if (plan.priceBRL > 0) expect(plan.priceBRL / plan.monthlyCredits).toBeGreaterThanOrEqual(floor);
+    for (const t of TOPUPS) expect(t.priceBRL / t.credits).toBeGreaterThanOrEqual(floor);
+  });
+
+  it("o teto de custo de cada ação cobre o custo medido (a IA não é interrompida no caso comum)", () => {
+    const at = (tier: "full" | "sweep" | "adjust") => aiBudgetUSD(creditCost({ type: "agent", tier, durationSec: 60 }));
+    expect(at("full")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.fullEditShort);
+    expect(at("sweep")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.sweepShort);
+    expect(at("adjust")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.adjust);
+  });
+
+  it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {
+    const sec = PLANS.free.maxUploadMinutes * 60;
+    expect(SIGNUP_CREDITS).toBeGreaterThanOrEqual(creditCost({ type: "ingest", durationSec: sec }) + creditCost({ type: "agent", tier: "full", durationSec: sec }));
   });
 });
