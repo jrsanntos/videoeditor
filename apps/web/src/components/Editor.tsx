@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatCredits, PLANS, PRICING, projectDuration, type PlanId } from "@videoeditor/core";
-import { closeProject, importVideo, logout, refreshMe, startEmptyProject } from "@/lib/actions";
+import { closeProject, importVideo, logout, refreshMe, resumePending, startEmptyProject } from "@/lib/actions";
 import { downloadBlob, exportInBrowser, exportOTIO } from "@/lib/export";
 import { loadMedia } from "@/lib/media";
 import { hydrateEditor, useEditor } from "@/lib/store";
@@ -31,6 +31,8 @@ export function Editor() {
         if (missing.some((id) => used.has(id))) useEditor.getState().setProject(null);
       }
       setReady(true);
+      // Vídeo enviado na página inicial antes do cadastro: entra agora, já com a conta.
+      await resumePending();
     })();
     return unsubscribe;
   }, []);
@@ -139,8 +141,19 @@ function UploadScreen() {
           <span className="text-sm text-zinc-500">MP4, MOV ou WebM · o arquivo fica no seu navegador</span>
         </button>
         <input ref={input} type="file" accept="video/*" className="hidden" data-testid="file-input" onChange={(e) => pick(e.target.files?.[0])} />
-        <button type="button" className="-mt-5 text-xs text-muted-foreground hover:underline" onClick={() => void startEmptyProject()} disabled={!!busy} data-testid="skip-upload">
-          ou pular direto para o editor sem adicionar vídeo
+        <div className="-mt-3 flex items-center gap-3 text-[13px] text-zinc-500">
+          <span className="h-px w-10 bg-line-strong" />
+          ou
+          <span className="h-px w-10 bg-line-strong" />
+        </div>
+        <button
+          type="button"
+          className="-mt-3 flex items-center gap-2 rounded-xl border border-line-strong bg-white/[0.04] px-5 py-2.5 text-[14px] font-medium text-zinc-100 transition hover:border-brand-400/60 hover:bg-white/[0.08]"
+          onClick={() => void startEmptyProject()}
+          disabled={!!busy}
+          data-testid="skip-upload"
+        >
+          <Icon.scissors size={15} /> Abrir o editor sem vídeo
         </button>
         <label className="-mt-2 block w-full max-w-2xl text-left">
           <span className="text-[12px] text-zinc-400">

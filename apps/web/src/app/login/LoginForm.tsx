@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { SIGNUP_CREDITS } from "@videoeditor/core";
+import { GoogleButton, OrDivider } from "@/components/GoogleButton";
 import { Icon } from "@/components/ui";
 import { AuthShell, card, ErrorNote, field, link, submitBtn, useSubmit } from "./AuthShell";
 
-export function LoginForm({ notice, warning, initialMode = "login" }: { notice?: string; warning?: string; initialMode?: "login" | "signup" }) {
+export function LoginForm({ notice, warning, initialMode = "login", google = false }: { notice?: string; warning?: string; initialMode?: "login" | "signup"; google?: boolean }) {
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [email, setEmail] = useState("");
   /** E-mail aguardando confirmação: mostra a tela "confira sua caixa de entrada". */
@@ -52,6 +53,12 @@ export function LoginForm({ notice, warning, initialMode = "login" }: { notice?:
           <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" role="status">
             {warning}
           </p>
+        )}
+        {google && (
+          <>
+            <GoogleButton label={mode === "login" ? "Entrar com Google" : "Criar conta com Google"} />
+            <OrDivider />
+          </>
         )}
         {mode === "signup" && (
           <label className="block text-xs font-medium text-zinc-400">

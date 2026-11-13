@@ -42,6 +42,7 @@ import { analyzeVideo, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
+import { clearPending, readPending } from "./pending";
 import { clearMedia, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
@@ -168,13 +169,13 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
       aspectRatio: "9:16",
       brand: useEditor.getState().brands[0]?.brand,
     });
-    useEditor.setState({ chat: [], time: 0, range: null });
+    useEditor.setState({ chat: [], time: 0, range: null, assistantPick: null });
     setProject(addAssetToProject(project, asset));
     if (asset.transcript) setNotice("Este vídeo já foi analisado antes: a transcrição veio do cache, sem custo.");
     void analyzeAsset(asset.id);
     if (opts.referenceUrl?.trim()) void attachStyleReference(opts.referenceUrl.trim());
     // Todo vídeo novo abre o assistente: escolher um estilo e deixar a IA editar é o caminho mais curto.
-    useEditor.setState({ assistant: "choose" });
+    useEditor.setState({ assistant: "choose", tour: null });
   } catch (e) {
     setNotice((e as Error).message);
   } finally {
@@ -748,6 +749,39 @@ export function editManually() {
     // sem armazenamento: mostra o guia
   }
   if (!seen) useEditor.getState().setTour(0);
+}
+
+/** Créditos que a edição automática deste projeto vai gastar (transcrição, se ainda não houver, + edição completa). */
+export function autoEditCost(project: Project): number {
+  const asset = project.assets[mainClips(project)[0]?.assetId ?? ""];
+  const transcribed = Boolean(asset?.transcript?.words.length);
+  const ingestCost = transcribed || !asset ? 0 : creditCost({ type: "ingest", durationSec: asset.duration });
+  return ingestCost + creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) });
+}
+
+/**
+ * Retoma o vídeo enviado na página inicial antes do cadastro: importa e, se
+ * um estilo foi escolhido, já começa a edição automática com os créditos da
+ * conta. Sem créditos suficientes, o assistente abre com o estilo marcado.
+ * Devolve true se havia um vídeo pendente.
+ */
+export async function resumePending(): Promise<boolean> {
+  const pending = await readPending();
+  if (!pending) return false;
+  // Sai da fila antes de importar: um vídeo que falha (longo demais para o plano) não volta em loop.
+  await clearPending();
+  await refreshMe();
+  const before = useEditor.getState().project;
+  await importVideo(pending.file);
+  const s = useEditor.getState();
+  if (!s.project || s.project === before) return true;
+  if (!pending.style) {
+    editManually();
+    return true;
+  }
+  useEditor.setState({ assistantPick: pending.style });
+  if (s.unlimited || s.credits >= autoEditCost(s.project)) void autoEdit(pending.style);
+  return true;
 }
 
 /**

@@ -69,6 +69,7 @@ Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenv
 | `DATABASE_POOL_MAX` | Conexões por instância (padrão 10) |
 | `APP_URL` | Endereço público, para links de e-mail e retornos do Stripe (obrigatória em produção) |
 | `RESEND_API_KEY`, `EMAIL_FROM` | Envio do e-mail de recuperação de senha. Sem elas, em desenvolvimento o link sai no terminal |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Login com Google. No Google Cloud Console, crie um ID do cliente OAuth (Aplicativo da Web) com o redirecionamento `{APP_URL}/api/auth/google/callback`. Sem elas, o botão do Google não aparece |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TOPUP` | Cobrança. Sem elas, `/planos` mostra os planos como "em breve" |
 
 ### Configurando o Stripe

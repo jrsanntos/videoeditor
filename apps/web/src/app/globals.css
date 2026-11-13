@@ -492,6 +492,55 @@ input[type="range"] {
   animation: lp-cut 4s ease-in-out infinite alternate;
 }
 
+/* Estúdio de envio da página inicial. */
+.lp-studio {
+  position: relative;
+  background:
+    linear-gradient(rgba(17, 16, 26, 0.94), rgba(17, 16, 26, 0.94)) padding-box,
+    linear-gradient(135deg, rgba(246, 76, 255, 0.65), rgba(255, 255, 255, 0.12) 40%, rgba(89, 255, 205, 0.6)) border-box;
+  border: 1px solid transparent;
+  box-shadow:
+    0 40px 90px -30px rgba(246, 76, 255, 0.35),
+    0 20px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* Prévia do estilo sobre o vídeo da pessoa: cor e movimento de câmera de cada estilo. */
+.lp-preview-viral .lp-preview-video {
+  filter: saturate(1.25) contrast(1.06);
+  animation: lp-punch 3.2s ease-in-out infinite;
+}
+.lp-preview-autoridade .lp-preview-video {
+  filter: sepia(0.18) saturate(1.05) brightness(1.03) contrast(1.02);
+  animation: lp-push 12s ease-in-out infinite alternate;
+}
+.lp-preview-acao .lp-preview-video {
+  filter: contrast(1.2) saturate(0.85) hue-rotate(-8deg) brightness(0.95);
+}
+.lp-preview-limpeza .lp-preview-video {
+  filter: none;
+}
+@keyframes lp-punch {
+  0%,
+  42% {
+    transform: scale(1);
+  }
+  48%,
+  92% {
+    transform: scale(1.14);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes lp-push {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.1);
+  }
+}
+
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -499,8 +548,9 @@ input[type="range"] {
   .lp-ribbon-track,
   .lp-float,
   .lp-word,
-  .lp-cut {
-    animation: none;
+  .lp-cut,
+  .lp-preview-video {
+    animation: none !important;
   }
   .lp-btn:hover {
     transform: none;

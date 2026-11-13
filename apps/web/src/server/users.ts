@@ -121,12 +121,63 @@ export async function createUser(input: { email: string; name: string; password:
   });
 }
 
+/**
+ * Entrada pelo Google, com a identidade já conferida (e-mail verificado pelo
+ * Google). Três casos:
+ * - a conta Google já está ligada a um usuário: entra;
+ * - há uma conta com o mesmo e-mail: liga o Google a ela. Se essa conta ainda
+ *   estava pendente de confirmação, a senha dela é descartada — quem provou
+ *   ser dono do e-mail foi o Google, não quem cadastrou a senha;
+ * - não há conta: cria uma, sem senha, com os créditos de boas-vindas.
+ * Devolve o usuário e se a conta acabou de ser criada.
+ */
+export async function signInWithGoogle(input: { sub: string; email: string; name: string }): Promise<{ user: User; created: boolean }> {
+  const email = normalizeEmail(input.email);
+  const name = (input.name.trim() || email.split("@")[0] || "Criador").slice(0, 80);
+  const result = await tx(async () => {
+    const linked = await db.one<User>(`SELECT ${USER_COLS} FROM users WHERE google_sub = $1`, [input.sub]);
+    if (linked) return { user: linked, created: false };
+    const existing = await db.one<User & { email_verified_at: string | null }>(`SELECT ${USER_COLS}, email_verified_at FROM users WHERE email = $1 FOR UPDATE`, [email]);
+    if (existing) {
+      const pending = !existing.email_verified_at;
+      await db.run(
+        `UPDATE users SET google_sub = $2, email_verified_at = COALESCE(email_verified_at, now())${pending ? ", password_hash = NULL" : ""} WHERE id = $1`,
+        [existing.id, input.sub],
+      );
+      if (pending) await db.run("DELETE FROM sessions WHERE user_id = $1", [existing.id]);
+      const { email_verified_at: _, ...user } = existing;
+      return { user, created: false };
+    }
+    const bootstrap =
+      process.env.NODE_ENV !== "production" &&
+      adminEmails().size === 0 &&
+      !(await db.one("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1"));
+    const role: Role = adminEmails().has(email) || bootstrap ? "admin" : "user";
+    const user = await db.one<User>(
+      `INSERT INTO users (id, email, name, password_hash, google_sub, role, plan, credits_plan, credits_cycle_grant, credits_renew_at, email_verified_at)
+       VALUES ($1, $2, $3, NULL, $4, $5, 'free', 0, 0, now() + interval '1 month', now())
+       RETURNING ${USER_COLS}`,
+      [`usr_${crypto.randomUUID()}`, email, name, input.sub, role],
+    );
+    if (!user) throw new HttpError(500, "Não foi possível criar a conta.");
+    await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason) VALUES ($1, $2, 'extra', $3)", [user.id, SIGNUP_CREDITS, "créditos de boas-vindas (cadastro)"]);
+    await db.run("UPDATE users SET credits_extra = $2 WHERE id = $1", [user.id, SIGNUP_CREDITS]);
+    return { user: { ...user, credits_extra: SIGNUP_CREDITS }, created: true };
+  });
+  if (result.user.banned_at) throw new HttpError(403, bannedMessage(result.user));
+  if (result.user.role !== "admin" && adminEmails().has(result.user.email)) {
+    await db.run("UPDATE users SET role = 'admin' WHERE id = $1", [result.user.id]);
+    result.user.role = "admin";
+  }
+  return result;
+}
+
 // Hash de referência para gastar o mesmo tempo quando o e-mail não existe
 // (a resposta não revela, pela demora, quais e-mails têm conta).
 let dummyHash: Promise<string> | undefined;
 
 export async function verifyLogin(emailRaw: string, password: string): Promise<User> {
-  const row = await db.one<User & { password_hash: string; email_verified_at: string | null }>(`SELECT ${USER_COLS}, password_hash, email_verified_at FROM users WHERE email = $1`, [
+  const row = await db.one<User & { password_hash: string | null; email_verified_at: string | null }>(`SELECT ${USER_COLS}, password_hash, email_verified_at FROM users WHERE email = $1`, [
     normalizeEmail(emailRaw),
   ]);
   const ok = await verifyPassword(password, row?.password_hash ?? (await (dummyHash ??= hashPassword(randomToken()))));
