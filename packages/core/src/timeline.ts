@@ -473,3 +473,26 @@ export function jumpsBefore(project: Project, clipId: string): number {
   }
   return map.get(clipId) ?? 0;
 }
+
+/**
+ * Projeto que voltou do servidor (resposta da IA) + medições feitas no
+ * navegador enquanto o pedido estava em andamento. O servidor recebe o projeto
+ * de quando o pedido saiu; se a análise do vídeo (sujeito, rosto, gênero,
+ * movimento) ou o reenquadramento das faixas pretas chegaram depois, a
+ * resposta não os tem e não pode apagá-los. O que a IA de fato mudou (o
+ * enquadramento, se ela mexeu) prevalece.
+ */
+export function keepLocalMeasurements(incoming: Project, current: Project | null, sent: Project | null): Project {
+  if (!current) return incoming;
+  let next: Project | null = null;
+  const own = () => (next ??= structuredClone(incoming));
+  for (const [id, asset] of Object.entries(incoming.assets)) {
+    const local = current.assets[id];
+    if (!local) continue;
+    if (!asset.subject?.length && local.subject?.length) own().assets[id]!.subject = local.subject;
+    if (!asset.analysis && local.analysis) own().assets[id]!.analysis = local.analysis;
+  }
+  const untouched = sent && incoming.framing.x === sent.framing.x && incoming.framing.y === sent.framing.y;
+  if (untouched && (current.framing.x !== incoming.framing.x || current.framing.y !== incoming.framing.y)) own().framing = { ...current.framing };
+  return next ?? incoming;
+}

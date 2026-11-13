@@ -2,6 +2,7 @@
 
 import {
   actionRanges,
+  keepLocalMeasurements,
   addAssetToProject,
   addContextAsset,
   agentTier,
@@ -569,8 +570,10 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   const full = tier === "full";
   s.setBusy(full ? "Analisando o vídeo…" : "O agente está lendo o vídeo…");
   // Edição completa: o agente recebe quadros do vídeo, o enquadramento e a análise de movimento e som.
+  // Sem o enquadramento a IA não sabe se é close-up nem onde está o rosto: vale esperar mais por ele
+  // (a edição completa leva minutos; a análise, segundos a mais).
   const assetId = primaryAssetId(project);
-  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 25_000) : null;
+  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 60_000) : null;
   const frames = analysis?.frames ?? [];
   if (full && opts.confirm !== false) {
     // Fase 1 — Diretor: só o plano. Nada é editado nem cobrado até o usuário confirmar.
@@ -623,13 +626,15 @@ async function executeAgent(req: { message: string; history: { role: string; tex
   const log: string[] = [];
   let reviewToken: string | undefined;
   s.setBusy("O Editor está montando a edição…");
+  const sent = useEditor.getState().project;
   try {
-    await streamAgent({ project: useEditor.getState().project, ...req }, (e) => {
+    await streamAgent({ project: sent, ...req }, (e) => {
       if (e.type === "status") s.setBusy(e.text);
       else if (e.type === "plan") s.pushChat({ role: "assistant", text: e.plan.resumo, plan: e.plan });
       else if (e.type === "ops") {
         // A primeira etapa cria o ponto de desfazer; as seguintes só atualizam: um Ctrl+Z desfaz o pedido inteiro.
-        s.setProject(e.project, { history: applied ? "keep" : true });
+        // A análise do vídeo pode ter chegado depois do pedido sair: a resposta não a apaga.
+        s.setProject(keepLocalMeasurements(e.project, useEditor.getState().project, sent), { history: applied ? "keep" : true });
         applied = true;
         log.push(...e.log);
         s.setBusy(`${e.log[e.log.length - 1] ?? "Edição aplicada"}. Continuando…`);
@@ -836,9 +841,10 @@ async function visualReview(firstToken: string) {
     const current: string = token;
     token = undefined;
     try {
-      await streamAgent({ project: useEditor.getState().project, message: "Autoavaliação visual da edição.", review: { token: current, shots, ...(strip ? { strip } : {}) } }, (e) => {
+      const sent = useEditor.getState().project;
+      await streamAgent({ project: sent, message: "Autoavaliação visual da edição.", review: { token: current, shots, ...(strip ? { strip } : {}) } }, (e) => {
         if (e.type === "status") s.setBusy(e.text);
-        else if (e.type === "ops") s.setProject(e.project, { history: "keep" });
+        else if (e.type === "ops") s.setProject(keepLocalMeasurements(e.project, useEditor.getState().project, sent), { history: "keep" });
         else if (e.type === "done") {
           token = e.reviewToken;
           if (e.log.length) {

@@ -646,6 +646,7 @@ import {
   isCloseUp,
   avoidFaces,
   faceFromDetection,
+  keepLocalMeasurements,
   framingObjections,
   localTimeAt,
   mainGaps,
@@ -1165,6 +1166,24 @@ describe("5. legendas e texto atrás da cabeça: guardrails espaciais", () => {
     expect(f.y).toBeLessThan(d.y);
     expect(f.y + f.h).toBeGreaterThanOrEqual(d.y + d.h - 1e-3);
     expect(isCloseUp(s)).toBe(true);
+  });
+
+  it("a resposta da IA não apaga a análise do vídeo que chegou durante o pedido", () => {
+    const sent = fixture();
+    const id = Object.keys(sent.assets)[0]!;
+    // Enquanto a IA editava, o navegador mediu o vídeo e reenquadrou as faixas pretas.
+    const current = structuredClone(sent);
+    current.assets[id]!.subject = [{ t: 0, x: 0.3, y: 0.1, w: 0.4, h: 0.9, faceX: 0.5, faceY: 0.3 }];
+    current.framing = { x: 0.42, y: 0.5 };
+    // A IA devolve o projeto de quando o pedido saiu, com a edição dela.
+    const incoming = applyOperations(sent, [{ op: "add_marker", time: 1 }]).project;
+    const merged = keepLocalMeasurements(incoming, current, sent);
+    expect(merged.assets[id]!.subject).toEqual(current.assets[id]!.subject);
+    expect(merged.framing).toEqual({ x: 0.42, y: 0.5 });
+    expect(merged.markers).toEqual(incoming.markers);
+    // Se a IA mudou o enquadramento, vale o dela.
+    const moved = applyOperations(sent, [{ op: "set_format", framing: { x: 0.2 } }]).project;
+    expect(keepLocalMeasurements(moved, current, sent).framing.x).toBe(0.2);
   });
 
   it("bloco de texto sai do rosto pelo menor caminho e fica dentro da área segura", () => {
