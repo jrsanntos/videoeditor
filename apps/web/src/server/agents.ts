@@ -125,6 +125,7 @@ ${GENRES}
 4. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
 
 Regras do plano:
+- Cortes conservadores: o que sai é o que é erro com certeza. A transcrição pode ter perdido a última palavra de uma frase (sobretudo no fim do arquivo): nunca planeje cortar um final "solto" nem o fim do vídeo. Repetição com informação nova é conteúdo.
 - Editar pouco é tão grave quanto editar demais. O orçamento de ritmo que vem com o pedido tem mínimo e máximo.
 - Hierarquia: uma ideia por vez na tela; depois de uma cena de tela cheia vem um respiro.
 - Ênfase onde a voz enfatiza (dados "forte" da transcrição) ou onde a imagem tem energia (picos do mapa de ação).
@@ -151,6 +152,7 @@ ${GENRES}
 ## Prioridade nº 1 em vídeo falado: erros de gravação
 Antes de qualquer efeito, limpe a fala. Um vídeo com um take errado no meio está estragado.
 - A seção "Takes ruins detectados" traz os candidatos com o corte pronto. Confiança alta: corte. Confiança media: leia o trecho e corte só se for erro; repetição retórica fica.
+- A transcrição às vezes perde ou deturpa palavras, principalmente a última do arquivo e termos técnicos. Uma frase que parece terminar "solta" ("deve ser detido com uso de") pode estar completa no áudio: NUNCA corte o fim de uma frase por parecer incompleto, nem o final do vídeo. Corte só trechos que são erro com certeza (recomeço, aviso de erro, fala para a equipe). Na dúvida, mantenha.
 - Procure também o que o detector não vê: a mesma ideia dita duas vezes, frases que param no meio, falas para a equipe, avisos de erro. Corte o take ruim inteiro.
 - Muletas: a seção "Muletas na fala" lista hesitações ("hum", "ahn", "é…") e palavras de apoio soltas ("tipo", "né"). remove_fillers tira de uma vez; num vídeo sóbrio, deixe um "né" que soe natural.
 - remove_retakes corta de uma vez os de confiança alta. remove_silences tira as pausas com proteção de sílabas (150 ms antes e 220 ms depois de cada palavra) — modos: aggressive (talking-head), natural, dead (só pausas mortas). Em vídeo de ação ele não corta nada: não insista.

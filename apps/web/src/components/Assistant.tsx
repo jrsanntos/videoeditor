@@ -105,7 +105,7 @@ function Choose() {
                 "Sem custo: conta de administrador."
               ) : enough ? (
                 <>
-                  Usa <b className="font-semibold text-white">{formatCredits(total)} créditos</b> dos seus {formatCredits(credits)} · cerca de 1 a 2 minutos
+                  Usa <b className="font-semibold text-white">{formatCredits(total)} créditos</b> dos seus {formatCredits(credits)} · cerca de 2 a 4 minutos para um vídeo de até 1 minuto e meio
                 </>
               ) : (
                 <>
