@@ -1,4 +1,4 @@
-import { captionAlpha, captionBaseY, captionSuppression, isDoubtful, placeCaption, timelineWords, type Box, type CaptionPreset, type CaptionStyle, type Project, type SafeArea, type TimeRange, type TimelineWord } from "@videoeditor/core";
+import { captionAlpha, captionBaseY, captionSuppression, isDoubtful, placeCaption, safeArea, timelineWords, type Box, type CaptionPreset, type CaptionStyle, type Project, type SafeArea, type TimeRange, type TimelineWord } from "@videoeditor/core";
 import type { Rect } from "./camera";
 import { clamp01, type Ctx2D, easeOutBack, easeOutCubic, font, interpolate, rgba, roundRect, spring, stage } from "./draw";
 
@@ -67,6 +67,14 @@ export function captionGroups(project: Project): CaptionGroup[] {
   const cached = groupCache.get(project);
   if (cached) return cached;
   const max = Math.min(project.captions.style.maxWords, CAPTION_PRESETS[project.captions.style.preset].maxWords ?? Infinity);
+  // Quantos caracteres cabem numa linha no tamanho normal do estilo: frase longa vira duas legendas
+  // em vez de uma legenda minúscula (o desenho encolhe a fonte para caber).
+  const spec = CAPTION_PRESETS[project.captions.style.preset];
+  const safe = safeArea(project);
+  const u = Math.min(project.width, project.height) / 1080;
+  const charW = spec.size * u * project.captions.style.fontScale * (spec.upper ? 0.66 : 0.56) * (spec.weight >= 800 ? 1.08 : 1);
+  const maxChars = Math.max(8, Math.floor(((project.width - safe.left - safe.right) * spec.maxWidth) / charW));
+  const chars = (list: TimelineWord[]) => list.reduce((n, w) => n + w.text.trim().length, 0) + Math.max(0, list.length - 1) * ((SPACING[project.captions.style.preset] ?? 1) > 1.5 ? 2 : 1);
   const groups: CaptionGroup[] = [];
   let cur: TimelineWord[] = [];
   const flush = () => {
@@ -91,7 +99,7 @@ export function captionGroups(project: Project): CaptionGroup[] {
   };
   for (const w of timelineWords(project)) {
     const prev = cur[cur.length - 1];
-    if (prev && (cur.length >= max || w.start - prev.end > 0.6 || (w.clipId !== prev.clipId && w.start - prev.end > 0.2) || /[.!?]$/.test(prev.text)))
+    if (prev && (cur.length >= max || chars([...cur, w]) > maxChars || w.start - prev.end > 0.6 || (w.clipId !== prev.clipId && w.start - prev.end > 0.2) || /[.!?]$/.test(prev.text)))
       flush();
     cur.push(w);
   }

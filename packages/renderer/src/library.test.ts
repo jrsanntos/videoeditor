@@ -432,12 +432,26 @@ describe("legendas: base do quadro, supressão com cards e desvio do rosto", () 
       for (let t = 0.4; t < 19; t += 0.37) expect(() => probeFrame(p, t), `${id} ${t}`).not.toThrow();
       expect(probeFrame(p, 1)!.caption, id).not.toBeNull();
     }
-    // viral_pop: blocos de 2–3 palavras, por mais que o projeto peça mais.
+    // viral_pop: blocos de 2–3 palavras, por mais que o projeto peça mais; palavras longas ficam em blocos menores.
     const viral = applyOperations(talking(), [{ op: "set_captions", style: { preset: "viral_pop", maxWords: 8 } }]).project;
-    expect(Math.max(...captionGroups(viral).map((g) => g.words.length))).toBe(3);
+    const sizes = captionGroups(viral).map((g) => g.words.length);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(3);
+    expect(Math.max(...sizes)).toBeGreaterThanOrEqual(2);
     // A legenda de cinema é a menor; a viral, a maior.
     expect(CAPTION_PRESETS.minimal_cinema.size).toBeLessThan(CAPTION_PRESETS.editorial_clean.size);
     expect(CAPTION_PRESETS.viral_pop.size).toBeGreaterThan(CAPTION_PRESETS.karaoke_pill.size);
+  });
+});
+
+describe("legenda cabe no tamanho normal", () => {
+  it("frase longa vira duas legendas em vez de uma legenda minúscula", () => {
+    const long = "incapacitação neuromuscular também conhecidas popularmente como armas de choque".split(" ");
+    const words = long.map((text, i) => ({ id: `w${i}`, text, start: i * 0.35, end: i * 0.35 + 0.3 }));
+    let p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 4, hasAudio: true, transcript: { words } });
+    p = applyOperations(p, [{ op: "set_captions", enabled: true, style: { preset: "editorial_clean", maxWords: 6 } }]).project;
+    const groups = captionGroups(p);
+    expect(groups.length).toBeGreaterThan(long.length / 6);
+    for (const g of groups) expect(g.text.length).toBeLessThanOrEqual(34);
   });
 });
 

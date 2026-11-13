@@ -43,7 +43,8 @@ export const ART_DIRECTION = `Direção de arte (vale para componentes prontos e
 - Pausa final limpa: toda animação termina e a peça fica parada por pelo menos 0,5 s antes de sair.
 - Uma ideia por peça, no máximo 3 níveis de hierarquia (título, apoio, rótulo). Sem texto por cima do rosto.
 - Zero clichê visual genérico de IA: nada de emoji decorativo, brilhos, foguetes, gradiente roxo-azul neon, ícones soltos sem função. Cor vem do Brand Kit.
-- Cada movimento tem motivo: entra junto com a ideia, na palavra ou no pico de ação correspondente.`;
+- Cada movimento tem motivo: entra junto com a ideia, na palavra ou no pico de ação correspondente.
+- Sentido antes de forma: marcadores, cores e ícones dizem a verdade do conteúdo. ✓ nunca marca o que é proibido, errado ou contra-indicado; ✕ nunca marca o que é recomendado. Em dúvida, use marcadores neutros.`;
 
 export type ArtIssue = { code: "titulo_pequeno" | "cliche" | "sem_pausa_final" | "texto_longo"; message: string };
 
