@@ -10,6 +10,7 @@
   --color-ink-700: #20202b;
   --color-ink-600: #2c2c3a;
   --color-line: rgba(255, 255, 255, 0.07);
+  --color-muted-foreground: #8b8b99;
   --color-line-strong: rgba(255, 255, 255, 0.13);
   --color-brand-300: #b4a5ff;
   --color-brand-400: #9a86ff;
@@ -428,7 +429,8 @@ input[type="range"] {
     radial-gradient(circle at 15% 85%, #1f4d47 0, transparent 55%),
     #0e1622;
 }
-.lp-reel-vsl {
+.lp-reel-vsl,
+.lp-reel-acao {
   background:
     radial-gradient(circle at 25% 20%, #59ffcd 0, transparent 42%),
     radial-gradient(circle at 80% 75%, #1c6dd0 0, transparent 55%),

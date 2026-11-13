@@ -22,6 +22,8 @@ export const LIMITS = {
   /** Buscas e downloads nos bancos gratuitos de mídia, por conta. */
   stockSearch: { max: 120, windowSec: 60 * 60 },
   stockDownload: { max: 60, windowSec: 60 * 60 },
+  /** Análises de vídeo de referência (YouTube), por conta. */
+  styleReference: { max: 20, windowSec: 60 * 60 },
   /** Reenvios do e-mail de confirmação. */
   verifyIp: { max: 12, windowSec: 60 * 60 },
   verifyEmail: { max: 4, windowSec: 60 * 60 },

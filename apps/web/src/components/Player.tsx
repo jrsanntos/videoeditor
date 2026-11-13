@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { applyOperations, findClip, isFullscreen, mainClipAt, mainClips, projectDuration, type MediaClip, type OperationInput, type Project } from "@videoeditor/core";
-import { captionGroups, COMPONENTS, needsPersonAt, plainText, renderFrame, validateComponent, type CaptionBox, type EditRegion } from "@videoeditor/renderer";
+import { applyOperations, cutFadeGain, findClip, isFullscreen, localTimeAt, mainClipAt, mainClips, projectDuration, rateAt, sourceEnd, sourceTimeAt, type MediaClip, type OperationInput, type Project } from "@videoeditor/core";
+import { captionGroups, COMPONENTS, needsPersonAt, plainText, renderFrame, validateComponent, validateSfx, type CaptionBox, type EditRegion } from "@videoeditor/renderer";
 import { brollFrame, syncBroll } from "@/lib/broll";
 import { loadProjectFonts } from "@/lib/fonts";
 import { mediaUrl } from "@/lib/media";
 import { getPath, reEmphasize, setPath } from "@/lib/params";
 import { maskKey, personMask } from "@/lib/segmentation";
+import { createMusicPlayer } from "@/lib/music";
 import { createSfxPlayer } from "@/lib/sfx";
 import { voiceCompressor, voiceGainNow } from "@/lib/voice";
 import { useEditor } from "@/lib/store";
@@ -63,6 +64,7 @@ export function Player() {
     let lastWall = performance.now();
     let cur = 0;
     const sfx = createSfxPlayer();
+    const music = createMusicPlayer();
     // Voz no volume profissional também no preview: os dois vídeos passam por um ganho e um compressor.
     // Se o navegador não deixar montar o grafo de áudio, o som segue direto do vídeo, como antes.
     let audio: { ctx: AudioContext; gain: GainNode } | null = null;
@@ -126,7 +128,15 @@ export function Player() {
         const clip = mainClipAt(p, t) ?? (t >= duration && duration > 0 ? mainClipAt(p, duration - 0.001) : null);
         if (clip) {
           if (ensureSrc(video, clip.assetId)) activeClipId = null;
-          const target = clip.sourceStart + Math.min(t - clip.start, clip.duration - 0.001);
+          const local = Math.min(t - clip.start, clip.duration - 0.001);
+          // Com rampa de velocidade, o tempo de origem segue a curva do clip.
+          const target = sourceTimeAt(clip, local);
+          const rate = Math.min(4, Math.max(0.25, rateAt(clip, local)));
+          for (const el of [video, standby]) {
+            // Sem preservar o pitch: o som acompanha a câmera lenta, igual à exportação.
+            if ("preservesPitch" in el && el.preservesPitch) el.preservesPitch = false;
+          }
+          if (Math.abs(video.playbackRate - rate) > 0.01) video.playbackRate = rate;
           if (s.playing) {
             if (clip.id !== activeClipId) {
               activeClipId = clip.id;
@@ -147,15 +157,16 @@ export function Player() {
               ensureAudio();
               if (audio) {
                 if (audio.ctx.state === "suspended") void audio.ctx.resume();
-                audio.gain.gain.value = p.finish.voice ? voiceGainNow(clip.assetId) : 1;
+                // Micro-fade de 30 ms nas duas bordas de cada corte, também no preview.
+                audio.gain.gain.value = (p.finish.voice ? voiceGainNow(clip.assetId) : 1) * cutFadeGain(local, clip.duration);
               }
               if (video.paused) void video.play().catch(() => useEditor.getState().setPlaying(false));
               // O relógio da timeline segue o relógio do vídeo (áudio sempre em sincronia).
-              t = Math.min(clip.start + Math.max(0, video.currentTime - clip.sourceStart), clip.start + clip.duration);
+              t = Math.min(clip.start + localTimeAt(clip, video.currentTime), clip.start + clip.duration);
             }
             // Deixa o outro vídeo parado no começo do próximo clip, pronto para a emenda.
             const next = nextClip(p, clip);
-            if (next && standby.dataset.clip !== next.id && Math.abs(next.sourceStart - (clip.sourceStart + clip.duration)) > 0.04) {
+            if (next && standby.dataset.clip !== next.id && (next.assetId !== clip.assetId || Math.abs(next.sourceStart - sourceEnd(clip)) > 0.04 || next.start - (clip.start + clip.duration) > 0.04)) {
               ensureSrc(standby, next.assetId);
               if (!standby.paused) standby.pause();
               standby.currentTime = next.sourceStart;
@@ -183,6 +194,7 @@ export function Player() {
         }
         // Efeitos sonoros: dispara os que caem entre o quadro anterior e este.
         if (s.playing && engineTime >= 0) sfx.advance(p, engineTime, t);
+        music.sync(p, t, s.playing);
         if (t !== s.time) useEditor.setState({ time: t });
         engineTime = t;
 
@@ -224,6 +236,7 @@ export function Player() {
     return () => {
       cancelAnimationFrame(raf);
       sfx.close();
+      music.close();
       void audio?.ctx.close();
     };
   }, []);
@@ -279,7 +292,7 @@ export function Player() {
       if (ops) {
         try {
           // Prévia ao vivo, sem entrar no histórico; o ponto de desfazer é criado ao soltar.
-          useEditor.setState({ project: applyOperations(base, ops, { validateComponent }).project });
+          useEditor.setState({ project: applyOperations(base, ops, { validateComponent, validateSfx }).project });
         } catch {
           ops = null;
         }
@@ -371,7 +384,7 @@ export function Player() {
 const clamp = (n: number) => Math.round(Math.min(1, Math.max(-1, n)) * 1000) / 1000;
 
 function nextClip(p: Project, clip: MediaClip): MediaClip | null {
-  const clips = mainClips(p);
+  const clips = mainClips(p).sort((a, b) => a.start - b.start);
   const i = clips.findIndex((c) => c.id === clip.id);
   return i >= 0 ? (clips[i + 1] ?? null) : null;
 }

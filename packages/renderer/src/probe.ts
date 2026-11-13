@@ -60,8 +60,8 @@ export function probeFrame(project: Project, t: number, opts: { hasMask?: boolea
     onRegion: (r) => out.regions.push(r),
     onCaption: (b) => (out.caption = b),
     getBrollFrame: () => ({ image: {} as CanvasImageSource, width: project.width, height: project.height }),
-    // Sem OffscreenCanvas (servidor, testes) não há recorte: o componente cai no plano B, como no navegador sem segmentação.
-    getPersonMask: opts.hasMask ? () => ({}) as CanvasImageSource : undefined,
+    // Sem canvas de verdade não há recorte para montar: a sonda só diz ao layout se ele existiria.
+    assumePerson: opts.hasMask === true,
   });
   return out;
 }

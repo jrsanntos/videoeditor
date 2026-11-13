@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { contextAssets, type Asset } from "@videoeditor/core";
-import { contextThumb, describeContextAsset, ensureContextThumb, insertBroll, removeContextAsset, searchStock, uploadContextFiles, importStockItem, type StockItem } from "@/lib/actions";
+import { clipEnd, contextAssets, mainClips, type Asset } from "@videoeditor/core";
+import { addMainVideo, attachStyleReference, contextThumb, describeContextAsset, ensureContextThumb, insertBroll, insertOnMain, removeContextAsset, removeStyleReference, searchStock, uploadContextFiles, importStockItem, type StockItem } from "@/lib/actions";
+import { ASSET_DND } from "./Timeline";
 import { useEditor } from "@/lib/store";
 import { Icon } from "./icons";
 
@@ -19,9 +20,50 @@ export function MediaPanel() {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const assets = contextAssets(project);
+  const mainInput = useRef<HTMLInputElement>(null);
+  const mains = Object.values(project.assets).filter((a) => a.role !== "context" && a.kind === "video");
 
   return (
     <div>
+      <div className="border-b border-line px-4 py-4" data-testid="main-media">
+        <h3 className={heading}>
+          <Icon.film size={12} /> Vídeos da timeline
+        </h3>
+        <button onClick={() => mainInput.current?.click()} disabled={!!busy} data-testid="main-upload" className="flex w-full items-center gap-2.5 rounded-xl border border-line-strong px-3 py-2.5 text-left transition hover:border-brand-400/70 hover:bg-brand-500/[0.06] disabled:opacity-50">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 text-brand-300">
+            <Icon.plus size={16} />
+          </span>
+          <span>
+            <span className="block text-[12.5px] font-medium text-zinc-100">Adicionar vídeo à timeline</span>
+            <span className="block text-[11px] leading-snug text-zinc-500">Entra no fim da trilha de vídeo. Depois é só arrastar para onde quiser.</span>
+          </span>
+        </button>
+        <input ref={mainInput} type="file" accept="video/*" className="hidden" data-testid="main-input" onChange={(e) => e.target.files?.[0] && (void addMainVideo(e.target.files[0]), (e.target.value = ""))} />
+        {mains.length > 0 && (
+          <ul className="mt-2 space-y-1.5">
+            {mains.map((a) => (
+              <li
+                key={a.id}
+                draggable
+                onDragStart={(e) => (e.dataTransfer.setData(ASSET_DND, a.id), (e.dataTransfer.effectAllowed = "copy"))}
+                className="flex cursor-grab items-center gap-2 rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 active:cursor-grabbing"
+                title="Arraste para a timeline: na trilha de vídeo insere entre os clipes; numa trilha de cima, sobrepõe"
+              >
+                <Icon.move size={12} className="shrink-0 text-zinc-500" />
+                <span className="min-w-0 flex-1 truncate text-[11.5px] text-zinc-200">{a.name}</span>
+                <span className="font-mono text-[10px] text-zinc-500">{a.duration.toFixed(0)}s</span>
+                <button className="rounded-md px-1.5 py-0.5 text-[10.5px] font-medium text-brand-300 hover:bg-brand-500/15" onClick={() => insertOnMain(a.id, useEditor.getState().time)} title="Insere no cursor: entre dois clipes abre espaço; numa lacuna, encaixa">
+                  No cursor
+                </button>
+                <button className="rounded-md px-1.5 py-0.5 text-[10.5px] text-zinc-400 hover:bg-white/8" onClick={() => insertOnMain(a.id, mainClips(project).reduce((m, c) => Math.max(m, clipEnd(c)), 0))} title="Põe de novo no fim da trilha">
+                  No fim
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <StyleReference />
       <div className="border-b border-line px-4 py-4">
         <h3 className={heading}>
           <Icon.film size={12} /> Seus vídeos de contexto
@@ -67,7 +109,12 @@ function ContextItem({ asset }: { asset: Asset }) {
     if (!thumb) void ensureContextThumb(asset.id, asset.kind).then(setThumb);
   }, [asset.id, asset.kind, thumb]);
   return (
-    <li className="rounded-xl border border-line bg-ink-850 p-2">
+    <li
+      className="cursor-grab rounded-xl border border-line bg-ink-850 p-2 active:cursor-grabbing"
+      draggable
+      onDragStart={(e) => (e.dataTransfer.setData(ASSET_DND, asset.id), (e.dataTransfer.effectAllowed = "copy"))}
+      title="Arraste para a timeline: numa trilha de cima sobrepõe (b-roll); na trilha de vídeo, insere entre os clipes"
+    >
       <div className="flex gap-2.5">
         <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-ink-700">
           {thumb && <img src={thumb} alt="" className="h-full w-full object-cover" />}
@@ -95,6 +142,73 @@ function ContextItem({ asset }: { asset: Asset }) {
       </div>
       <input className={`${field} mt-2`} placeholder="O que aparece aqui? Ex.: pessoa treinando na academia" maxLength={200} value={desc} onChange={(e) => setDesc(e.target.value)} onBlur={() => desc !== (asset.description ?? "") && describeContextAsset(asset.id, desc)} />
     </li>
+  );
+}
+
+/**
+ * Referência de inspiração: uma URL do YouTube que a IA analisa (ritmo,
+ * cortes, cores, tipografia) para o Diretor replicar o estilo neste vídeo.
+ */
+function StyleReference() {
+  const ref = useEditor((s) => s.project?.styleReference);
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    if (!url.trim() || loading) return;
+    setLoading(true);
+    const error = await attachStyleReference(url.trim());
+    setLoading(false);
+    if (!error) setUrl("");
+  };
+  return (
+    <div className="border-b border-line px-4 py-4" data-testid="style-reference">
+      <h3 className={heading}>
+        <Icon.sparkles size={12} /> Inspiração (opcional)
+      </h3>
+      {ref ? (
+        <div className="rounded-xl border border-brand-500/30 bg-brand-500/[0.07] p-2.5">
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <a href={ref.url} target="_blank" rel="noreferrer" className="block truncate text-[12px] font-medium text-zinc-100 hover:underline" title={ref.title}>
+                {ref.title || "Vídeo do YouTube"}
+              </a>
+              <p className="truncate text-[10.5px] text-zinc-500">{ref.channel}</p>
+            </div>
+            <button className="rounded-md p-1 text-zinc-500 hover:bg-rose-500/10 hover:text-rose-300" onClick={removeStyleReference} aria-label="Remover a referência" title="Remover a referência">
+              <Icon.x size={13} />
+            </button>
+          </div>
+          <p className="mt-1.5 text-[11px] leading-snug text-zinc-300">
+            {ref.pacing.cutsPerMin ? `~${ref.pacing.cutsPerMin} cortes/min` : "ritmo"} · energia {ref.pacing.energy}
+            {ref.pacing.wordsPerMin ? ` · ${ref.pacing.wordsPerMin} palavras/min` : ""}
+          </p>
+          {ref.palette.length > 0 && (
+            <div className="mt-1.5 flex gap-1">
+              {ref.palette.map((c) => (
+                <span key={c} className="h-4 w-4 rounded border border-white/15" style={{ background: c }} title={c} />
+              ))}
+            </div>
+          )}
+          {ref.typography && <p className="mt-1.5 text-[10.5px] leading-snug text-zinc-500">{ref.typography}</p>}
+          <p className="mt-1.5 text-[10.5px] leading-snug text-zinc-600">O Diretor de IA vai replicar esse ritmo e esse visual na próxima edição. Fontes: {ref.sources.join(", ") || "metadados"}.</p>
+        </div>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run();
+          }}
+        >
+          <label className="block text-[11px] leading-snug text-zinc-400">
+            URL do YouTube de inspiração (opcional) — para a IA replicar o ritmo, estilo de cortes, cores e tipografia
+            <input className={`${field} mt-1.5`} type="url" inputMode="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" data-testid="reference-input" />
+          </label>
+          <button type="submit" disabled={!url.trim() || loading} className="mt-2 w-full rounded-lg bg-white/8 px-3 py-2 text-xs font-medium text-zinc-100 transition hover:bg-white/12 disabled:opacity-40">
+            {loading ? "Analisando a referência…" : "Usar como inspiração"}
+          </button>
+        </form>
+      )}
+    </div>
   );
 }
 

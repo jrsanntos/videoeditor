@@ -30,6 +30,8 @@ export type RenderOptions = {
   getPersonMask?: (clip: MediaClip, frame: FrameSource) => CanvasImageSource | null;
   /** Quadro atual de uma mídia de contexto (vídeo ou imagem). null = ainda não disponível. */
   getBrollFrame?: (clip: BrollClip, localTime: number) => FrameSource | null;
+  /** Só para a sonda de layout (sem canvas de verdade): considera que o recorte do apresentador existe. */
+  assumePerson?: boolean;
   /** Desenha as áreas seguras por cima (só no preview; nunca na exportação). */
   guides?: boolean;
   /**
@@ -166,7 +168,7 @@ export function renderFrame(
       if (!project.brand.showLowerThird && LOWER_THIRD_IDS.has(c.component)) continue;
       const parsed = def.schema.safeParse(c.params);
       if (!parsed.success) continue;
-      const hasPerson = def.needsPerson ? personLayer() !== null : false;
+      const hasPerson = def.needsPerson ? options.assumePerson === true || personLayer() !== null : false;
       const st = c.style;
       const brand = st
         ? {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { creditCost, formatCredits, mainClips, projectDuration, SKILLS, type SkillId } from "@videoeditor/core";
+import { creditCost, formatCredits, GENRE_NAMES, mainClips, projectDuration, projectGenre, skillForGenre, type SkillId } from "@videoeditor/core";
 import { autoCleanOnly, autoEdit, editManually } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { formatTime, togglePlay } from "./Player";
@@ -9,12 +9,12 @@ import { Icon } from "./icons";
 
 /** Os estilos em linguagem de quem não é editor: para que serve e como fica. */
 const STYLES: { id: SkillId; name: string; icon: React.ReactNode; forWho: string; look: string }[] = [
-  { id: "viral", name: "Dinâmico", icon: <Icon.bolt size={18} />, forWho: "Reels, Shorts e TikTok", look: "Ritmo rápido, legendas grandes no centro, muitos destaques na tela." },
-  { id: "autoridade", name: "Profissional", icon: <Icon.shield size={18} />, forWho: "Médicos, advogados, consultores", look: "Sóbrio e elegante: movimentos suaves, legendas discretas, informação organizada." },
-  { id: "vsl", name: "Vendas", icon: <Icon.chart size={18} />, forWho: "Anúncios e vídeos de oferta", look: "Números, benefícios e a chamada para ação em evidência." },
+  { id: "viral", name: "Retenção Viral", icon: <Icon.bolt size={18} />, forWho: "Reels, Shorts e TikTok", look: "Gancho em 2 s, legenda pop na base, micro-zooms nos cortes e trilha animada." },
+  { id: "acao", name: "Ação & Cinema", icon: <Icon.film size={18} />, forWho: "Esportes, treinos, cenas com pouca fala", look: "Câmera lenta nos ápices, cor de cinema, impactos, trilha de ação. Não corta os silêncios." },
+  { id: "autoridade", name: "Autoridade", icon: <Icon.shield size={18} />, forWho: "Negócios, saúde, direito, educação", look: "Tom quente e limpo, números em cartões, câmera suave e legenda editorial." },
 ];
 
-const INCLUDED = ["Corta erros de gravação e pausas", "Legendas sincronizadas", "Zooms nos momentos fortes", "Títulos, listas e números animados", "Voz no volume das redes"];
+const INCLUDED = ["Plano por atos para você aprovar", "Legendas na base, fora do rosto", "Zooms com motivo, no sujeito", "Cards, trilha e efeitos sonoros", "Revisão automática antes de entregar"];
 
 /**
  * Assistente de edição automática. É o caminho de quem nunca editou um vídeo:
@@ -36,7 +36,10 @@ function Choose() {
   const project = useEditor((s) => s.project);
   const credits = useEditor((s) => s.credits);
   const unlimited = useEditor((s) => s.unlimited);
-  const [pick, setPick] = useState<SkillId>("viral");
+  // O modelo sugerido segue o gênero medido no vídeo: cena de ação não começa em "talking-head".
+  const genre = project ? projectGenre(project) : null;
+  const [picked, setPick] = useState<SkillId | null>(null);
+  const pick = picked ?? skillForGenre(genre);
   if (!project) return null;
   const asset = project.assets[mainClips(project)[0]?.assetId ?? ""];
   const transcribed = Boolean(asset?.transcript?.words.length);
@@ -51,7 +54,14 @@ function Choose() {
           <Icon.sparkles size={14} /> Vídeo recebido
         </p>
         <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white">Como você quer o seu vídeo?</h2>
-        <p className="mt-1.5 text-sm text-zinc-400">Escolha um estilo e a IA edita tudo, do começo ao fim. Depois você ainda pode mudar o que quiser.</p>
+        <p className="mt-1.5 text-sm text-zinc-400">
+          Escolha um modelo e a IA edita tudo, do começo ao fim. Depois você ainda pode mudar o que quiser.
+          {genre && (
+            <span className="ml-1 text-brand-300" data-testid="genre">
+              Detectamos: {GENRE_NAMES[genre]}.
+            </span>
+          )}
+        </p>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Estilo da edição">
           {STYLES.map((s) => (

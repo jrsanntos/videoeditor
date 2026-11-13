@@ -10,17 +10,23 @@ import {
   type Project,
   type TimeRange,
 } from "@videoeditor/core";
-import { validateComponent } from "@videoeditor/renderer";
+import { validateComponent, validateSfx } from "@videoeditor/renderer";
 
 export type SavedBrand = { id: string; name: string; brand: BrandKit };
 
 export type SessionUser = { id: string; name: string; email: string; role: "user" | "admin"; plan: string; planName?: string };
 
+/** Plano do Diretor: o vídeo em atos (gancho, desenvolvimento, clímax, fecho). */
 export type EditPlan = {
+  resumo: string;
   diagnostico: string;
   cortes: string;
-  capitulos: { papel: string; fromWord: string; toWord: string; energia: string; tratamento: string; zooms: number; componentes: number }[];
+  estilo: { look: string; musica: string; legenda: string | null };
+  capitulos: { ato: "gancho" | "desenvolvimento" | "climax" | "fecho"; titulo: string; energia: string; velocidade: string; tratamento: string; zooms: number; componentes: number; sons: number }[];
 };
+
+/** Um pedido de edição completa esperando a confirmação do plano no chat. */
+export type PendingPlan = { token: string; message: string; skill?: string; frames: { t: number; data: string }[] };
 
 /** Tamanho dos painéis do editor, em pixels. */
 export type Layout = { left: number; right: number; bottom: number };
@@ -33,6 +39,8 @@ export type ChatMessage = {
   text: string;
   /** Plano de edição do agente (diagnóstico + mapa de ritmo). */
   plan?: EditPlan;
+  /** Plano aguardando o "sim" do usuário; some quando ele confirma, ajusta ou descarta. */
+  pending?: PendingPlan;
   log?: string[];
   credits?: number;
   error?: boolean;
@@ -73,6 +81,8 @@ type State = {
   /** Mostra as áreas seguras por cima do preview (nunca entra na exportação). */
   guides: boolean;
   notice: string | null;
+  /** Registro da última edição manual aplicada (ex.: "encaixado na lacuna", "ajustado à lacuna"). */
+  lastLog: string[];
 
   /** history: true empilha o estado atual para desfazer; "keep" troca o projeto sem mexer no histórico (atualizações ao vivo do agente). */
   setProject: (p: Project | null, opts?: { history?: boolean | "keep" }) => void;
@@ -93,6 +103,8 @@ type State = {
   setPxPerSec: (n: number) => void;
   setCredits: (n: number) => void;
   pushChat: (m: Omit<ChatMessage, "id">) => void;
+  /** Tira o pedido pendente de uma mensagem de plano (confirmado ou descartado). */
+  resolvePlan: (id: string) => void;
   setBusy: (b: string | null) => void;
   setNotice: (n: string | null) => void;
 };
@@ -134,6 +146,7 @@ export const useEditor = create<State>((set, get) => ({
   busy: null,
   guides: false,
   notice: null,
+  lastLog: [],
 
   setProject: (project, opts) =>
     set((s) => {
@@ -153,8 +166,10 @@ export const useEditor = create<State>((set, get) => ({
     const { project } = get();
     if (!project) return "Nenhum projeto aberto";
     try {
-      const next = applyOperations(project, ops, { validateComponent }).project;
+      const result = applyOperations(project, ops, { validateComponent, validateSfx });
+      const next = result.project;
       set((s) => ({
+        lastLog: result.log,
         project: next,
         past: [...s.past.slice(-HISTORY_LIMIT), project],
         future: [],
@@ -217,6 +232,7 @@ export const useEditor = create<State>((set, get) => ({
   setPxPerSec: (pxPerSec) => set({ pxPerSec }),
   setCredits: (credits) => set({ credits }),
   pushChat: (m) => set((s) => ({ chat: [...s.chat, { ...m, id: crypto.randomUUID() }] })),
+  resolvePlan: (id) => set((s) => ({ chat: s.chat.map((m) => (m.id === id ? { ...m, pending: undefined } : m)) })),
   setBusy: (busy) => set({ busy }),
   setNotice: (notice) => set({ notice }),
 }));

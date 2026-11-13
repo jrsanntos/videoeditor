@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { EditTemplateSchema, type EditTemplate, type Transcript } from "@videoeditor/core";
+import { BUILTIN_TEMPLATES, CAPTION_PRESET_IDS, EditTemplateSchema, type EditTemplate, type Transcript } from "@videoeditor/core";
 import { catalogForAgent, COMPONENTS } from "@videoeditor/renderer";
 import { db } from "./db";
 import { agentModel, anthropicClient, anthropicError, transcribeAudio } from "./ai";
@@ -71,6 +71,11 @@ export async function deleteTemplate(id: string) {
   await db.run("DELETE FROM templates WHERE id = $1", [id]);
 }
 
+/** Os 3 modelos prontos da casa, no mesmo formato dos extraídos: sempre disponíveis, sem depender do banco. */
+export function builtinTemplates(): TemplateRecord[] {
+  return BUILTIN_TEMPLATES.map((t) => ({ id: t.id, status: "published" as const, data: t.data, sourceName: "modelo da casa", sourceDuration: 0, thumbnail: null, createdAt: "", updatedAt: "" }));
+}
+
 /** Remove componentes que não existem no catálogo (o modelo nunca pode quebrar o editor). */
 function sanitize(t: EditTemplate): EditTemplate {
   return { ...t, motion: t.motion.filter((m) => m.component in COMPONENTS) };
@@ -87,7 +92,7 @@ const ExtractionSchema = z.object({
   description: z.string(),
   captions: z.object({
     enabled: z.boolean(),
-    preset: z.enum(["karaoke", "bold", "clean"]),
+    preset: z.enum(CAPTION_PRESET_IDS),
     position: z.enum(["bottom", "center", "top"]),
   }),
   silence: z.object({ remove: z.boolean(), minSilence: z.number(), padding: z.number() }),
@@ -127,7 +132,7 @@ function normalize(x: z.infer<typeof ExtractionSchema>): EditTemplate {
 const EXTRACTION_SYSTEM = `Você analisa vídeos de exemplo, já editados, de um editor de vídeo web voltado a vídeo falado (VSLs, aulas, especialistas), e extrai o ESTILO DE EDIÇÃO como um modelo reutilizável. Outros usuários vão aplicar esse modelo nos próprios vídeos brutos, então descreva decisões de edição transferíveis, não o conteúdo deste vídeo.
 
 Você recebe quadros amostrados com o instante de cada um, a transcrição com tempos e medidas de pausas. A partir disso:
-- Legendas: se aparecem queimadas nos quadros, escolha o preset mais parecido (karaoke = palavra ativa destacada em cor; bold = caixa alta grossa; clean = discreta) e a posição. Se não há legendas, enabled = false.
+- Legendas: se aparecem queimadas nos quadros, escolha o preset mais parecido (viral_pop = 2–3 palavras grandes com a ativa em cor e maior; karaoke_pill = pílula colorida atrás da palavra falada; comic_bounce = contorno espesso e entrada elástica; editorial_clean = caixa escura discreta; neon_subtitle = brilho neon; minimal_cinema = legenda de cinema pequena; karaoke/bold/clean = os clássicos) e a posição. Se não há legendas, enabled = false.
 - Pausas: um vídeo editado quase não tem pausas longas. Se as pausas medidas forem curtas e raras, remove = true, com minSilence e padding coerentes com o ritmo observado.
 - Zooms: estime pela variação de enquadramento entre quadros próximos (rosto maior/menor). perMinute 0 se não houver.
 - Motion design: só use componentes do catálogo abaixo e descreva em "when" o gatilho na fala (ex.: "quando citar números comparáveis"). Lista vazia se não houver gráficos/textos animados.
@@ -154,7 +159,7 @@ export async function extractTemplate(input: ExtractionInput, actorId: string): 
   let transcript: Transcript | null = null;
   try {
     const t = await transcribeAudio(input.audio);
-    transcript = t.transcript;
+    transcript = t.transcript.words.length ? t.transcript : null;
     await recordUsage({
       userId: actorId,
       kind: "template_extract",

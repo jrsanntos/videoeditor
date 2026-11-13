@@ -9,3 +9,4 @@ export * from "./captions";
 export * from "./probe";
 export * from "./mask";
 export * from "./music";
+export { animState } from "./components/v2";

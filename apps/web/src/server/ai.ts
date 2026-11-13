@@ -77,10 +77,13 @@ export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcr
     throw new HttpError(502, "O serviço de transcrição falhou. Tente novamente.");
   }
   const data = (await res.json()) as GroqVerbose;
-  if (!data.words?.length) throw new HttpError(422, "Nenhuma fala foi detectada no áudio.");
-  const words = data.words.map((w, i) => ({ id: `w${i}`, text: w.word.trim(), start: w.start, end: w.end }));
+  // Vídeo sem fala (cena de ação, b-roll, demonstração muda) é um vídeo válido: transcrição vazia, não erro.
+  const words = (data.words ?? []).map((w, i) => ({ id: `w${i}`, text: w.word.trim(), start: w.start, end: w.end }));
   return {
     transcript: { language: data.language, words },
-    seconds: data.duration ?? words[words.length - 1]!.end,
+    seconds: data.duration ?? words[words.length - 1]?.end ?? 0,
   };
 }
+
+// Os três papéis do agente (Diretor, Editor, Crítico), com prompts e ferramentas próprios.
+export * from "./agents";

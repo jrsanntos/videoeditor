@@ -1,6 +1,7 @@
 "use client";
 
 import type { ImageSegmenter } from "@mediapipe/tasks-vision";
+import { refineMask } from "@videoeditor/renderer";
 
 /**
  * Segmentação de pessoa (MediaPipe Selfie Segmentation) para o texto atrás do
@@ -16,6 +17,10 @@ let segmenter: ImageSegmenter | null = null;
 let loading: Promise<ImageSegmenter | null> | null = null;
 let failed = false;
 const cache = new Map<string, OffscreenCanvas>();
+/** Confiança (já suavizada) do último quadro segmentado de cada vídeo: base da suavização temporal. */
+const previous = new Map<string, { frame: number; data: Float32Array; w: number; h: number }>();
+/** Desfoque da borda alfa, em pixels do vídeo de origem. */
+const FEATHER_PX = 1.75;
 
 /** Carrega o modelo (uma vez). Devolve false se o navegador não consegue rodá-lo. */
 export function ensureSegmenter(): Promise<boolean> {
@@ -67,12 +72,21 @@ export function personMask(key: string, image: CanvasImageSource, width: number,
     const canvas = new OffscreenCanvas(mask.width, mask.height);
     const ctx = canvas.getContext("2d")!;
     const pixels = ctx.createImageData(mask.width, mask.height);
+    // Pós-processamento de estúdio: suavização temporal com o quadro anterior do mesmo vídeo (sem
+    // tremor no cabelo e nos ombros), fechamento morfológico (sem buracos na silhueta) e feathering
+    // de ~1,75 px na borda alfa.
+    const [stream, frameStr] = key.split(":").length === 2 ? key.split(":") : [null, null];
+    const frame = Number(frameStr);
+    const last = stream ? previous.get(stream) : undefined;
+    // Só quadros vizinhos contam: depois de um salto na timeline o quadro anterior é outra cena.
+    const usable = last && last.w === mask.width && last.h === mask.height && Number.isFinite(frame) && Math.abs(frame - last.frame) <= 3 ? last.data : null;
+    const { alpha, smoothed } = refineMask(data, mask.width, mask.height, { previous: usable, featherPx: FEATHER_PX, scale: mask.width / Math.max(width, 1) });
+    if (stream && Number.isFinite(frame)) previous.set(stream, { frame, data: smoothed, w: mask.width, h: mask.height });
     let covered = 0;
-    for (let i = 0; i < data.length; i++) {
-      // Curva em S: borda suave na transição, miolo opaco, fundo limpo.
-      const v = Math.min(1, Math.max(0, (data[i]! - 0.35) / 0.3));
+    for (let i = 0; i < alpha.length; i++) {
+      const v = alpha[i]!;
       if (v > 0.5) covered++;
-      pixels.data[i * 4 + 3] = Math.round(v * v * (3 - 2 * v) * 255);
+      pixels.data[i * 4 + 3] = Math.round(v * 255);
     }
     ctx.putImageData(pixels, 0, 0);
     result.close();
@@ -93,4 +107,5 @@ export const maskKey = (assetId: string, sourceTime: number, fps: number) => `${
 
 export function clearMaskCache() {
   cache.clear();
+  previous.clear();
 }
