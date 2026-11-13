@@ -1,4 +1,4 @@
-import { captionAlpha, captionBaseY, captionSuppression, placeCaption, timelineWords, type Box, type CaptionPreset, type CaptionStyle, type Project, type SafeArea, type TimeRange, type TimelineWord } from "@videoeditor/core";
+import { captionAlpha, captionBaseY, captionSuppression, isDoubtful, placeCaption, timelineWords, type Box, type CaptionPreset, type CaptionStyle, type Project, type SafeArea, type TimeRange, type TimelineWord } from "@videoeditor/core";
 import type { Rect } from "./camera";
 import { clamp01, type Ctx2D, easeOutBack, easeOutCubic, font, interpolate, rgba, roundRect, spring, stage } from "./draw";
 
@@ -21,6 +21,8 @@ export type CaptionGroup = {
   text: string;
   hidden: boolean;
   shift: number;
+  /** Ids das palavras que o transcritor não teve certeza e ainda não foram conferidas. */
+  doubtful: string[];
 };
 
 type PresetSpec = {
@@ -82,6 +84,7 @@ export function captionGroups(project: Project): CaptionGroup[] {
           .join(" "),
         hidden: !words.length,
         shift,
+        doubtful: cur.filter(isDoubtful).map((w) => w.id),
       });
     }
     cur = [];

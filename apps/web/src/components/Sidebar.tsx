@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CAPTION_PRESET_IDS, CAPTION_PRESET_NAMES, creditCost, FONT_PAIRS, FORMATS, GENRE_NAMES, LOOK_IDS, LOOK_NAMES, mainClips, MUSIC_MOODS, MUSIC_NAMES, PLANS, projectGenre, SILENCE_MODES, type AspectRatio, type BrandKit, type CaptionPreset, type EditTemplate, type FontPairId, type Genre, type LookId, type MusicMood, type SilenceMode } from "@videoeditor/core";
-import { COMPONENTS } from "@videoeditor/renderer";
+import { captionGroups, COMPONENTS } from "@videoeditor/renderer";
 import { applyTemplate, autoClean, deleteBrand, removeSilencesLocally, saveBrand, toggleCaptions } from "@/lib/actions";
 import { useEditor } from "@/lib/store";
 import { MediaPanel } from "./MediaPanel";
@@ -173,6 +173,7 @@ export function Sidebar() {
             </label>
           </div>
         )}
+        {hasTranscript && <CaptionReview />}
       </div>
 
             <div className={section}>
@@ -427,7 +428,12 @@ function Brand() {
     if (match) setName(match.name);
     else setOpen(true);
   }, [brands, currentId, brand]);
-  useEffect(() => setDraft(brand), [brand]);
+  // O vocabulário é digitado como texto livre; o kit guarda a lista.
+  const [vocab, setVocab] = useState(brand.vocabulary.join(", "));
+  useEffect(() => {
+    setDraft(brand);
+    setVocab((v) => (JSON.stringify(parseVocabulary(v)) === JSON.stringify(brand.vocabulary) ? v : brand.vocabulary.join(", ")));
+  }, [brand]);
 
   const dirty = !current || name !== current.name || JSON.stringify(draft) !== JSON.stringify(current.brand);
   const notice = (text: string) => useEditor.getState().setNotice(text);
@@ -511,6 +517,20 @@ function Brand() {
             Registro ou cargo
             <input className={`${field} mt-1`} maxLength={60} placeholder="CRM 12345" value={draft.credential} onChange={(e) => setDraft({ ...draft, credential: e.target.value })} />
           </label>
+          <label className="block text-xs text-zinc-400">
+            Vocabulário
+            <textarea
+              className={`${field} mt-1 h-16 resize-none`}
+              placeholder="Seu nome, marca, produtos e termos técnicos, separados por vírgula"
+              value={vocab}
+              onChange={(e) => {
+                setVocab(e.target.value);
+                setDraft({ ...draft, vocabulary: parseVocabulary(e.target.value) });
+              }}
+              data-testid="brand-vocabulary"
+            />
+            <span className="mt-1 block text-[10.5px] leading-snug text-zinc-600">A transcrição escreve esses nomes do jeito certo nos próximos vídeos.</span>
+          </label>
           <div className="grid grid-cols-4 gap-2">
             {SWATCHES.map((sw) => (
               <label key={sw.key} className="block text-center text-[10px] text-zinc-500">
@@ -566,4 +586,62 @@ function Brand() {
       )}
     </div>
   );
+}
+
+/**
+ * Revisão rápida de legenda: só as frases em que o transcritor não teve
+ * certeza de alguma palavra. Um clique leva ao trecho (e abre o editor da
+ * legenda); "Está certo" tira da lista sem mudar o texto.
+ */
+function CaptionReview() {
+  const project = useEditor((s) => s.project)!;
+  const apply = useEditor((s) => s.apply);
+  const groups = captionGroups(project).filter((g) => g.doubtful.length && !g.hidden);
+  if (!groups.length) return null;
+  const all = groups.flatMap((g) => g.doubtful);
+  return (
+    <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-500/[0.06] p-2.5" data-testid="caption-review">
+      <div className="flex items-center justify-between gap-2 px-0.5">
+        <span className="text-[11.5px] font-medium text-amber-100">Confira {groups.length === 1 ? "1 legenda" : `${groups.length} legendas`}</span>
+        <button className="text-[10.5px] text-amber-200/80 underline-offset-2 hover:text-amber-50 hover:underline" onClick={() => apply([{ op: "review_words", wordIds: all }])} data-testid="caption-review-all">
+          Todas estão certas
+        </button>
+      </div>
+      <p className="mt-1 px-0.5 text-[10.5px] leading-snug text-zinc-500">A transcrição não teve certeza das palavras destacadas. Nomes e termos que se repetem podem ir para o Vocabulário da marca.</p>
+      <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto">
+        {groups.slice(0, 30).map((g) => (
+          <li key={g.wordIds[0]} className="flex items-center gap-1.5">
+            <button
+              className="min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-[11.5px] text-zinc-300 transition hover:bg-white/8"
+              onClick={() => {
+                const s = useEditor.getState();
+                s.seek(Math.max(0, g.start + 0.01));
+                s.selectCaption(g.wordIds);
+              }}
+              title="Ir para o trecho e editar"
+            >
+              {g.words.map((w) => (
+                <span key={w.id} className={g.doubtful.includes(w.id) ? "rounded bg-amber-400/25 px-0.5 font-semibold text-amber-50" : ""}>
+                  {w.text}{" "}
+                </span>
+              ))}
+            </button>
+            <button className="shrink-0 rounded-md px-1.5 py-1 text-[10.5px] text-zinc-400 transition hover:bg-white/8 hover:text-white" onClick={() => apply([{ op: "review_words", wordIds: g.doubtful }])} aria-label="Está certo">
+              <Icon.check size={13} />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** "Dra. Ana, CRM, Hipertrofia Max" → lista sem repetição, no limite do kit. */
+function parseVocabulary(text: string): string[] {
+  const seen = new Set<string>();
+  return text
+    .split(/[,;\n]/)
+    .map((t) => t.trim().slice(0, 40))
+    .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()))
+    .slice(0, 40);
 }

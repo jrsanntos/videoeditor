@@ -10,6 +10,7 @@ import {
   type OperationInput,
   findRetakes,
   fillersFor,
+  wordsToReview,
   AgentOperationSchema,
   ProjectSchema,
   safeArea,
@@ -1317,5 +1318,24 @@ describe("muletas", () => {
     const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 4, hasAudio: true, transcript: { words: w } });
     const { project } = applyOperations(p, [{ op: "remove_fillers" }]);
     expect(timelineWords(project).map((x) => x.text).join(" ")).toBe("a gente precisa, vender mais.");
+  });
+});
+
+describe("revisão de legenda", () => {
+  const project = () => {
+    const words = [
+      { id: "w0", text: "Oi,", start: 0, end: 0.3, confidence: 0.9 },
+      { id: "w1", text: "Primo", start: 0.4, end: 0.7, confidence: 0.4 },
+      { id: "w2", text: "Hico.", start: 0.7, end: 1, confidence: 0.4 },
+    ];
+    return addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 2, hasAudio: true, transcript: { words } });
+  };
+
+  it("palavra de baixa confiança vai para a revisão até ser conferida ou corrigida", () => {
+    expect(wordsToReview(project()).map((w) => w.id)).toEqual(["w1", "w2"]);
+    const confirmed = applyOperations(project(), [{ op: "review_words", wordIds: ["w1"] }]).project;
+    expect(wordsToReview(confirmed).map((w) => w.id)).toEqual(["w2"]);
+    const fixed = applyOperations(project(), [{ op: "edit_caption", wordIds: ["w1", "w2"], text: "Primo Rico." }]).project;
+    expect(wordsToReview(fixed)).toEqual([]);
   });
 });

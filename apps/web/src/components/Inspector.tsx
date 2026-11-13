@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { findClip, FONT_PAIRS, hasSpeed, isFullscreen, rateAverage, sourceSpan, type BrollClip, type Clip, type ComponentClip, type FontPairId, type ImpactClip, type MediaClip, type OperationInput, type SfxClip, type ZoomClip } from "@videoeditor/core";
+import { findClip, FONT_PAIRS, hasSpeed, isFullscreen, rateAverage, sourceSpan, timelineWords, type BrollClip, type Clip, type ComponentClip, type FontPairId, type ImpactClip, type MediaClip, type OperationInput, type SfxClip, type ZoomClip } from "@videoeditor/core";
 import { captionGroups, COMPONENTS, SFX_CATALOG, type ComponentDef } from "@videoeditor/renderer";
 import { fromTokens, toTokens } from "@/lib/params";
 import { useEditor } from "@/lib/store";
@@ -76,7 +76,7 @@ export function Inspector() {
         </button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {caption ? <CaptionEditor key={caption.wordIds[0]} wordIds={caption.wordIds} text={caption.text} hidden={caption.hidden} shift={caption.shift} /> : <ClipEditor key={clip!.id} clip={clip!} />}
+        {caption ? <CaptionEditor key={caption.wordIds[0]} wordIds={caption.wordIds} text={caption.text} hidden={caption.hidden} shift={caption.shift} doubtful={caption.doubtful} /> : <ClipEditor key={clip!.id} clip={clip!} />}
       </div>
     </aside>
   );
@@ -608,8 +608,10 @@ function BrollEditor({ clip, update }: { clip: BrollClip; update: (p: Update) =>
 
 // ---------- Legenda ----------
 
-function CaptionEditor({ wordIds, text, hidden, shift }: { wordIds: string[]; text: string; hidden: boolean; shift: number }) {
+function CaptionEditor({ wordIds, text, hidden, shift, doubtful }: { wordIds: string[]; text: string; hidden: boolean; shift: number; doubtful: string[] }) {
   const apply = useEditor((s) => s.apply);
+  const project = useEditor((s) => s.project);
+  const unsure = doubtful.length && project ? timelineWords(project).filter((w) => doubtful.includes(w.id)).map((w) => w.text.replace(/[^\p{L}\p{N}-]/gu, "")) : [];
   const [value, setValue] = useState(text);
   useEffect(() => setValue(text), [text]);
   const run = (op: Omit<Extract<OperationInput, { op: "edit_caption" }>, "op" | "wordIds">) => {
@@ -617,6 +619,14 @@ function CaptionEditor({ wordIds, text, hidden, shift }: { wordIds: string[]; te
   };
   return (
     <>
+      {unsure.length > 0 && (
+        <div className="mx-4 mt-4 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-[11.5px] leading-snug text-amber-100" data-testid="caption-doubt">
+          A transcrição não teve certeza de <b className="font-semibold">{unsure.map((u) => `“${u}”`).join(", ")}</b>. Ouça o trecho: se estiver certo, confirme; se não, corrija o texto abaixo.
+          <button className="mt-2 block w-full rounded-md bg-amber-400/20 px-2 py-1.5 font-medium text-amber-50 transition hover:bg-amber-400/30" onClick={() => apply([{ op: "review_words", wordIds: doubtful }])} data-testid="caption-confirm">
+            Está certo
+          </button>
+        </div>
+      )}
       <div className={group}>
         <label className="block">
           <span className={label}>Texto da legenda</span>

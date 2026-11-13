@@ -320,6 +320,9 @@ const EditWord = z
     text: z.string().describe("novo texto; string vazia oculta a palavra da legenda"),
   })
   .describe("Corrige o texto de uma palavra da transcrição/legenda.");
+const ReviewWords = z
+  .object({ op: z.literal("review_words"), wordIds: z.array(z.string()).min(1) })
+  .describe("Marca palavras como conferidas pelo usuário: saem da revisão de legenda sem mudar o texto.");
 const EditCaption = z
   .object({
     op: z.literal("edit_caption"),
@@ -359,6 +362,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
   SetCaptions,
   EditWord,
   EditCaption,
+  ReviewWords,
   SetBrand,
   SetFormat,
   MoveClip,
@@ -807,6 +811,8 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
         const tokens = op.text.trim().split(/\s+/).filter(Boolean);
         found.forEach((w, i) => {
           w.text = i < found.length - 1 ? (tokens[i] ?? "") : tokens.slice(i).join(" ");
+          // Quem reescreveu a legenda conferiu as palavras dela.
+          w.reviewed = true;
         });
       }
       for (const w of found) {
@@ -821,11 +827,23 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       }
       return op.hidden ? "legenda removida" : "legenda atualizada";
     }
+    case "review_words": {
+      const ids = new Set(op.wordIds);
+      let n = 0;
+      for (const asset of Object.values(p.assets))
+        for (const w of asset.transcript?.words ?? [])
+          if (ids.has(w.id)) {
+            w.reviewed = true;
+            n++;
+          }
+      return `${n} palavra(s) conferida(s)`;
+    }
     case "edit_word": {
       for (const asset of Object.values(p.assets)) {
         const w = asset.transcript?.words.find((w) => w.id === op.wordId);
         if (w) {
           w.text = op.text;
+          w.reviewed = true;
           return `palavra ${op.wordId} → "${op.text}"`;
         }
       }
