@@ -45,7 +45,7 @@ import { clearBroll } from "./broll";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
-import { clearMedia, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
+import { clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
@@ -246,6 +246,57 @@ export async function attachStyleReference(url: string): Promise<string | null> 
     const message = (e as Error).message;
     s.setNotice(message);
     return message;
+  }
+}
+
+/** Até onde a referência por arquivo é medida: o ritmo de um vídeo aparece nos primeiros minutos. */
+const REFERENCE_MAX_SEC = 180;
+
+/**
+ * Referência por arquivo: o ritmo é MEDIDO no navegador (mudanças de plano,
+ * pausas e fala no áudio) e só alguns quadros pequenos sobem, para o modelo
+ * ler cores, tipografia e legenda. O arquivo não sai do computador.
+ */
+export async function attachStyleReferenceFile(file: File): Promise<string | null> {
+  const s = useEditor.getState();
+  if (!s.project) return "Nenhum projeto aberto";
+  s.setBusy("Medindo o ritmo do vídeo de referência…");
+  try {
+    const meta = await probeVideo(file);
+    const samples = await decodeBlobMono(file).catch(() => null);
+    const span = Math.min(meta.duration, REFERENCE_MAX_SEC);
+    // Cortes rápidos pedem amostragem densa: 4 quadros por segundo nos primeiros minutos.
+    const head = samples ? samples.subarray(0, Math.round(span * SPEECH_RATE)) : null;
+    const result = await analyzeVideo(file, `ref:${file.name}`, head, SPEECH_RATE, undefined, { maxSamples: Math.round(span * 4), perSecond: 4, segment: false, until: span });
+    const a = result.analysis;
+    if (!a) throw new Error("Não foi possível ler o vídeo de referência.");
+    const minutes = Math.max(span / 60, 1 / 60);
+    const pauses = head ? silencesFromAudio(head, SPEECH_RATE, { mode: "natural" }).length : 0;
+    const measured = {
+      name: file.name.slice(0, 120),
+      durationSec: Math.round(meta.duration * 10) / 10,
+      vertical: meta.height > meta.width,
+      cutsPerMin: Math.round((a.cuts.length / minutes) * 10) / 10,
+      pausesPerMin: Math.round((pauses / minutes) * 10) / 10,
+      speechRatio: a.speechRatio,
+      motionLevel: Math.round(a.motionLevel * 1000) / 1000,
+      genre: a.genre,
+    };
+    s.setBusy("Lendo cores, tipografia e legenda da referência…");
+    const res = await fetch("/api/style-reference", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: { ...measured, frames: result.frames.slice(0, 4) } }) });
+    const data = (await res.json().catch(() => null)) as { profile?: StyleReferenceProfile; error?: string } | null;
+    if (!res.ok || !data?.profile) throw new Error(data?.error ?? "Não foi possível analisar o vídeo de referência.");
+    const current = useEditor.getState().project;
+    if (!current) return null;
+    useEditor.setState({ project: { ...current, styleReference: data.profile } });
+    s.setNotice(`Referência medida: ${measured.cutsPerMin} cortes por minuto${measured.pausesPerMin ? `, ${measured.pausesPerMin} pausas por minuto` : ""}. O Diretor de IA vai seguir esse ritmo e esse visual.`);
+    return null;
+  } catch (e) {
+    const message = (e as Error).message;
+    s.setNotice(message);
+    return message;
+  } finally {
+    s.setBusy(null);
   }
 }
 
@@ -801,6 +852,9 @@ export async function resumePending(): Promise<boolean> {
   await importVideo(pending.file);
   const s = useEditor.getState();
   if (!s.project || s.project === before) return true;
+  // Nome e credencial digitados na prévia: a tarja que a pessoa viu é a que o vídeo recebe.
+  const name = pending.identity?.name.trim();
+  if (name) s.apply([{ op: "set_brand", brand: { displayName: name.slice(0, 40), credential: (pending.identity?.credential ?? "").trim().slice(0, 60), showLowerThird: true } }]);
   if (!pending.style) {
     editManually();
     return true;

@@ -133,7 +133,7 @@ export function audioEnergy(samples: Float32Array, sampleRate: number) {
  * Daí saem os picos de energia e o gênero editorial. Também guarda três
  * quadros pequenos em JPEG para o agente ver o enquadramento.
  */
-export async function analyzeVideo(file: Blob, assetId: string, samples?: Float32Array | null, sampleRate = 16000, wordCount?: number): Promise<VideoAnalysis> {
+export async function analyzeVideo(file: Blob, assetId: string, samples?: Float32Array | null, sampleRate = 16000, wordCount?: number, opts: { maxSamples?: number; perSecond?: number; segment?: boolean; until?: number } = {}): Promise<VideoAnalysis> {
   const url = URL.createObjectURL(file);
   const v = document.createElement("video");
   v.muted = true;
@@ -145,10 +145,11 @@ export async function analyzeVideo(file: Blob, assetId: string, samples?: Float3
       v.onloadeddata = () => resolve();
       v.onerror = () => reject(new Error("vídeo ilegível"));
     });
-    const canSegment = await ensureSegmenter();
-    const duration = v.duration;
+    const canSegment = opts.segment === false ? false : await ensureSegmenter();
+    // Com `until`, só o começo do vídeo é medido (referência longa).
+    const duration = Math.min(v.duration, opts.until ?? Infinity);
     // ~3 amostras por segundo, limitado para vídeos longos não travarem a análise.
-    const count = Math.min(200, Math.max(12, Math.round(duration * 3)));
+    const count = Math.min(opts.maxSamples ?? 200, Math.max(12, Math.round(duration * (opts.perSecond ?? 3))));
     const segEvery = Math.max(1, Math.round(count / Math.min(10, Math.max(3, Math.round(duration / 6)))));
     const frameAt = new Set([0, Math.floor(count / 2), count - 1].map((i) => Math.min(count - 1, Math.round(i / segEvery) * segEvery)));
     const scale = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight));

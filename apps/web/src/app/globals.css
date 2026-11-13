@@ -436,6 +436,10 @@ input[type="range"] {
     radial-gradient(circle at 80% 75%, #1c6dd0 0, transparent 55%),
     #06222b;
 }
+.lp-reel-acao img {
+  /* O tratamento do estilo: contraste alto, teal & orange. */
+  filter: contrast(1.25) saturate(1.3) sepia(0.25) hue-rotate(-12deg) brightness(0.9);
+}
 .lp-reel-limpeza img {
   /* Material bruto: sem tratamento de cor. */
   filter: saturate(0.35) brightness(0.85);

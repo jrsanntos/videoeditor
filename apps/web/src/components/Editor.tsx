@@ -157,7 +157,7 @@ function UploadScreen() {
         </button>
         <label className="-mt-2 block w-full max-w-2xl text-left">
           <span className="text-[12px] text-zinc-400">
-            URL do YouTube de inspiração <span className="text-zinc-600">(opcional)</span> — para a IA replicar o ritmo, estilo de cortes, cores e tipografia
+            Link do YouTube de inspiração <span className="text-zinc-600">(opcional)</span> — a IA lê título, capítulos, legendas e a capa para seguir o estilo. Para medir o ritmo de cortes de verdade, envie o arquivo da referência na aba Mídia.
           </span>
           <input
             type="url"

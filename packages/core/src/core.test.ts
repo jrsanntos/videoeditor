@@ -709,7 +709,7 @@ describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", (
     });
     const { project } = applyOperations(fixture(), [{ op: "set_style_reference", profile }]);
     const ctx = buildAgentContext(project);
-    expect(ctx).toContain("## Referência de inspiração (YouTube)");
+    expect(ctx).toContain("## Referência de inspiração (YouTube");
     expect(ctx).toContain("~28 cortes/min");
     expect(ctx).toContain("#0B6B73, #FF8A3D");
     expect(ctx).toContain("- Use câmera lenta nos impactos.");

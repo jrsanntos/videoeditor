@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { clipEnd, contextAssets, mainClips, type Asset } from "@videoeditor/core";
-import { addMainVideo, attachStyleReference, contextThumb, describeContextAsset, ensureContextThumb, insertBroll, insertOnMain, removeContextAsset, removeStyleReference, searchStock, uploadContextFiles, importStockItem, type StockItem } from "@/lib/actions";
+import { addMainVideo, attachStyleReference, attachStyleReferenceFile, contextThumb, describeContextAsset, ensureContextThumb, insertBroll, insertOnMain, removeContextAsset, removeStyleReference, searchStock, uploadContextFiles, importStockItem, type StockItem } from "@/lib/actions";
 import { ASSET_DND } from "./Timeline";
 import { useEditor } from "@/lib/store";
 import { Icon } from "./icons";
@@ -146,13 +146,16 @@ function ContextItem({ asset }: { asset: Asset }) {
 }
 
 /**
- * Referência de inspiração: uma URL do YouTube que a IA analisa (ritmo,
- * cortes, cores, tipografia) para o Diretor replicar o estilo neste vídeo.
+ * Referência de inspiração para o Diretor replicar o estilo neste vídeo:
+ * um arquivo (ritmo medido de verdade) ou um link do YouTube (ritmo estimado
+ * pelos metadados, legendas e capa — o vídeo não é baixado).
  */
 function StyleReference() {
   const ref = useEditor((s) => s.project?.styleReference);
+  const busy = useEditor((s) => s.busy);
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const run = async () => {
     if (!url.trim() || loading) return;
     setLoading(true);
@@ -169,9 +172,15 @@ function StyleReference() {
         <div className="rounded-xl border border-brand-500/30 bg-brand-500/[0.07] p-2.5">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <a href={ref.url} target="_blank" rel="noreferrer" className="block truncate text-[12px] font-medium text-zinc-100 hover:underline" title={ref.title}>
-                {ref.title || "Vídeo do YouTube"}
-              </a>
+              {ref.url.startsWith("arquivo:") ? (
+                <span className="block truncate text-[12px] font-medium text-zinc-100" title={ref.title}>
+                  {ref.title || "Arquivo de referência"}
+                </span>
+              ) : (
+                <a href={ref.url} target="_blank" rel="noreferrer" className="block truncate text-[12px] font-medium text-zinc-100 hover:underline" title={ref.title}>
+                  {ref.title || "Vídeo do YouTube"}
+                </a>
+              )}
               <p className="truncate text-[10.5px] text-zinc-500">{ref.channel}</p>
             </div>
             <button className="rounded-md p-1 text-zinc-500 hover:bg-rose-500/10 hover:text-rose-300" onClick={removeStyleReference} aria-label="Remover a referência" title="Remover a referência">
@@ -179,7 +188,7 @@ function StyleReference() {
             </button>
           </div>
           <p className="mt-1.5 text-[11px] leading-snug text-zinc-300">
-            {ref.pacing.cutsPerMin ? `~${ref.pacing.cutsPerMin} cortes/min` : "ritmo"} · energia {ref.pacing.energy}
+            {ref.pacing.cutsPerMin ? `${ref.url.startsWith("arquivo:") ? "" : "~"}${ref.pacing.cutsPerMin} cortes/min${ref.url.startsWith("arquivo:") ? " (medido)" : " (estimado)"}` : "ritmo"} · energia {ref.pacing.energy}
             {ref.pacing.wordsPerMin ? ` · ${ref.pacing.wordsPerMin} palavras/min` : ""}
           </p>
           {ref.palette.length > 0 && (
@@ -199,12 +208,30 @@ function StyleReference() {
             void run();
           }}
         >
-          <label className="block text-[11px] leading-snug text-zinc-400">
-            URL do YouTube de inspiração (opcional) — para a IA replicar o ritmo, estilo de cortes, cores e tipografia
+          <p className="text-[11px] leading-snug text-zinc-400">Um vídeo cujo estilo você quer seguir. O Diretor de IA copia o ritmo e o visual, nunca o conteúdo.</p>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="video/*"
+            className="hidden"
+            data-testid="reference-file"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void attachStyleReferenceFile(f);
+            }}
+          />
+          <button type="button" disabled={!!busy} onClick={() => fileInput.current?.click()} className="mt-2 w-full rounded-lg border border-line-strong bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-100 transition hover:bg-white/8 disabled:opacity-40">
+            Enviar o vídeo de referência
+            <span className="mt-0.5 block text-[10.5px] font-normal text-zinc-500">Mais preciso: medimos os cortes, as pausas e a fala no seu computador; o arquivo não sobe.</span>
+          </button>
+          <label className="mt-3 block text-[11px] leading-snug text-zinc-400">
+            Ou um link do YouTube
             <input className={`${field} mt-1.5`} type="url" inputMode="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" data-testid="reference-input" />
           </label>
+          <p className="mt-1 text-[10.5px] leading-snug text-zinc-600">Pelo link lemos título, capítulos, legendas e a capa: o ritmo de cortes é uma estimativa.</p>
           <button type="submit" disabled={!url.trim() || loading} className="mt-2 w-full rounded-lg bg-white/8 px-3 py-2 text-xs font-medium text-zinc-100 transition hover:bg-white/12 disabled:opacity-40">
-            {loading ? "Analisando a referência…" : "Usar como inspiração"}
+            {loading ? "Analisando a referência…" : "Usar o link como inspiração"}
           </button>
         </form>
       )}

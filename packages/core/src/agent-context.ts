@@ -172,10 +172,11 @@ function genreLines(project: Project): string[] {
 
 /** Referência de inspiração (YouTube) resumida para o Diretor. */
 export function styleReferenceLines(ref: StyleReferenceProfile): string[] {
+  const measured = ref.url.startsWith("arquivo:");
   const lines = [
-    "## Referência de inspiração (YouTube)",
+    measured ? "## Referência de inspiração (arquivo enviado — ritmo MEDIDO)" : "## Referência de inspiração (YouTube — ritmo ESTIMADO pelos metadados e legendas)",
     `"${ref.title}"${ref.channel ? ` — ${ref.channel}` : ""}${ref.durationSec ? ` — ${Math.round(ref.durationSec)}s` : ""}. O usuário quer este RITMO e ESTILO aplicados ao vídeo dele; não copie o conteúdo.`,
-    `Ritmo: ${ref.pacing.cutsPerMin ? `~${ref.pacing.cutsPerMin} cortes/min, ` : ""}${ref.pacing.avgShotSec ? `plano médio de ${ref.pacing.avgShotSec}s, ` : ""}${ref.pacing.wordsPerMin ? `fala a ${ref.pacing.wordsPerMin} palavras/min, ` : ""}energia ${ref.pacing.energy}.`,
+    `Ritmo: ${ref.pacing.cutsPerMin ? `${measured ? "" : "~"}${ref.pacing.cutsPerMin} cortes/min, ` : ""}${ref.pacing.avgShotSec ? `plano médio de ${ref.pacing.avgShotSec}s, ` : ""}${ref.pacing.wordsPerMin ? `fala a ${ref.pacing.wordsPerMin} palavras/min, ` : ""}energia ${ref.pacing.energy}.`,
   ];
   if (ref.cutStyle) lines.push(`Cortes: ${ref.cutStyle}`);
   if (ref.structure.length) lines.push(`Estrutura: ${ref.structure.map((s) => `${Math.round(s.t)}s ${s.title}`).join(" → ")}`);

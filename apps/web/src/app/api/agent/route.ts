@@ -112,6 +112,25 @@ type AgentEvent =
   | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
   | { type: "error"; error: string };
 
+/**
+ * Cache incremental da conversa: marca o fim da última mensagem como ponto de
+ * cache. Na volta seguinte tudo até ali (contexto, quadros, chamadas e
+ * resultados anteriores) é lido do cache a 1/10 do preço, em vez de pago de
+ * novo a cada volta. Não altera o histórico guardado: só a cópia enviada,
+ * para nunca passar de um ponto de cache por mensagem.
+ */
+function withCacheBreakpoint(messages: Anthropic.Beta.BetaMessageParam[]): Anthropic.Beta.BetaMessageParam[] {
+  const last = messages[messages.length - 1];
+  if (!last || (last.role !== "user" && last.role !== "assistant") || !last.content) return messages;
+  const blocks = (typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content]) as Anthropic.Beta.BetaContentBlockParam[];
+  const i = blocks.length - 1;
+  const tail = blocks[i];
+  // Blocos de raciocínio não aceitam marcação de cache; os demais aceitam.
+  if (!tail || tail.type === "thinking" || tail.type === "redacted_thinking") return messages;
+  blocks[i] = { ...tail, cache_control: { type: "ephemeral" } } as Anthropic.Beta.BetaContentBlockParam;
+  return [...messages.slice(0, -1), { role: last.role, content: blocks } as Anthropic.Beta.BetaMessageParam];
+}
+
 const jpegs = <T extends { data: string }>(list: T[]) => list.filter((f) => f.data.startsWith("/9j/") && f.data.length > 2000);
 
 export async function POST(req: Request) {
@@ -173,7 +192,7 @@ export async function POST(req: Request) {
           // Raciocínio estendido na direção e na execução completas; o ajuste pontual responde direto.
           ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : review || tier === "sweep" ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
           tools,
-          messages,
+          messages: withCacheBreakpoint(messages),
           ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
         },
         // Se o usuário fechar a aba, a chamada ao modelo é cancelada e para de custar.
