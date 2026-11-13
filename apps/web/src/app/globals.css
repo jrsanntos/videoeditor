@@ -414,7 +414,7 @@ input[type="range"] {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, transparent 30%, transparent 55%, rgba(0, 0, 0, 0.7) 100%);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.3) 0%, transparent 22%, transparent 48%, rgba(0, 0, 0, 0.82) 100%);
 }
 .lp-reel-viral {
   background:
@@ -434,12 +434,17 @@ input[type="range"] {
     radial-gradient(circle at 80% 75%, #1c6dd0 0, transparent 55%),
     #06222b;
 }
+.lp-reel-limpeza img {
+  /* Material bruto: sem tratamento de cor. */
+  filter: saturate(0.35) brightness(0.85);
+}
 .lp-reel-limpeza {
   background:
     radial-gradient(circle at 70% 30%, #6b5b95 0, transparent 50%),
     radial-gradient(circle at 20% 75%, #3a3355 0, transparent 55%),
     #15121f;
 }
+.lp-reel img,
 .lp-reel video {
   position: absolute;
   inset: 0;
