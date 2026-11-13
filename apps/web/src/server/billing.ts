@@ -178,6 +178,7 @@ export async function renewIfDue(userId: string): Promise<boolean> {
 const ANTHROPIC_PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
   "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.1 },
+  // Até 100 mil tokens de prompt por requisição; acima disso, 5× (tratado em anthropicCostUSD).
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01 },
   "claude-fable-5-2": { input: 8, output: 40, cacheRead: 0.2 },
 };
@@ -189,8 +190,11 @@ export type TokenUsage = { input: number; output: number; cacheRead: number; cac
 
 export function anthropicCostUSD(model: string, u: TokenUsage): number {
   const key = Object.keys(ANTHROPIC_PRICES).find((k) => model.startsWith(k));
-  const p = ANTHROPIC_PRICES[key ?? "claude-sonnet-5-5"]!;
-  return (u.input * p.input + u.cacheWrite * p.input * 1.25 + u.cacheRead * p.cacheRead + u.output * p.output) / 1e6;
+  // Modelo desconhecido: cobra como o mais caro da tabela, para o teto de custo nunca subestimar.
+  const p = key ? ANTHROPIC_PRICES[key]! : { input: 8, output: 40, cacheRead: 0.8 };
+  // Haiku 5.5 custa 5× acima de 100 mil tokens de prompt (entrada + cache), por requisição.
+  const big = key === "claude-haiku-5-5" && u.input + u.cacheRead + u.cacheWrite > 100_000 ? 5 : 1;
+  return ((u.input * p.input + u.cacheWrite * p.input * 1.25 + u.cacheRead * p.cacheRead) * big + u.output * p.output * big) / 1e6;
 }
 
 export const groqCostUSD = (audioSeconds: number) => audioSeconds * GROQ_USD_PER_SECOND;

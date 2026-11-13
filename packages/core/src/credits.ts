@@ -109,6 +109,29 @@ export function videosEstimate(credits: number): { min: number; max: number } {
   return { min: round(credits / (base + 12 * PRICING.adjust)), max: round(credits / (base + 4 * PRICING.adjust)) };
 }
 
+/**
+ * Economia da plataforma: de cada real cobrado, quanto vai para taxas,
+ * impostos e despesas, e quanto PODE ir para IA. O custo de IA de um pedido
+ * nunca passa do teto que estes números dão para o preço dele (a rota do
+ * agente para antes), então a margem existe por construção, mesmo no pior
+ * caso (todos os créditos gastos, nos pedidos mais caros).
+ */
+export const ECONOMICS = {
+  /** Cartão no Stripe Brasil (~3,99% + R$ 0,39) com folga. */
+  paymentFee: 0.05,
+  /** Simples Nacional (anexo V, faixa inicial ~15,5%) com folga. */
+  taxes: 0.17,
+  /** Infra, banco, e-mail, transcrição, estornos e suporte. */
+  overhead: 0.1,
+  /** Teto do custo de IA sobre a receita bruta de cada crédito. */
+  aiShare: 0.25,
+  /** Câmbio de segurança para o teto (a cotação real fica no painel; o teto usa esta, mais alta). */
+  usdBrl: 6.2,
+} as const;
+
+/** Margem líquida mínima garantida (pior caso), depois de taxas, impostos, despesas e IA. */
+export const MIN_NET_MARGIN = 1 - ECONOMICS.paymentFee - ECONOMICS.taxes - ECONOMICS.overhead - ECONOMICS.aiShare;
+
 export type PlanId = "free" | "creator" | "pro";
 
 /**
@@ -171,6 +194,24 @@ export const PLANS: Record<
 };
 
 export const TOPUPS = [{ credits: 500, priceBRL: 79, expiresInDays: 90 }] as const;
+
+/** Menor receita por crédito entre tudo que se vende (plano mais barato por crédito ou pacote). */
+export function minRevenuePerCreditBRL(): number {
+  const paid = (Object.values(PLANS) as (typeof PLANS)[PlanId][]).filter((p) => p.priceBRL > 0 && p.monthlyCredits > 0).map((p) => p.priceBRL / p.monthlyCredits);
+  return Math.min(...paid, ...TOPUPS.map((t) => t.priceBRL / t.credits));
+}
+
+/**
+ * Teto de custo de IA (US$) por crédito cobrado: a fatia de IA da receita do
+ * crédito mais barato, no câmbio de segurança. A rota do agente multiplica pelo
+ * preço do pedido e para antes de passar disso.
+ */
+export function aiBudgetUSDPerCredit(): number {
+  return (minRevenuePerCreditBRL() * ECONOMICS.aiShare) / ECONOMICS.usdBrl;
+}
+
+/** Teto de custo de IA (US$) de um pedido que cobra `credits`. */
+export const aiBudgetUSD = (credits: number) => credits * aiBudgetUSDPerCredit();
 
 /**
  * Dois saldos por conta:

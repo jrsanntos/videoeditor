@@ -11,6 +11,16 @@ export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 export const agentModel = async () => (await getSetting("AGENT_MODEL")) || "claude-sonnet-5-5";
 /** Ajustes pontuais: modelo rápido, uma fração do custo por comando. */
 export const fastAgentModel = async () => (await getSetting("AGENT_MODEL_FAST")) || "claude-haiku-5-5";
+/**
+ * Editor da edição completa: executa um plano já decidido pelo Diretor (o
+ * julgamento caro fica com o Diretor). Padrão definido pela medição de custo e
+ * qualidade com vídeo real (ver README, "Custos").
+ */
+export const editorAgentModel = async () => (await getSetting("AGENT_MODEL_EDITOR")) || EDITOR_DEFAULT;
+/** Crítico visual: confere quadros e corrige defeitos pontuais. */
+export const criticAgentModel = async () => (await getSetting("AGENT_MODEL_CRITIC")) || CRITIC_DEFAULT;
+const EDITOR_DEFAULT = "claude-sonnet-5-5";
+const CRITIC_DEFAULT = "claude-sonnet-5-5";
 
 /** Cliente Anthropic com a chave do painel (ou do ambiente). */
 export async function anthropicClient(): Promise<Anthropic> {

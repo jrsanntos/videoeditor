@@ -24,6 +24,8 @@ export const LIMITS = {
   stockDownload: { max: 60, windowSec: 60 * 60 },
   /** Análises de vídeo de referência (YouTube), por conta. */
   styleReference: { max: 20, windowSec: 60 * 60 },
+  /** Planos do Diretor pedidos sem executar: custam IA e não são cobrados. */
+  agentPlan: { max: 12, windowSec: 60 * 60 },
   /** Classificação de pedidos ao agente enquanto a pessoa digita. */
   agentTier: { max: 600, windowSec: 60 * 60 },
   /** Reenvios do e-mail de confirmação. */

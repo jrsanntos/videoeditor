@@ -15,6 +15,8 @@ export const SETTINGS = {
   GROQ_API_KEY: { label: "Groq (transcrição)", secret: true, env: ["GROQ_API_KEY"] },
   AGENT_MODEL: { label: "Modelo do agente (edição completa)", secret: false, env: ["AGENT_MODEL"] },
   AGENT_MODEL_FAST: { label: "Modelo rápido do agente (ajustes pontuais)", secret: false, env: ["AGENT_MODEL_FAST"] },
+  AGENT_MODEL_EDITOR: { label: "Modelo do Editor (executa o plano do Diretor)", secret: false, env: ["AGENT_MODEL_EDITOR"] },
+  AGENT_MODEL_CRITIC: { label: "Modelo do Crítico visual", secret: false, env: ["AGENT_MODEL_CRITIC"] },
   USD_BRL: { label: "Cotação US$ → R$ (para despesas)", secret: false, env: [] as string[] },
   STRIPE_SECRET_KEY: { label: "Stripe: chave secreta (sk_…)", secret: true, env: ["STRIPE_SECRET_KEY"] },
   STRIPE_WEBHOOK_SECRET: { label: "Stripe: segredo do webhook (whsec_…)", secret: true, env: ["STRIPE_WEBHOOK_SECRET"] },
