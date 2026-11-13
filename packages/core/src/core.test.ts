@@ -179,15 +179,19 @@ describe("silêncios", () => {
     const { project, log } = applyOperations(fixture(), [
       { op: "remove_silences", minSilence: 0.5, padding: 0.1 },
     ]);
-    // 0–0.9 (início), 2.0–3.9 (pausa), 6.5–10 (cauda) → 0.9 + 1.9 + 3.5 = 6.3s
-    expect(projectDuration(project)).toBeCloseTo(3.7, 3);
+    // Pré-roll de 150 ms e pós-roll de 220 ms: 0–0.85 (início), 2.12–3.85 (pausa), 6.62–10 (cauda) → 5.96s
+    expect(projectDuration(project)).toBeCloseTo(4.04, 3);
     expect(log[0]).toContain("3 silêncio");
     expect(timelineWords(project)).toHaveLength(7);
   });
 
   it("silencesFromWords respeita o padding", () => {
+    // O padding pedido vale como piso extra; o pós-roll nunca fica abaixo de 220 ms.
     expect(silencesFromWords([{ start: 0, end: 1 }, { start: 3, end: 4 }], 4, { padding: 0.2 })).toEqual([
-      { start: 1.2, end: 2.8 },
+      { start: 1.22, end: 2.8 },
+    ]);
+    expect(silencesFromWords([{ start: 0, end: 1 }, { start: 3, end: 4 }], 4, { padding: 0.3 })).toEqual([
+      { start: 1.3, end: 2.7 },
     ]);
   });
 
@@ -199,8 +203,8 @@ describe("silêncios", () => {
       samples[i] = t >= 1 && t < 3 ? 0 : Math.sin(i) * 0.5;
     }
     const [r] = silencesFromAudio(samples, sr, { minSilence: 0.5, padding: 0.1 });
-    expect(r!.start).toBeCloseTo(1.1, 1);
-    expect(r!.end).toBeCloseTo(2.9, 1);
+    expect(r!.start).toBeCloseTo(1.22, 1);
+    expect(r!.end).toBeCloseTo(2.85, 1);
   });
 });
 
@@ -589,7 +593,7 @@ describe("mídia de contexto (b-roll)", () => {
   });
 
   it("recusa asset que não é de contexto e aparece para o agente e para o auditor", () => {
-    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "a1", start: 0, duration: 2 }])).toThrow(/não existe/);
+    expect(() => applyOperations(withMedia(), [{ op: "add_broll", assetId: "nao_existe", start: 0, duration: 2 }])).toThrow(/não existe/);
     expect(AgentOperationSchema.safeParse({ op: "add_broll", assetId: "b1", atWord: "w2", untilWord: "w4" }).success).toBe(true);
     const { project } = applyOperations(withMedia(), [{ op: "add_broll", assetId: "b1", start: 0, duration: 3 }]);
     expect(buildAgentContext(project)).toContain("b1 | vídeo de 3s | academia.mp4 — pessoa levantando peso");

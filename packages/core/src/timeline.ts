@@ -9,7 +9,7 @@ import type {
   TrackKind,
   Word,
 } from "./schema";
-import { CaptionStyleSchema, defaultBrandKit, FORMATS, type AspectRatio } from "./schema";
+import { CaptionStyleSchema, defaultBrandKit, FORMATS, LookSchema, MusicSchema, type AspectRatio, type Genre } from "./schema";
 
 export const r3 = (n: number) => Math.round(n * 1000) / 1000;
 export const clipEnd = (c: { start: number; duration: number }) => r3(c.start + c.duration);
@@ -55,7 +55,157 @@ export function createProject(opts: {
     framing: { x: 0.5, y: 0.5 },
     sfx: { enabled: true, volume: 1 },
     finish: { cutZoom: true, voice: true },
+    look: LookSchema.parse({}),
+    music: MusicSchema.parse({}),
+    markers: [],
   };
+}
+
+/**
+ * Timeline vazia e funcional, sem nenhum vídeo: é o que o link "pular direto
+ * para o editor" abre. Mídias entram depois; composições só com texto, cards,
+ * áudio e banco de imagens também valem.
+ */
+export function createEmptyProject(opts: { name?: string; brand?: BrandKit; aspectRatio?: AspectRatio } = {}): Project {
+  return createProject({ name: opts.name ?? "Projeto sem título", brand: opts.brand, aspectRatio: opts.aspectRatio });
+}
+
+// ---------- Velocidade (speed ramps) ----------
+
+export type RatePoint = { u: number; rate: number };
+
+/** Curva de velocidade do clip, sempre com pontos em u=0 e u=1. */
+export function ratePoints(clip: Pick<MediaClip, "speed" | "speedRamp">): RatePoint[] {
+  const ramp = clip.speedRamp;
+  if (!ramp?.length) {
+    const s = clip.speed ?? 1;
+    return [
+      { u: 0, rate: s },
+      { u: 1, rate: s },
+    ];
+  }
+  const pts = [...ramp].sort((a, b) => a.u - b.u);
+  if (pts[0]!.u > 0) pts.unshift({ u: 0, rate: pts[0]!.rate });
+  if (pts[pts.length - 1]!.u < 1) pts.push({ u: 1, rate: pts[pts.length - 1]!.rate });
+  return pts;
+}
+
+export const hasSpeed = (clip: Pick<MediaClip, "speed" | "speedRamp">) => Boolean(clip.speedRamp?.length) || (clip.speed !== undefined && Math.abs(clip.speed - 1) > 1e-6);
+
+function rateIn(pts: RatePoint[], u: number): number {
+  const x = Math.min(1, Math.max(0, u));
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    if (x <= b.u) return b.u - a.u < 1e-9 ? b.rate : a.rate + ((b.rate - a.rate) * (x - a.u)) / (b.u - a.u);
+  }
+  return pts[pts.length - 1]!.rate;
+}
+
+/** ∫₀ᵘ rate: fração de origem consumida até a posição u (em unidades de duração do clip). */
+function rateIntegral(pts: RatePoint[], u: number): number {
+  const x = Math.min(1, Math.max(0, u));
+  let sum = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    if (x <= a.u) break;
+    const end = Math.min(x, b.u);
+    sum += ((a.rate + rateIn(pts, end)) / 2) * (end - a.u);
+  }
+  return sum;
+}
+
+/** Velocidade média do clip (origem consumida ÷ duração na timeline). */
+export const rateAverage = (clip: Pick<MediaClip, "speed" | "speedRamp">) => rateIntegral(ratePoints(clip), 1);
+
+/** playbackRate do clip em `local` segundos desde o início dele (tempo de timeline). */
+export function rateAt(clip: MediaClip, local: number): number {
+  return hasSpeed(clip) ? rateIn(ratePoints(clip), local / clip.duration) : 1;
+}
+
+/** Quantos segundos do arquivo de origem o clip consome. Sem velocidade, é a própria duração. */
+export function sourceSpan(clip: MediaClip): number {
+  return hasSpeed(clip) ? r3(clip.duration * rateIntegral(ratePoints(clip), 1)) : clip.duration;
+}
+export const sourceEnd = (clip: MediaClip) => r3(clip.sourceStart + sourceSpan(clip));
+
+/** Tempo de ORIGEM correspondente a `local` segundos dentro do clip. */
+export function sourceTimeAt(clip: MediaClip, local: number): number {
+  const l = Math.min(clip.duration, Math.max(0, local));
+  return hasSpeed(clip) ? clip.sourceStart + clip.duration * rateIntegral(ratePoints(clip), l / clip.duration) : clip.sourceStart + l;
+}
+
+/** Inverso de `sourceTimeAt`: em que segundo do clip (timeline) o instante de origem aparece. */
+export function localTimeAt(clip: MediaClip, sourceTime: number): number {
+  if (!hasSpeed(clip)) return Math.min(clip.duration, Math.max(0, sourceTime - clip.sourceStart));
+  const pts = ratePoints(clip);
+  const target = (sourceTime - clip.sourceStart) / clip.duration;
+  if (target <= 0) return 0;
+  if (target >= rateIntegral(pts, 1)) return clip.duration;
+  let lo = 0;
+  let hi = 1;
+  // A integral é monótona (rate > 0): bisseção.
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (rateIntegral(pts, mid) < target) lo = mid;
+    else hi = mid;
+  }
+  return ((lo + hi) / 2) * clip.duration;
+}
+
+/**
+ * Pedaço de um clip de vídeo entre `a` e `b` (segundos locais, tempo de
+ * timeline), com a origem e a curva de velocidade correspondentes.
+ */
+export function mediaSlice(clip: MediaClip, a: number, b: number): Pick<MediaClip, "sourceStart" | "duration" | "speed" | "speedRamp"> {
+  const out: Pick<MediaClip, "sourceStart" | "duration" | "speed" | "speedRamp"> = { sourceStart: r3(sourceTimeAt(clip, a)), duration: r3(b - a) };
+  if (clip.speedRamp?.length) {
+    const pts = ratePoints(clip);
+    const u0 = a / clip.duration;
+    const u1 = b / clip.duration;
+    const inner = pts.filter((p) => p.u > u0 + 1e-6 && p.u < u1 - 1e-6).map((p) => ({ u: r3((p.u - u0) / (u1 - u0)), rate: p.rate }));
+    const ramp = [{ u: 0, rate: r3(rateIn(pts, u0)) }, ...inner, { u: 1, rate: r3(rateIn(pts, u1)) }];
+    // Curva que ficou plana vira velocidade constante.
+    if (ramp.every((p) => Math.abs(p.rate - ramp[0]!.rate) < 0.005)) {
+      if (Math.abs(ramp[0]!.rate - 1) > 0.005) out.speed = ramp[0]!.rate;
+    } else out.speedRamp = ramp;
+  } else if (clip.speed !== undefined && Math.abs(clip.speed - 1) > 1e-6) out.speed = clip.speed;
+  return out;
+}
+
+/**
+ * Curva de rampa: entra de 1x, segura em `rate` e volta a 1x. `ease` é a
+ * fração do clip gasta em cada transição (suave para imagem e para o pitch).
+ */
+export function rampCurve(rate: number, ease = 0.25): RatePoint[] {
+  const e = Math.min(0.45, Math.max(0.05, ease));
+  return [
+    { u: 0, rate: 1 },
+    { u: r3(e), rate },
+    { u: r3(1 - e), rate },
+    { u: 1, rate: 1 },
+  ];
+}
+
+// ---------- Lacunas da trilha principal ----------
+
+/** Espaços vazios da trilha principal entre 0 e o fim do último clip. */
+export function mainGaps(project: Project): TimeRange[] {
+  const out: TimeRange[] = [];
+  let cursor = 0;
+  for (const c of mainClips(project).sort((a, b) => a.start - b.start)) {
+    if (c.start - cursor > 0.001) out.push({ start: r3(cursor), end: c.start });
+    cursor = Math.max(cursor, clipEnd(c));
+  }
+  return out;
+}
+
+/** Gênero editorial do projeto: o escolhido à mão ou o medido no vídeo principal. */
+export function projectGenre(project: Project): Genre | null {
+  if (project.genre) return project.genre;
+  const first = mainClips(project)[0];
+  return (first && project.assets[first.assetId]?.analysis?.genre) || null;
 }
 
 /** Adiciona um asset e o coloca inteiro no fim da trilha principal. */
@@ -158,12 +308,12 @@ export function timelineWords(project: Project, range?: TimeRange): TimelineWord
   for (const clip of mainClips(project)) {
     const words = project.assets[clip.assetId]?.transcript?.words;
     if (!words) continue;
-    const srcEnd = clip.sourceStart + clip.duration;
+    const srcEnd = clip.sourceStart + sourceSpan(clip);
     for (const w of words) {
       const mid = (w.start + w.end) / 2;
       if (mid < clip.sourceStart || mid >= srcEnd) continue;
-      const start = r3(clip.start + Math.max(w.start, clip.sourceStart) - clip.sourceStart);
-      const end = r3(clip.start + Math.min(w.end, srcEnd) - clip.sourceStart);
+      const start = r3(clip.start + localTimeAt(clip, Math.max(w.start, clip.sourceStart)));
+      const end = r3(clip.start + localTimeAt(clip, Math.min(w.end, srcEnd)));
       if (range && (end <= range.start || start >= range.end)) continue;
       out.push({ ...w, start, end, clipId: clip.id, assetId: clip.assetId });
     }
@@ -180,12 +330,11 @@ export function sourceRangesToTimeline(
   const out: TimeRange[] = [];
   for (const clip of mainClips(project)) {
     if (clip.assetId !== assetId) continue;
-    const srcEnd = clip.sourceStart + clip.duration;
+    const srcEnd = clip.sourceStart + sourceSpan(clip);
     for (const r of ranges) {
       const s = Math.max(r.start, clip.sourceStart);
       const e = Math.min(r.end, srcEnd);
-      if (e - s > 0.001)
-        out.push({ start: clip.start + s - clip.sourceStart, end: clip.start + e - clip.sourceStart });
+      if (e - s > 0.001) out.push({ start: clip.start + localTimeAt(clip, s), end: clip.start + localTimeAt(clip, e) });
     }
   }
   return normalizeRanges(out);
@@ -225,7 +374,7 @@ export function timelineWord(project: Project, wordId: string, words = timelineW
   return w;
 }
 
-export type SubjectBox = { x: number; y: number; w: number; h: number; faceX: number; faceY: number };
+export type SubjectBox = { x: number; y: number; w: number; h: number; faceX: number; faceY: number; faceW?: number; faceH?: number };
 
 /**
  * Onde o apresentador está no QUADRO DO PROJETO (frações 0–1) no instante `t`
@@ -237,9 +386,30 @@ export function subjectAt(project: Project, t: number): SubjectBox | null {
   const asset = clip ? project.assets[clip.assetId] : null;
   const samples = asset?.subject;
   if (!clip || !asset || !samples?.length || !asset.width || !asset.height) return null;
-  const srcT = clip.sourceStart + Math.max(0, Math.min(t - clip.start, clip.duration));
+  const srcT = sourceTimeAt(clip, t - clip.start);
+  // Interpola entre as duas amostras vizinhas: o sujeito se move de forma contínua, sem saltos.
   let best = samples[0]!;
-  for (const s of samples) if (Math.abs(s.t - srcT) < Math.abs(best.t - srcT)) best = s;
+  const sorted = samples.length > 1 && samples.some((s, i) => i > 0 && s.t < samples[i - 1]!.t) ? [...samples].sort((a, b) => a.t - b.t) : samples;
+  const after = sorted.findIndex((s) => s.t >= srcT);
+  if (after < 0) best = sorted[sorted.length - 1]!;
+  else if (after === 0) best = sorted[0]!;
+  else {
+    const a = sorted[after - 1]!;
+    const b = sorted[after]!;
+    const k = b.t - a.t > 1e-6 ? (srcT - a.t) / (b.t - a.t) : 0;
+    const mix = (x: number, y: number) => x + (y - x) * k;
+    best = {
+      t: srcT,
+      x: mix(a.x, b.x),
+      y: mix(a.y, b.y),
+      w: mix(a.w, b.w),
+      h: mix(a.h, b.h),
+      faceX: mix(a.faceX, b.faceX),
+      faceY: mix(a.faceY, b.faceY),
+      ...(a.faceW !== undefined && b.faceW !== undefined ? { faceW: mix(a.faceW, b.faceW) } : {}),
+      ...(a.faceH !== undefined && b.faceH !== undefined ? { faceH: mix(a.faceH, b.faceH) } : {}),
+    };
+  }
   const { width: W, height: H } = project;
   const s0 = Math.max(W / asset.width, H / asset.height);
   const w0 = asset.width * s0;
@@ -258,7 +428,20 @@ export function subjectAt(project: Project, t: number): SubjectBox | null {
     h: r3(c(fy(best.y + best.h)) - top),
     faceX: c(fx(best.faceX)),
     faceY: c(fy(best.faceY)),
+    // Tamanho do rosto no quadro do projeto (sem prender às bordas: um rosto cortado continua grande).
+    ...(best.faceW !== undefined ? { faceW: r3((best.faceW * w0) / W) } : {}),
+    ...(best.faceH !== undefined ? { faceH: r3((best.faceH * h0) / H) } : {}),
   };
+}
+
+/**
+ * Ponto para onde um zoom deve fechar: o rosto quando o sujeito está perto
+ * (plano médio/close), o centro de massa do corpo quando está longe (plano
+ * aberto, cena de ação) — fechar no "rosto" de um corpo inteiro corta a ação.
+ */
+export function subjectFocus(s: SubjectBox): { x: number; y: number } {
+  if (s.h >= 0.6 || s.w >= 0.5) return { x: s.faceX, y: s.faceY };
+  return { x: r3(s.x + s.w / 2), y: r3(s.y + s.h * 0.45) };
 }
 
 const jumpCache = new WeakMap<Project, Map<string, number>>();
@@ -274,7 +457,7 @@ export function jumpsBefore(project: Project, clipId: string): number {
     let jumps = 0;
     let prev: MediaClip | null = null;
     for (const c of mainClips(project).sort((a, b) => a.start - b.start)) {
-      if (prev && (prev.assetId !== c.assetId || Math.abs(c.sourceStart - (prev.sourceStart + prev.duration)) > 0.12)) jumps++;
+      if (prev && (prev.assetId !== c.assetId || Math.abs(c.sourceStart - sourceEnd(prev)) > 0.12)) jumps++;
       map.set(c.id, jumps);
       prev = c;
     }

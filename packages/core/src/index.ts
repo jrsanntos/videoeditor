@@ -8,3 +8,8 @@ export * from "./agent-context";
 export * from "./template";
 export * from "./skills";
 export * from "./pacing";
+export * from "./analysis";
+export * from "./layout";
+export * from "./motion-graphic";
+export * from "./critic";
+export * from "./otio";

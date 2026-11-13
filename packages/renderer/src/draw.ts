@@ -1,3 +1,5 @@
+import type { Look } from "@videoeditor/core";
+
 export type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 export const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
@@ -58,6 +60,29 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (x:
   };
 }
 
+/**
+ * Mola amortecida (resposta ao degrau): 0→1 com a física de uma mola de
+ * verdade. `x` é o progresso 0–1 do movimento; com amortecimento < 1 passa
+ * um pouco do alvo e assenta — o "pop" que uma curva bezier não dá.
+ */
+export function spring(x: number, opts: { damping?: number; frequency?: number } = {}): number {
+  const t = clamp01(x);
+  if (t === 0 || t === 1) return t;
+  const zeta = opts.damping ?? 0.55;
+  const w0 = (opts.frequency ?? 2.2) * Math.PI * 2;
+  if (zeta >= 1) return 1 - Math.exp(-w0 * t) * (1 + w0 * t);
+  const wd = w0 * Math.sqrt(1 - zeta * zeta);
+  const raw = 1 - Math.exp(-zeta * w0 * t) * (Math.cos(wd * t) + ((zeta * w0) / wd) * Math.sin(wd * t));
+  // Garante chegada exata em 1 no fim do intervalo.
+  return raw + (1 - raw) * t * t * t;
+}
+
+/** Interpolação linear de `x` (em [a, b]) para [from, to], presa aos extremos. */
+export function interpolate(x: number, a: number, b: number, from: number, to: number, ease: (k: number) => number = (k) => k): number {
+  const k = b === a ? (x >= b ? 1 : 0) : clamp01((x - a) / (b - a));
+  return from + (to - from) * ease(k);
+}
+
 /** Curvas da casa: movimentos decididos, que chegam rápido e assentam. */
 export const EASE = {
   /** Entrada de elementos: dispara e desacelera forte (expo out). */
@@ -99,6 +124,55 @@ export const getUnit = () => unit;
  * nada, e a transição fica só com o deslocamento e a opacidade que quem chama
  * já aplica.
  */
+export type LookSpec = {
+  /** Curva tonal (filtros CSS): contraste, saturação, brilho, sépia. 1/0 = neutro. */
+  contrast: number;
+  saturate: number;
+  brightness: number;
+  sepia: number;
+  /** Camadas de cor por cima do vídeo (o "split-toning" da LUT). */
+  layers: { op: GlobalCompositeOperation; color: string; alpha: number }[];
+};
+
+/**
+ * Tratamentos de cor (LUTs aproximadas em Canvas 2D): uma curva tonal por
+ * filtro mais camadas de cor em soft-light/overlay, que tingem sombras e
+ * luzes de forma diferente. O mesmo código roda no preview e na exportação.
+ */
+export const LOOKS: Record<Exclude<Look["grade"], "none">, LookSpec> = {
+  // Sombras frias (teal), peles e luzes quentes (laranja): o look de ação/tático.
+  tactical_teal_orange: { contrast: 1.2, saturate: 1.12, brightness: 0.98, sepia: 0, layers: [{ op: "soft-light", color: "#0b6b73", alpha: 0.42 }, { op: "overlay", color: "#ff8a3d", alpha: 0.13 }] },
+  // Prata retida: contraste duro e cor lavada.
+  bleach_bypass: { contrast: 1.4, saturate: 0.42, brightness: 1.03, sepia: 0, layers: [{ op: "soft-light", color: "#7d8a91", alpha: 0.3 }] },
+  // Quente e limpo: documentário moderno.
+  warm_cinematic: { contrast: 1.1, saturate: 1.06, brightness: 1.01, sepia: 0.14, layers: [{ op: "soft-light", color: "#ffb26b", alpha: 0.2 }, { op: "multiply", color: "#fff4e6", alpha: 0.35 }] },
+  // Só "acorda" a imagem: creator/viral.
+  clean_punch: { contrast: 1.13, saturate: 1.24, brightness: 1.03, sepia: 0, layers: [] },
+};
+
+const mix1 = (v: number, k: number, neutral = 1) => neutral + (v - neutral) * k;
+
+/** Filtro CSS do tratamento, para aplicar ao desenhar o vídeo. "none" quando não há. */
+export function lookFilter(look: Look): string {
+  if (look.grade === "none" || look.intensity <= 0) return "none";
+  const s = LOOKS[look.grade];
+  const k = look.intensity;
+  return `contrast(${mix1(s.contrast, k).toFixed(3)}) saturate(${mix1(s.saturate, k).toFixed(3)}) brightness(${mix1(s.brightness, k).toFixed(3)})${s.sepia ? ` sepia(${(s.sepia * k).toFixed(3)})` : ""}`;
+}
+
+/** Camadas de cor do tratamento, por cima do vídeo já desenhado. */
+export function drawLookLayers(ctx: Ctx2D, look: Look, width: number, height: number) {
+  if (look.grade === "none" || look.intensity <= 0) return;
+  ctx.save();
+  for (const layer of LOOKS[look.grade].layers) {
+    ctx.globalCompositeOperation = layer.op;
+    ctx.globalAlpha = layer.alpha * look.intensity;
+    ctx.fillStyle = layer.color;
+    ctx.fillRect(0, 0, width, height);
+  }
+  ctx.restore();
+}
+
 export const supportsFilter = (ctx: Ctx2D) => typeof (ctx as { filter?: unknown }).filter === "string";
 export function setBlur(ctx: Ctx2D, px: number) {
   if (!supportsFilter(ctx)) return;

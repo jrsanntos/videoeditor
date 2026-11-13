@@ -5,3 +5,7 @@ export * from "./camera";
 export * from "./text";
 export * from "./sounds";
 export * from "./background";
+export * from "./captions";
+export * from "./probe";
+export * from "./mask";
+export * from "./music";

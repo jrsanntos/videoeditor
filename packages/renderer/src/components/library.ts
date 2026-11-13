@@ -1,7 +1,8 @@
 import { z } from "zod";
-import type { BrandKit, SafeArea, SubjectBox } from "@videoeditor/core";
+import { checkArtDirection, MotionGraphicSchema, type BrandKit, type DepthPlacement, type SafeArea, type SubjectBox } from "@videoeditor/core";
 import type { SFX_CATALOG } from "../sounds";
 import { V1_COMPONENTS } from "./v1";
+import { V2_COMPONENTS } from "./v2";
 import {
   type Ctx2D,
   easeOutBack,
@@ -46,6 +47,13 @@ export type DrawArgs<P> = {
   hasPerson: boolean;
   /** Redesenha o apresentador por cima do que já foi desenhado (texto atrás da pessoa). */
   drawPerson: () => void;
+  /**
+   * Onde o texto em profundidade pode ficar neste quadro: atrás da pessoa, ou
+   * (close-up, rosto cortado, sem recorte) num cartão na área livre.
+   */
+  depth: DepthPlacement;
+  /** Desfoca o vídeo atrás de um cartão (coordenadas do contexto atual). */
+  backdropBlur: (x: number, y: number, w: number, h: number, radius?: number, blur?: number) => void;
   /**
    * Informa onde um texto editável foi desenhado (no sistema de coordenadas
    * atual do contexto). `key` é o caminho do parâmetro: "title", "items.1.text".
@@ -427,11 +435,11 @@ const bulletList = define({
 // Os seis da v1.0 são o vocabulário do agente; os anteriores seguem disponíveis no menu manual.
 const LEGACY = [lowerThird, titleCard, barChart, counter, textHighlight, bulletList].map((c) => ({ ...c, agent: false }) as ComponentDef);
 export const COMPONENTS: Record<string, ComponentDef> = Object.fromEntries(
-  [...(V1_COMPONENTS as unknown as ComponentDef[]), ...LEGACY].map((c) => [c.id, c]),
+  [...(V1_COMPONENTS as unknown as ComponentDef[]), ...(V2_COMPONENTS as unknown as ComponentDef[]), ...LEGACY].map((c) => [c.id, c]),
 );
 
 /** Valida e normaliza (aplica defaults) os params de um componente. Lança se inválido. */
-export function validateComponent(component: string, params: Record<string, unknown>): Record<string, unknown> {
+export function validateComponent(component: string, params: Record<string, unknown>, frame: { vertical: boolean } = { vertical: true }): Record<string, unknown> {
   const def = COMPONENTS[component];
   if (!def)
     throw new Error(
@@ -439,6 +447,12 @@ export function validateComponent(component: string, params: Record<string, unkn
     );
   const parsed = def.schema.safeParse(params);
   if (!parsed.success) throw new Error(`params inválidos para ${component}: ${z.prettifyError(parsed.error)}`);
+  // Peça gerada pela IA: além do schema, passa pelas regras de direção de arte que dá para medir.
+  if (component === "custom_motion_graphic") {
+    const spec = MotionGraphicSchema.parse(parsed.data);
+    const issues = checkArtDirection(spec, { vertical: frame.vertical }).filter((i) => i.code !== "sem_pausa_final");
+    if (issues.length) throw new Error(`custom_motion_graphic fere a direção de arte: ${issues.map((i) => i.message).join("; ")}`);
+  }
   return parsed.data as Record<string, unknown>;
 }
 

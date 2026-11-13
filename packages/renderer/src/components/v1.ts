@@ -47,10 +47,57 @@ const depthHookTitle = define({
   positions: { title: "titlePos", left: "leftPos", right: "rightPos" },
   example: { title: "3 erros", left: "que fazem você", right: "*perder dinheiro*" },
   sounds: () => [{ at: 0.1, sfx: "impacto_grave" }],
-  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson, region, subject }) {
+  draw({ ctx, params, brand, t, duration, width: W, height: H, u, safe, vertical, hasPerson, drawPerson, region, subject, depth, backdropBlur }) {
     const p = EASE.snap(stage(t, 0, 0.6));
     const out = fadeOut(t, duration);
     const words = params.title.toUpperCase().split(/\s+/);
+    if (depth.mode === "card" && (depth.reason === "close_up" || subject)) {
+      // Guardrail: em close-up (rosto > 35% da altura) ou com o rosto cortado na borda, texto atrás da
+      // cabeça fica ilegível. Vira um cartão de destaque em primeiro plano, com o fundo desfocado,
+      // redimensionado para a área livre com mais espaço negativo — sempre fora da zona do rosto.
+      const a = depth.area;
+      const ax = a.x * W;
+      const aw = a.w * W;
+      const pad = 34 * u;
+      const maxW = Math.max(120 * u, aw - pad * 2);
+      const cardLines = words.length > 1 && params.title.length > 9 ? [words.slice(0, Math.ceil(words.length / 2)).join(" "), words.slice(Math.ceil(words.length / 2)).join(" ")] : [words.join(" ")];
+      let size = (vertical ? 150 : 170) * u;
+      ctx.font = font(900, size);
+      const widest = Math.max(...cardLines.map((l) => ctx.measureText(l).width));
+      if (widest > maxW) size *= maxW / widest;
+      const sub = [params.left, params.right].filter(Boolean).join(" ");
+      const subLayout = sub ? fitRich(ctx, sub, { size: Math.max(34 * u, Math.min(52 * u, size * 0.42)), weight: 700, color: brand.textColor, emphColor: brand.primaryColor }, maxW, 2) : null;
+      const textW = Math.max(Math.min(widest, maxW), subLayout?.width ?? 0);
+      const block = cardLines.length * size * 0.94 + (subLayout ? subLayout.height + 16 * u : 0);
+      const cardW = textW + pad * 2;
+      const cardH = block + pad * 1.6;
+      const cx = Math.min(W - safe.right - cardW / 2, Math.max(safe.left + cardW / 2, ax + aw / 2));
+      const top = a.side === "above" ? (a.y + a.h) * H - cardH - 12 * u : a.side === "below" ? a.y * H + 12 * u : (a.y + a.h / 2) * H - cardH / 2;
+      const y0 = Math.min(H - safe.bottom - cardH, Math.max(safe.top, top));
+      ctx.save();
+      ctx.globalAlpha = out * clamp01(p * 1.5);
+      ctx.translate(0, (1 - p) * 46 * u);
+      backdropBlur(cx - cardW / 2, y0, cardW, cardH, 26 * u, 22 * u);
+      ctx.fillStyle = rgba(brand.backgroundColor, 0.5);
+      roundRect(ctx, cx - cardW / 2, y0, cardW, cardH, 26 * u);
+      ctx.fill();
+      ctx.fillStyle = brand.primaryColor;
+      roundRect(ctx, cx - cardW / 2, y0 + cardH * 0.18, 7 * u, cardH * 0.64 * p, 4 * u);
+      ctx.fill();
+      ctx.font = font(900, size);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      cardLines.forEach((line, i) => {
+        ctx.fillStyle = i === cardLines.length - 1 && cardLines.length > 1 ? brand.primaryColor : brand.textColor;
+        ctx.fillText(line, cx, y0 + pad * 0.8 + size * 0.47 + i * size * 0.94);
+      });
+      region("title", cx - Math.min(widest, maxW) / 2, y0 + pad * 0.8, Math.min(widest, maxW), cardLines.length * size * 0.94);
+      if (subLayout) drawRich(ctx, subLayout, cx, y0 + pad * 0.8 + cardLines.length * size * 0.94 + 16 * u, { align: "center" });
+      // O cartão inteiro ocupa a tela: as legendas desviam dele.
+      region("", cx - cardW / 2, y0, cardW, cardH);
+      ctx.restore();
+      return;
+    }
     // Duas linhas quando a frase é longa demais para uma só continuar gigante.
     const lines = words.length > 1 && params.title.length > 9 ? [words.slice(0, Math.ceil(words.length / 2)).join(" "), words.slice(Math.ceil(words.length / 2)).join(" ")] : [words.join(" ")];
     let size = (vertical ? 250 : 300) * u;

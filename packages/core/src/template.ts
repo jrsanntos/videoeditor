@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { OperationInput } from "./ops";
-import type { Project } from "./schema";
+import { CAPTION_PRESET_IDS, LOOK_IDS, MUSIC_MOODS, type Project } from "./schema";
+import { SKILLS, skillOperations, TEMPLATE_SKILLS, type SkillId } from "./skills";
 import { timelineWords } from "./timeline";
 
 /**
@@ -15,7 +16,7 @@ export const EditTemplateSchema = z.object({
   description: z.string().max(280).describe("o que o modelo faz, em uma ou duas frases para o usuário final"),
   captions: z.object({
     enabled: z.boolean(),
-    preset: z.enum(["karaoke", "bold", "clean"]),
+    preset: z.enum(CAPTION_PRESET_IDS),
     position: z.enum(["bottom", "center", "top"]),
   }),
   silence: z.object({
@@ -40,15 +41,26 @@ export const EditTemplateSchema = z.object({
   pacing: z.string().max(400).describe("ritmo de cortes e energia do vídeo"),
   instructions: z
     .string()
-    .max(2000)
+    .max(4000)
     .describe("receita para o agente reproduzir o estilo em outro vídeo, em português, no imperativo"),
+  /** Modelo pronto da casa: aplica também o acabamento determinístico e o orçamento de ritmo da skill. */
+  skill: z.enum(["viral", "acao", "autoridade", "limpeza"]).optional(),
+  /** Tratamento de cor, trilha, SFX e rampas do modelo (opcionais: modelos antigos não os têm). */
+  look: z.object({ grade: z.enum(LOOK_IDS), vignette: z.number().min(0).max(1).default(0), letterbox: z.number().min(0).max(0.2).default(0) }).optional(),
+  music: z.enum(MUSIC_MOODS).optional(),
+  sfx: z.array(z.string().max(40)).max(12).optional(),
+  speedRamps: z.boolean().optional(),
 });
 export type EditTemplate = z.infer<typeof EditTemplateSchema>;
 
 /** Operações determinísticas do modelo: aplicadas no navegador, 0 créditos. */
 export function templateOperations(template: EditTemplate, project: Project): OperationInput[] {
+  // Modelo pronto: o acabamento completo da skill (cor, trilha, legenda, limpeza), já filtrado para este projeto.
+  if (template.skill) return skillOperations(SKILLS[template.skill], project);
   const ops: OperationInput[] = [];
   const hasWords = timelineWords(project).length > 0;
+  if (template.look) ops.push({ op: "set_look", look: template.look });
+  if (template.music) ops.push({ op: "set_music", music: { mood: template.music, duck: true } });
   if (hasWords)
     ops.push({
       op: "set_captions",
@@ -69,6 +81,10 @@ export function templatePrompt(template: EditTemplate): string {
       ? `Zooms: cerca de ${template.zoom.perMinute} por minuto, escala ${template.zoom.scale}, ~${template.zoom.duration}s cada, foco vertical ${template.zoom.focusY}, sempre em momentos de ênfase.`
       : "Zooms: o modelo não usa zoom.",
   ];
+  if (template.look) lines.push(`Tratamento visual: ${template.look.grade}${template.look.vignette ? ", com vinheta" : ""}${template.look.letterbox ? " e barras cinemáticas" : ""} (já aplicado).`);
+  if (template.music && template.music !== "none") lines.push(`Trilha: ${template.music}, com ducking sob a voz (já aplicada).`);
+  if (template.sfx?.length) lines.push(`Efeitos sonoros do modelo (add_sfx, sincronizados com cortes e picos): ${template.sfx.join(", ")}.`);
+  if (template.speedRamps) lines.push("Rampas de velocidade: câmera lenta (0.4–0.6x) nos ápices e aceleração (1.4–2.0x) nas transições, com speed_ramp.");
   if (template.motion.length)
     lines.push(
       "Motion design:",
@@ -84,3 +100,43 @@ export function templatePrompt(template: EditTemplate): string {
   );
   return lines.join("\n");
 }
+
+const WHEN: Record<string, string> = {
+  depth_hook_title: "no gancho, nos 2 primeiros segundos, com a promessa em 1 a 3 palavras",
+  stat_counter_card: "sempre que a fala citar um número forte",
+  social_proof_toast: "quando citar um resultado, depoimento ou prova social",
+  kinetic_pivot_card: "numa virada de raciocínio (problema → solução)",
+  tactical_hud_overlay: "nos trechos de operação, com telemetria e status",
+  callout_pointer: "para apontar um detalhe da cena",
+  comparison_split: "para UM antes/depois ou mito/verdade",
+  step_progress_bar: "quando a explicação tiver etapas ou capítulos",
+  acronym_list: "ao enumerar os pontos de um diagnóstico ou estratégia",
+};
+
+/** Um modelo pronto como EditTemplate: o mesmo formato dos modelos extraídos de vídeos de exemplo. */
+export function builtinTemplate(id: SkillId): EditTemplate {
+  const s = SKILLS[id];
+  const silence = s.local.find((o) => o.op === "remove_silences");
+  const mode = silence?.op === "remove_silences" ? silence.mode : undefined;
+  return EditTemplateSchema.parse({
+    name: s.name,
+    description: `${s.tagline}. ${s.audience}.`,
+    captions: { enabled: s.recipe.captions !== null, preset: s.recipe.captions ?? "editorial_clean", position: "bottom" },
+    silence: { remove: !!silence, minSilence: mode === "natural" ? 0.8 : mode === "dead" ? 1.5 : 0.45, padding: 0.15 },
+    zoom: { perMinute: (s.pacing.zoomsPerMin[0] + s.pacing.zoomsPerMin[1]) / 2, scale: id === "viral" ? 1.08 : 1.15, duration: id === "viral" ? 2.5 : 4.5, focusY: 0.38 },
+    motion: s.recipe.cards.map((component) => ({ component, when: WHEN[component] ?? "quando a fala pedir" })),
+    pacing: s.tagline,
+    instructions: s.direction,
+    skill: id,
+    look: (() => {
+      const look = s.local.find((o) => o.op === "set_look");
+      return look?.op === "set_look" ? { grade: look.look.grade ?? "none", vignette: look.look.vignette ?? 0, letterbox: look.look.letterbox ?? 0 } : undefined;
+    })(),
+    music: s.recipe.music,
+    sfx: s.recipe.sfx,
+    speedRamps: s.recipe.speedRamps,
+  });
+}
+
+/** Os 3 modelos prontos da casa, visualmente distintos entre si. */
+export const BUILTIN_TEMPLATES: { id: string; skill: SkillId; data: EditTemplate }[] = TEMPLATE_SKILLS.map((skill) => ({ id: `builtin_${skill}`, skill, data: builtinTemplate(skill) }));

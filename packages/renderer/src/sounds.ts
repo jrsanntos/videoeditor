@@ -1,4 +1,4 @@
-import { type Project } from "@videoeditor/core";
+import { hasSpeed, rateAverage, type Project } from "@videoeditor/core";
 import { COMPONENTS, type SfxId } from "./components/library";
 
 /**
@@ -53,6 +53,30 @@ export const SFX_CATALOG = {
   notificacao: { file: "notificacao.mp3", level: -18, filePeak: -4.5, peakAt: 0.23, offset: 0, minGap: 5 },
 } as const satisfies Record<string, SfxSpec>;
 
+/** Confere um id de efeito contra o catálogo (para o core validar add_sfx). Lança se não existe. */
+export function validateSfx(sfx: string) {
+  if (!(sfx in SFX_CATALOG)) throw new Error(`efeito sonoro "${sfx}" não existe. Disponíveis: ${Object.keys(SFX_CATALOG).join(", ")}`);
+}
+
+/** Catálogo de efeitos em texto, para o prompt do agente. */
+export function sfxCatalogForAgent(): string {
+  const use: Partial<Record<SfxId, string>> = {
+    impacto_cinematico: "o golpe do clímax, uma vez por vídeo (subida de 2 s antes do pico)",
+    impacto_grave: "golpes e entradas de título forte",
+    sub_drop: "entrada em câmera lenta, queda de tensão",
+    whoosh_rapido: "aceleração, troca de plano, transição de assunto",
+    whoosh_longo: "transição longa entre atos",
+    riser: "subida de tensão terminando num corte ou no clímax (1,8 s antes do pico)",
+    zoom_punch: "punch-in de câmera",
+    pop: "entrada de item ou card",
+    swoosh_texto: "entrada de texto",
+    ding: "acerto, conclusão",
+    glitch: "interferência, HUD ligando",
+    record_scratch: "quebra de expectativa, uma vez",
+  };
+  return (Object.keys(use) as SfxId[]).map((id) => `- ${id}: ${use[id]}`).join("\n");
+}
+
 /** A partir deste nível (dB) um som é "de destaque" e entra no limite global de frequência. */
 export const HIGHLIGHT_LEVEL = -14;
 export const HIGHLIGHT_GAP = 5;
@@ -65,11 +89,17 @@ const r3 = (n: number) => Math.round(n * 1000) / 1000;
 /** Eventos sonoros do projeto, em ordem de início, já com as regras de densidade aplicadas. */
 export function soundEvents(project: Project): SoundEvent[] {
   if (!project.sfx.enabled) return [];
-  type Cue = { t: number; sfx: SfxId; duration?: number };
+  type Cue = { t: number; sfx: SfxId; duration?: number; volume?: number; explicit?: boolean };
   const cues: Cue[] = [];
   for (const track of project.tracks) {
     for (const c of track.clips) {
-      if (c.type === "zoom") {
+      if (c.type === "sfx") {
+        // Som posicionado à mão ou pelo agente: o pico cai exatamente em `start` e ele tem prioridade sobre os automáticos.
+        if (c.sfx in SFX_CATALOG) cues.push({ t: c.start - SFX_CATALOG[c.sfx as SfxId].offset, sfx: c.sfx as SfxId, volume: c.volume, explicit: true });
+      } else if (c.type === "media") {
+        // Rampa de velocidade: queda grave ao entrar na câmera lenta, whoosh ao acelerar.
+        if (hasSpeed(c)) cues.push({ t: c.start, sfx: rateAverage(c) < 0.8 ? "sub_drop" : rateAverage(c) > 1.25 ? "whoosh_rapido" : "swoosh_texto" });
+      } else if (c.type === "zoom") {
         const pans = Math.abs(c.panX) >= 0.05 || Math.abs(c.panY) >= 0.05;
         // Movimento rápido de câmera faz whoosh; punch-in seco faz o punch. Zoom lento fica sem som.
         if (c.mode === "hold" && c.ease > 0 && c.ease <= 0.45 && (pans || c.scale >= 1.2)) cues.push({ t: c.start, sfx: "whoosh_rapido" });
@@ -91,17 +121,18 @@ export function soundEvents(project: Project): SoundEvent[] {
   const kept: (Cue & { peak: number })[] = [];
   const byLevel = cues
     .map((c) => ({ ...c, peak: c.t + SFX_CATALOG[c.sfx].offset }))
-    .sort((a, b) => SFX_CATALOG[b.sfx].level - SFX_CATALOG[a.sfx].level || a.t - b.t);
+    .sort((a, b) => Number(!!b.explicit) - Number(!!a.explicit) || SFX_CATALOG[b.sfx].level - SFX_CATALOG[a.sfx].level || a.t - b.t);
   for (const cue of byLevel) {
     const spec: SfxSpec = SFX_CATALOG[cue.sfx];
     const clash = kept.some(
       (k) =>
-        (k.sfx === cue.sfx && Math.abs(k.peak - cue.peak) < spec.minGap) ||
+        (k.sfx === cue.sfx && Math.abs(k.peak - cue.peak) < (cue.explicit ? Math.min(spec.minGap, 2) : spec.minGap)) ||
         // Som contínuo de fundo (digitação) convive com os pontuais.
         (!spec.sustained && !(SFX_CATALOG[k.sfx] as SfxSpec).sustained && Math.abs(k.peak - cue.peak) < 0.15) ||
         // Sons de destaque (impactos, whooshes) disputam a atenção entre si: no máximo um a cada HIGHLIGHT_GAP,
         // seja qual for o som. Os discretos (pop, clique, tecla) pontuam itens em sequência e ficam de fora.
-        (spec.level >= HIGHLIGHT_LEVEL && SFX_CATALOG[k.sfx].level >= HIGHLIGHT_LEVEL && Math.abs(k.peak - cue.peak) < HIGHLIGHT_GAP),
+        // Sons posicionados de propósito só cedem a outro som de propósito colado neles (1 s).
+        (spec.level >= HIGHLIGHT_LEVEL && SFX_CATALOG[k.sfx].level >= HIGHLIGHT_LEVEL && Math.abs(k.peak - cue.peak) < (cue.explicit ? 1 : HIGHLIGHT_GAP)),
     );
     if (!clash) kept.push(cue);
   }
@@ -115,7 +146,7 @@ export function soundEvents(project: Project): SoundEvent[] {
         start: r3(Math.max(0, begin)),
         skip: r3(spec.sustained ? spec.peakAt : Math.max(0, -begin)),
         sfx: cue.sfx,
-        gain: Math.pow(10, (spec.level - spec.filePeak) / 20),
+        gain: Math.pow(10, (spec.level - spec.filePeak) / 20) * (cue.volume ?? 1),
         ...(cue.duration !== undefined ? { duration: r3(cue.duration) } : {}),
       };
     })
