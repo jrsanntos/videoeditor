@@ -603,12 +603,12 @@ const stepProgressBar = define({
         if (i === current) {
           const lk = EASE.snap(stage(t, starts[i]!, 0.4));
           ctx.globalAlpha = out * lk;
-          ctx.font = font(800, 34 * u);
+          ctx.font = font(800, 44 * u);
           ctx.textBaseline = "middle";
           ctx.textAlign = "left";
           ctx.fillStyle = brand.textColor;
-          ctx.fillText(`${i + 1}. ${s.label}`, x + thick + 16 * u, y + 22 * u);
-          region(`steps.${i}.label`, x + thick + 16 * u, y, ctx.measureText(`${i + 1}. ${s.label}`).width, 44 * u);
+          ctx.fillText(`${i + 1}. ${s.label}`, x + thick + 16 * u, y + 26 * u);
+          region(`steps.${i}.label`, x + thick + 16 * u, y, ctx.measureText(`${i + 1}. ${s.label}`).width, 52 * u);
           ctx.globalAlpha = out * clamp01(e * 1.6);
         }
       });
@@ -635,7 +635,7 @@ const stepProgressBar = define({
       const lk = EASE.snap(stage(t, starts[current]!, 0.4));
       const label = `${current + 1}/${n}  ${params.steps[current]!.label}`;
       ctx.globalAlpha = out * lk;
-      ctx.font = font(800, 34 * u);
+      ctx.font = font(800, 44 * u);
       ctx.textBaseline = "top";
       ctx.textAlign = "left";
       ctx.fillStyle = brand.textColor;

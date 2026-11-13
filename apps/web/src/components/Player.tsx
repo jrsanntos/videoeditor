@@ -204,10 +204,13 @@ export function Player() {
           hit.regions = [];
           hit.caption = null;
           const live = video.readyState >= 2 && !video.seeking;
+          // No fim exato da timeline não há clip (o fim é exclusivo): desenha o último quadro,
+          // em vez de uma tela preta com a última legenda parada.
+          const drawT = duration > 0 ? Math.min(t, duration - 0.5 / p.fps) : t;
           renderFrame(
             ctx,
             p,
-            t,
+            drawT,
             (c) => {
               if (video.dataset.asset !== c.assetId) return null;
               if (live || (video.readyState >= 2 && !holdValid)) return { image: video, width: video.videoWidth, height: video.videoHeight };

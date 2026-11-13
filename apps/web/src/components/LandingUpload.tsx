@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { creditCost, PLANS, SIGNUP_CREDITS, silencesFromAudio, type SkillId, type TimeRange } from "@videoeditor/core";
-import { decodeBlobMono, probeVideo, SPEECH_RATE } from "@/lib/media";
+import { assertDecodable, decodeBlobMono, probeVideo, SPEECH_RATE } from "@/lib/media";
 import { savePending } from "@/lib/pending";
 import { GoogleButton, OrDivider } from "./GoogleButton";
 import { Icon } from "./icons";
@@ -63,6 +63,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
     setReading(true);
     try {
       const meta = await probeVideo(file);
+      await assertDecodable(file);
       const url = URL.createObjectURL(file);
       setVideo({ file, url, ...meta });
       setAnalysis(null);

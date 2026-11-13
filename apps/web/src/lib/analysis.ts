@@ -224,3 +224,77 @@ export async function analyzeVideo(file: Blob, assetId: string, samples?: Float3
     v.load();
   }
 }
+
+/**
+ * Área com imagem dentro do quadro, em frações (0–1). Detecta faixas pretas:
+ * gravação vertical de celular dentro de um quadro horizontal (OBS, espelhamento),
+ * ou filme com letterbox. Mede alguns quadros pequenos e fica com o que tem
+ * imagem em QUALQUER um deles (uma cena escura não vira faixa). null = não deu para medir.
+ */
+export async function contentBox(file: Blob): Promise<{ x: number; y: number; w: number; h: number } | null> {
+  const url = URL.createObjectURL(file);
+  const v = document.createElement("video");
+  v.muted = true;
+  v.preload = "auto";
+  v.src = url;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      v.onloadeddata = () => resolve();
+      v.onerror = () => reject(new Error("vídeo ilegível"));
+    });
+    const W = 160;
+    const H = Math.max(1, Math.round((W * v.videoHeight) / Math.max(1, v.videoWidth)));
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext("2d", { willReadFrequently: true })!;
+    const cols = new Float32Array(W);
+    const rows = new Float32Array(H);
+    for (const f of [0.15, 0.35, 0.55, 0.75, 0.92]) {
+      await new Promise<void>((resolve) => {
+        v.onseeked = () => resolve();
+        v.currentTime = f * v.duration;
+      });
+      ctx.drawImage(v, 0, 0, W, H);
+      const px = ctx.getImageData(0, 0, W, H).data;
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          const k = (y * W + x) * 4;
+          const lum = (px[k]! * 77 + px[k + 1]! * 150 + px[k + 2]! * 29) >> 8;
+          if (lum > cols[x]!) cols[x] = lum;
+          if (lum > rows[y]!) rows[y] = lum;
+        }
+    }
+    // Faixa preta: coluna/linha que nunca passou de um cinza muito escuro em nenhum quadro.
+    const lit = (a: Float32Array) => {
+      let first = a.findIndex((l) => l > 28);
+      let last = a.length - 1 - [...a].reverse().findIndex((l) => l > 28);
+      if (first < 0) return null;
+      first = Math.max(0, first - 1);
+      last = Math.min(a.length - 1, last + 1);
+      return { from: first / a.length, to: (last + 1) / a.length };
+    };
+    const xs = lit(cols);
+    const ys = lit(rows);
+    if (!xs || !ys) return null;
+    return { x: xs.from, y: ys.from, w: xs.to - xs.from, h: ys.to - ys.from };
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+    v.removeAttribute("src");
+    v.load();
+  }
+}
+
+/**
+ * Enquadramento (project.framing) que centraliza a área com imagem no quadro
+ * de saída, com o vídeo cobrindo o quadro inteiro (o mesmo cálculo do compositor).
+ */
+export function framingForContent(box: { x: number; y: number; w: number; h: number }, src: { width: number; height: number }, out: { width: number; height: number }): { x: number; y: number } {
+  const s0 = Math.max(out.width / src.width, out.height / src.height);
+  const w0 = src.width * s0;
+  const h0 = src.height * s0;
+  const axis = (center: number, size0: number, size: number) => (size0 - size < 1 ? 0.5 : Math.min(1, Math.max(0, (center * size0 - size / 2) / (size0 - size))));
+  return { x: Math.round(axis(box.x + box.w / 2, w0, out.width) * 1000) / 1000, y: Math.round(axis(box.y + box.h / 2, h0, out.height) * 1000) / 1000 };
+}

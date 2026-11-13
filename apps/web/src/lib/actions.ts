@@ -40,12 +40,12 @@ import {
   type Project,
   type Transcript,
 } from "@videoeditor/core";
-import { analyzeVideo, wordEnergy, type VideoAnalysis } from "./analysis";
+import { analyzeVideo, contentBox, framingForContent, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
-import { clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
+import { assertDecodable, clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
@@ -128,6 +128,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | null> => Promis
 /** Lê o arquivo e monta o asset, já com o hash e o que o cache souber dele. */
 async function ingest(file: File): Promise<Asset> {
   const meta = await probeVideo(file);
+  await assertDecodable(file);
   const plan = PLANS[(useEditor.getState().user?.plan ?? "free") as PlanId] ?? PLANS.free;
   if (meta.duration > plan.maxUploadMinutes * 60 + 1)
     throw new Error(`Seu plano aceita vídeos de até ${plan.maxUploadMinutes} minutos (este tem ${Math.ceil(meta.duration / 60)}). Corte o vídeo ou veja os planos.`);
@@ -174,6 +175,7 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
     useEditor.setState({ chat: [], time: 0, range: null, assistantPick: null });
     setProject(addAssetToProject(project, asset));
     if (asset.transcript) setNotice("Este vídeo já foi analisado antes: a transcrição veio do cache, sem custo.");
+    void reframeToContent(asset.id, file);
     void analyzeAsset(asset.id);
     if (opts.referenceUrl?.trim()) void attachStyleReference(opts.referenceUrl.trim());
     // Todo vídeo novo abre o assistente: escolher um estilo e deixar a IA editar é o caminho mais curto.
@@ -226,6 +228,24 @@ export async function addMainVideo(file: File, at?: number): Promise<string | nu
   } finally {
     s.setBusy(null);
   }
+}
+
+/**
+ * Vídeo com faixas pretas (gravação vertical dentro de um quadro horizontal,
+ * comum no OBS): o quadro de saída passa a ser centralizado na área com
+ * imagem, e não no centro do arquivo. Sem ponto de desfazer: é o ajuste de
+ * entrada, como medir o vídeo.
+ */
+async function reframeToContent(assetId: string, file: Blob) {
+  const box = await contentBox(file);
+  const current = useEditor.getState().project;
+  const asset = current?.assets[assetId];
+  if (!box || !current || !asset?.width || !asset.height) return;
+  // Sem faixa relevante (menos de 8% de cada lado somado): nada a fazer.
+  if (box.w > 0.92 && box.h > 0.92) return;
+  const framing = framingForContent(box, { width: asset.width, height: asset.height }, { width: current.width, height: current.height });
+  useEditor.setState({ project: { ...current, framing } });
+  useEditor.getState().setNotice("O vídeo tem faixas pretas: o quadro foi centralizado na área com imagem. Ajuste em Estilo › Enquadramento, se quiser.");
 }
 
 /** Analisa o vídeo de referência (YouTube) e guarda o perfil de estilo no projeto. */
@@ -654,9 +674,36 @@ async function streamAgent(body: unknown, onEvent: (e: AgentEvent) => void) {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Captura o preview nos instantes pedidos, em tamanho reduzido. Devolve o cursor ao lugar no fim. */
+/**
+ * Em aba escondida o navegador congela o vídeo e atrasa os timers: as capturas
+ * sairiam erradas. Espera a pessoa voltar (até 10 min) e avisa no caminho.
+ */
+async function whenVisible(): Promise<boolean> {
+  if (typeof document === "undefined" || !document.hidden) return true;
+  const s = useEditor.getState();
+  const before = s.busy;
+  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela.");
+  const ok = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      document.removeEventListener("visibilitychange", on);
+      resolve(false);
+    }, 10 * 60_000);
+    const on = () => {
+      if (document.hidden) return;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", on);
+      resolve(true);
+    };
+    document.addEventListener("visibilitychange", on);
+  });
+  useEditor.getState().setBusy(before);
+  return ok;
+}
+
 async function capturePreview(times: number[], maxSide: number): Promise<{ t: number; canvas: HTMLCanvasElement }[]> {
   const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="preview"]');
   if (!canvas) return [];
+  if (!(await whenVisible())) return [];
   const s = useEditor.getState();
   const back = s.time;
   s.setPlaying(false);
