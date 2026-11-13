@@ -88,6 +88,39 @@ export function probeVideo(file: Blob): Promise<{ duration: number; width: numbe
   });
 }
 
+/** Erro de formato que deve chegar ao usuário como está (não é falha interna). */
+class FormatError extends Error {}
+
+/**
+ * Confere se ESTE navegador consegue decodificar o vídeo antes de começar:
+ * o caso comum é o HEVC (H.265) do iPhone, que o <video> às vezes abre (lê a
+ * duração) mas não desenha nem exporta. Sem essa conferência a pessoa só
+ * descobre na hora de exportar. Formatos que o leitor não reconhece passam:
+ * quem decide é o próprio <video>.
+ */
+export async function assertDecodable(file: Blob): Promise<void> {
+  try {
+    const { ALL_FORMATS, BlobSource, Input } = await import("mediabunny");
+    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+    try {
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new FormatError("Este arquivo não tem imagem de vídeo.");
+      if (await track.canDecode()) return;
+      const codec = track.codec;
+      throw new FormatError(
+        codec === "hevc"
+          ? "Este vídeo está em HEVC (H.265), o formato de alta eficiência do iPhone, e este navegador não consegue lê-lo. Abra no Chrome ou Edge atualizados num computador com suporte a HEVC, ou envie uma versão em H.264. No iPhone, para os próximos vídeos: Ajustes › Câmera › Formatos › Mais Compatível."
+          : `Este navegador não consegue ler o vídeo (codec ${codec ?? "desconhecido"}). Envie um MP4 em H.264 ou abra no Chrome atualizado.`,
+      );
+    } finally {
+      input.dispose();
+    }
+  } catch (e) {
+    if (e instanceof FormatError) throw e;
+    // Container que o leitor não conhece: segue para o <video>.
+  }
+}
+
 const monoCache = new Map<string, Promise<Float32Array>>();
 export const SPEECH_RATE = 16000;
 

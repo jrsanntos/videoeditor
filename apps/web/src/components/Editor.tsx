@@ -18,6 +18,7 @@ import { Icon, Logo, ResizeHandle } from "./ui";
 export function Editor() {
   const project = useEditor((s) => s.project);
   const [ready, setReady] = useState(false);
+  const [small, setSmall] = useSmallScreen();
 
   useEffect(() => {
     const unsubscribe = hydrateEditor();
@@ -67,6 +68,7 @@ export function Editor() {
       </div>
     );
   if (!project) return <UploadScreen />;
+  if (small) return <MobileEditor onFull={() => setSmall(false)} />;
   const { resize, resetLayout } = useEditor.getState();
 
   return (
@@ -88,7 +90,6 @@ export function Editor() {
       <Notice />
       <Assistant />
       <Tour />
-      <SmallScreen />
     </div>
   );
 }
@@ -100,7 +101,7 @@ function UploadScreen() {
   const [reference, setReference] = useState("");
   const pick = (file?: File | null) => file && void importVideo(file, { referenceUrl: reference });
   const steps = [
-    { icon: <Icon.wand size={16} />, title: "Limpeza automática", text: "Erros de gravação e pausas saem em um clique." },
+    { icon: <Icon.wand size={16} />, title: "Limpeza automática", text: "Erros de gravação, muletas e pausas saem em um clique." },
     { icon: <Icon.sparkles size={16} />, title: "Diretor de IA", text: "Analisa o vídeo, planeja o ritmo e monta a edição." },
     { icon: <Icon.download size={16} />, title: "Ajuste e exporte", text: "Edite na timeline de graça e exporte no navegador." },
   ];
@@ -157,7 +158,7 @@ function UploadScreen() {
         </button>
         <label className="-mt-2 block w-full max-w-2xl text-left">
           <span className="text-[12px] text-zinc-400">
-            URL do YouTube de inspiração <span className="text-zinc-600">(opcional)</span> — para a IA replicar o ritmo, estilo de cortes, cores e tipografia
+            Link do YouTube de inspiração <span className="text-zinc-600">(opcional)</span> — a IA lê título, capítulos, legendas e a capa para seguir o estilo. Para medir o ritmo de cortes de verdade, envie o arquivo da referência na aba Mídia.
           </span>
           <input
             type="url"
@@ -223,18 +224,88 @@ function TopBar() {
   );
 }
 
-/** O editor precisa de tela larga: em celular, avisa em vez de mostrar uma interface espremida. */
-function SmallScreen() {
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
+const FULL_EDITOR_KEY = "videoeditor-full-editor";
+
+/** Tela de celular (até 899 px): o editor abre no modo simples, a não ser que a pessoa peça o completo. */
+function useSmallScreen(): [boolean, (v: boolean) => void] {
+  const [small, setSmall] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 899px)");
+    let forced = false;
+    try {
+      forced = localStorage.getItem(FULL_EDITOR_KEY) === "1";
+    } catch {
+      // sem armazenamento: segue a tela
+    }
+    const update = () => setSmall(mq.matches && !forced);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  const set = (v: boolean) => {
+    try {
+      if (!v) localStorage.setItem(FULL_EDITOR_KEY, "1");
+      else localStorage.removeItem(FULL_EDITOR_KEY);
+    } catch {
+      // sem armazenamento: vale só nesta visita
+    }
+    setSmall(v);
+  };
+  return [small, set];
+}
+
+/**
+ * Modo simples para celular: enviar, deixar a IA editar, assistir, pedir
+ * ajustes por texto e exportar. A timeline e os painéis ficam no editor
+ * completo (para tela grande), a um toque de distância.
+ */
+function MobileEditor({ onFull }: { onFull: () => void }) {
+  const project = useEditor((s) => s.project)!;
+  const credits = useEditor((s) => s.credits);
+  const unlimited = useEditor((s) => s.unlimited);
+  const busy = useEditor((s) => s.busy);
+  const canUndo = useEditor((s) => s.past.length > 0);
+  const [sheet, setSheet] = useState(false);
   return (
-    <div className="fixed inset-0 z-[90] flex flex-col items-center justify-center gap-4 bg-ink-950/95 p-8 text-center backdrop-blur min-[900px]:hidden">
-      <Logo />
-      <h2 className="text-xl font-semibold text-white">O editor funciona melhor no computador</h2>
-      <p className="max-w-sm text-sm leading-relaxed text-zinc-400">A timeline e os painéis precisam de uma tela maior. Abra o videoeditor num notebook ou desktop para editar; seu vídeo fica salvo neste navegador.</p>
-      <button className="rounded-xl border border-line-strong px-4 py-2.5 text-sm text-zinc-200" onClick={() => setDismissed(true)}>
-        Continuar mesmo assim
-      </button>
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink-950" data-testid="mobile-editor">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-ink-900 px-3">
+        <a href="/" aria-label="Página inicial" className="shrink-0">
+          <Logo size={22} />
+        </a>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-zinc-400">{project.name}</span>
+        <a href="/planos" className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-ink-850 px-2.5 py-1 text-[11.5px] text-zinc-300">
+          <Icon.bolt size={12} className="text-amber-300" />
+          <b className="font-semibold text-white">{unlimited ? "∞" : formatCredits(credits)}</b>
+        </a>
+        <ExportMenu />
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <Player />
+      </div>
+      {busy && <p className="shrink-0 truncate border-t border-line bg-ink-900 px-4 py-2 text-[12px] text-brand-300">{busy}</p>}
+      <nav className="grid shrink-0 grid-cols-3 gap-2 border-t border-line bg-ink-900 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <button className="flex flex-col items-center gap-1 rounded-xl py-2 text-[11.5px] text-zinc-300 disabled:opacity-40" disabled={!canUndo || !!busy} onClick={() => useEditor.getState().undo()}>
+          <Icon.undo size={18} /> Desfazer
+        </button>
+        <button className="btn-brand flex flex-col items-center gap-1 rounded-xl py-2 text-[11.5px] font-semibold" onClick={() => setSheet(true)} data-testid="mobile-ai">
+          <Icon.sparkles size={18} /> Pedir à IA
+        </button>
+        <button className="flex flex-col items-center gap-1 rounded-xl py-2 text-[11.5px] text-zinc-300" onClick={onFull} title="Timeline e painéis completos (melhor em tela grande)">
+          <Icon.scissors size={18} /> Editor completo
+        </button>
+      </nav>
+      {sheet && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-ink-950/70 backdrop-blur-sm" role="dialog" aria-label="Diretor de IA" onClick={(e) => e.target === e.currentTarget && setSheet(false)}>
+          <div className="pop-in relative h-[78dvh] overflow-hidden rounded-t-3xl border-t border-line-strong bg-ink-900">
+            <button className="absolute right-3 top-2.5 z-10 flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-white/8" onClick={() => setSheet(false)} aria-label="Fechar">
+              <Icon.x size={16} />
+            </button>
+            <ChatPanel fluid />
+          </div>
+        </div>
+      )}
+      <Notice />
+      <Assistant />
     </div>
   );
 }

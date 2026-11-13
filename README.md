@@ -58,6 +58,9 @@ Abra http://localhost:3000. Variáveis em `apps/web/.env.local`:
 | `AGENT_MODEL` | Modelo das edições completas (padrão `claude-sonnet-5-5`) | — |
 | `AGENT_MODEL_FAST` | Modelo dos ajustes pontuais (padrão `claude-haiku-5-5`) | — |
 | `GROQ_API_KEY` | Transcrição com timestamp por palavra (Whisper) | Sem legendas e sem cortes baseados na fala |
+| `GEMINI_API_KEY` | Modelo reserva (Google Gemini): o agente segue nele se a Anthropic ficar sem saldo, recusar a chave, sobrecarregar ou cair | Sem a Anthropic, o agente fica indisponível |
+| `GEMINI_MODEL` | Modelo reserva (padrão `gemini-4-hydrogen`). Os preços dele (US$ por milhão de tokens) ficam no painel `/admin`, para o teto de custo valer também na reserva | — |
+| `AGENT_MODEL_EDITOR`, `AGENT_MODEL_CRITIC` | Modelo do Editor e do Crítico visual (padrão: o principal) | — |
 
 Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenvolvimento, sem `ADMIN_EMAILS`, a primeira conta vira administradora e acessa `/admin`, onde as chaves de API também podem ser cadastradas (cifradas no banco, com prioridade sobre o `.env.local`). Em produção, defina `ADMIN_EMAILS` e `APP_SECRET`.
 
@@ -74,7 +77,7 @@ Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenv
 
 ### Configurando o Stripe
 
-1. Crie três preços em BRL: dois recorrentes mensais (Creator R$ 127, Pro R$ 347) e um avulso (pacote de 500 créditos, R$ 79). Copie os ids `price_…` para as variáveis acima (ou para o painel `/admin`).
+1. Crie três preços em BRL: dois recorrentes mensais (Creator R$ 127 com 330 créditos, Pro R$ 347 com 1.000 créditos) e um avulso (pacote de 180 créditos, R$ 79). Os créditos de cada um estão em `packages/core/src/credits.ts`. Copie os ids `price_…` para as variáveis acima (ou para o painel `/admin`).
 2. Crie um endpoint de webhook para `{APP_URL}/api/stripe/webhook` com os eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`. Copie o segredo `whsec_…`.
 3. Ative o Portal do Cliente com os dois planos como produtos permitidos para troca. Para o upgrade liberar os créditos do plano maior na hora, configure a troca para cobrar a diferença imediatamente.
 4. Os meios de pagamento (cartão, Pix no pacote avulso, boleto) são os habilitados no Dashboard.
@@ -90,6 +93,15 @@ pnpm test
 ```bash
 pnpm typecheck
 ```
+
+## Custos e margem
+
+O preço de cada ação (`PRICING` em `packages/core/src/credits.ts`) segue duas coisas medidas:
+
+- **Custo real de IA por ação**, medido com vídeo real e registrado em `MEASURED_AI_COST_USD` (edição completa de vídeo curto com o Sonnet nos três papéis: US$ 0,28 a 0,48).
+- **Regra econômica** (`ECONOMICS`): de cada real, 5% de taxa de pagamento, 17% de impostos, 10% de despesas e no máximo 30% para IA, no câmbio de segurança de R$ 6,20. A margem líquida no pior caso (todos os créditos gastos nos pedidos mais caros) fica em 38%.
+
+Cada pedido ao agente recebe um **teto de custo** igual à fatia de IA do que ele cobra, calculada no crédito mais barato vendido. O Editor é avisado perto do teto e para nele com o que já aplicou; o Diretor usa no máximo metade; a revisão visual só roda com saldo do teto. Assim a margem não depende de a IA se comportar. Os testes de `economia` em `core.test.ts` impedem publicar uma tabela que derrube a margem ou deixe o teto abaixo do custo medido. Ao trocar modelo ou prompt, meça de novo (o servidor registra o custo por papel e por modelo em `usage_events` e, em desenvolvimento, no terminal) e atualize `MEASURED_AI_COST_USD`.
 
 ## Estado atual
 

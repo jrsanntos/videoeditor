@@ -9,6 +9,8 @@ import {
   type EditTemplate,
   type OperationInput,
   findRetakes,
+  fillersFor,
+  wordsToReview,
   AgentOperationSchema,
   ProjectSchema,
   safeArea,
@@ -16,9 +18,15 @@ import {
   clipEnd,
   createProject,
   agentTier,
-  creditCost,
+  aiBudgetUSD,
+  ECONOMICS,
+  MEASURED_AI_COST_USD,
+  MIN_NET_MARGIN,
+  minRevenuePerCreditBRL,
   PLANS,
   SIGNUP_CREDITS,
+  TOPUPS,
+  creditCost,
   SKILLS,
   skillPrompt,
   videosEstimate,
@@ -220,10 +228,10 @@ describe("agente e créditos", () => {
   });
 
   it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
-    expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(10);
-    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(2);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(15);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(42);
+    expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(5);
+    expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(1);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(24);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(78);
     expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
@@ -243,15 +251,15 @@ describe("agente e créditos", () => {
 
   it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
     expect(PLANS.free.monthlyCredits).toBe(0);
-    expect(SIGNUP_CREDITS).toBe(60);
-    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 35, max: 50 });
-    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 120, max: 170 });
-    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 2, max: 3 });
+    expect(SIGNUP_CREDITS).toBe(32);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 10, max: 12 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 30, max: 35 });
+    expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 1, max: 1 });
     expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
-    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): edição completa de 1 min
-    // custa ~R$ 0,31 em IA e rende 15 créditos.
+    // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): a edição completa de 1 min
+    // custa até US$ 0,40 em IA (R$ 2,48 no câmbio de segurança) e precisa render mais que 3× isso.
     const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(0.31 * 3);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(MEASURED_AI_COST_USD.fullEditShort * ECONOMICS.usdBrl * 3);
   });
 
   it("débito consome o saldo do plano antes do extra", () => {
@@ -707,7 +715,7 @@ describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", (
     });
     const { project } = applyOperations(fixture(), [{ op: "set_style_reference", profile }]);
     const ctx = buildAgentContext(project);
-    expect(ctx).toContain("## Referência de inspiração (YouTube)");
+    expect(ctx).toContain("## Referência de inspiração (YouTube");
     expect(ctx).toContain("~28 cortes/min");
     expect(ctx).toContain("#0B6B73, #FF8A3D");
     expect(ctx).toContain("- Use câmera lenta nos impactos.");
@@ -1252,5 +1260,145 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     const action = BUILTIN_TEMPLATES[1]!.data;
     expect(action).toMatchObject({ speedRamps: true, music: "action", silence: { remove: false } });
     expect(templatePrompt(action)).toContain("Rampas de velocidade");
+  });
+});
+
+describe("takes ruins com transcrições reais (Groq Whisper)", () => {
+  // Formato "palavra[início-fim]", copiado da saída do serviço de transcrição.
+  const real = (s: string) =>
+    findRetakes(
+      s
+        .trim()
+        .split(/\s+/)
+        .map((tok, i) => {
+          const m = /^(.*)\[(.*)-(.*)\]$/.exec(tok)!;
+          return { id: `w${i}`, text: m[1]!, start: Number(m[2]), end: Number(m[3]), clipId: "c", assetId: "a" };
+        }),
+    );
+
+  it("aviso de erro seguido de recomeço é erro certo, mesmo com o take truncado virando outra palavra", () => {
+    const r = real(
+      "Eu[0.00-0.16] vou[0.16-0.38] mostrar[0.38-0.84] como[0.84-1.24] abre.[1.24-1.80] Aprender[1.92-2.54] inglês[2.54-3.02] rápido.[3.02-3.78] Não,[3.96-4.60] pera,[4.60-5.10] errei.[5.10-5.64] Eu[5.86-6.06] vou[6.06-6.32] mostrar[6.32-6.76] como[6.76-7.14] aprender[7.14-7.64] inglês[7.64-8.28] em[8.28-8.52] 30[8.52-8.88] dias.[8.88-9.32]",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "marker", confidence: "alta", from: "w0", to: "w10" });
+    expect(r[0]!.keepText).toBe("Eu vou mostrar como aprender inglês");
+  });
+
+  it("autocorreção nunca é corte automático e o corte sugerido mantém a informação corrigida", () => {
+    const r = real(
+      "Hoje[0.0-0.3] eu[0.3-0.4] vou[0.4-0.6] te[0.6-0.7] ensinar[0.7-1.2] três[1.2-1.5] formas[1.5-1.9] de[1.9-2.0] ganhar,[2.0-2.5] quer[3.4-3.6] dizer,[3.6-3.9] na[3.9-4.0] verdade[4.0-4.4] são[4.4-4.6] quatro[4.6-5.0] formas[5.0-5.4] de[5.4-5.5] ganhar[5.5-5.9] dinheiro[5.9-6.4] com[6.4-6.6] vídeo.[6.6-7.1]",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ kind: "correction", confidence: "media", cutText: "três formas de ganhar, quer dizer, na verdade são" });
+    expect(r[0]!.keepText).toMatch(/^quatro formas de ganhar dinheiro/);
+  });
+
+  it("frase recomeçada logo em seguida continua sendo corte certo", () => {
+    const r = real(
+      "Então,[0.00-0.56] o[0.56-0.86] segredo[0.86-1.52] do[1.52-1.68] sucesso,[1.68-2.34] o[2.34-2.56] segredo[2.56-3.10] do[3.10-3.28] sucesso[3.28-3.70] é[3.70-3.96] consistência.[3.96-5.44]",
+    );
+    expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", cutText: "o segredo do sucesso," });
+  });
+});
+
+describe("muletas", () => {
+  const words = (s: string) =>
+    s.split(" ").map((text, i) => ({ id: `w${i}`, text, start: i * 0.4, end: i * 0.4 + 0.3, clipId: "c", assetId: "a" }));
+  const cut = (s: string, level: "hesitations" | "all" = "all") => fillersFor(words(s), level).map((f) => f.text);
+
+  it("hesitações saem sempre; 'é' verbo fica", () => {
+    expect(cut("Hum, eu acho que é... é, é importante, ahn, medir. Isso é fácil.")).toEqual(["Hum,", "é...", "é,", "ahn,"]);
+  });
+
+  it("'tipo' e 'né' soltos saem; com função na frase ficam", () => {
+    expect(cut("a gente precisa, tipo, vender mais, né? Esse tipo de produto vende. Faça assim todo dia.")).toEqual(["tipo,", "né?"]);
+  });
+
+  it("no nível 'hesitations' as palavras de apoio ficam", () => {
+    expect(cut("Hum, a gente precisa, tipo, vender mais, né?", "hesitations")).toEqual(["Hum,"]);
+  });
+
+  it("remove_fillers corta da timeline", () => {
+    const w = words("Hum, a gente precisa, tipo, vender mais.").map(({ clipId: _c, assetId: _a, ...x }) => x);
+    const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 4, hasAudio: true, transcript: { words: w } });
+    const { project } = applyOperations(p, [{ op: "remove_fillers" }]);
+    expect(timelineWords(project).map((x) => x.text).join(" ")).toBe("a gente precisa, vender mais.");
+  });
+});
+
+describe("revisão de legenda", () => {
+  const project = () => {
+    const words = [
+      { id: "w0", text: "Oi,", start: 0, end: 0.3, confidence: 0.9 },
+      { id: "w1", text: "Primo", start: 0.4, end: 0.7, confidence: 0.4 },
+      { id: "w2", text: "Hico.", start: 0.7, end: 1, confidence: 0.4 },
+    ];
+    return addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 2, hasAudio: true, transcript: { words } });
+  };
+
+  it("palavra de baixa confiança vai para a revisão até ser conferida ou corrigida", () => {
+    expect(wordsToReview(project()).map((w) => w.id)).toEqual(["w1", "w2"]);
+    const confirmed = applyOperations(project(), [{ op: "review_words", wordIds: ["w1"] }]).project;
+    expect(wordsToReview(confirmed).map((w) => w.id)).toEqual(["w2"]);
+    const fixed = applyOperations(project(), [{ op: "edit_caption", wordIds: ["w1", "w2"], text: "Primo Rico." }]).project;
+    expect(wordsToReview(fixed)).toEqual([]);
+  });
+});
+
+describe("nível do pedido (regra local)", () => {
+  it.each([
+    ["edita tudo pra mim", "full"],
+    ["quero esse vídeo no estilo do Primo Rico", "full"],
+    ["Revise os erros de gravação e corte os takes ruins", "sweep"],
+    ["Aplique zoom nos momentos de ênfase", "sweep"],
+    ["muda a cor da legenda para amarelo", "adjust"],
+    ["tira o zoom do 0:12", "adjust"],
+  ] as const)("%s → %s", (message, tier) => {
+    expect(agentTier(message, false)).toBe(tier);
+  });
+
+  it("passada no vídeo todo custa entre o ajuste e a edição completa", () => {
+    const at = (tier: "full" | "sweep" | "adjust") => creditCost({ type: "agent", tier, durationSec: 60 });
+    expect(at("adjust")).toBeLessThan(at("sweep"));
+    expect(at("sweep")).toBeLessThan(at("full"));
+  });
+});
+
+describe("repetição natural não é erro de gravação (vídeo real, fala fluente)", () => {
+  const take = (text: string) =>
+    findRetakes(text.split(" ").map((t, i) => ({ id: `w${i}`, text: t, start: i * 0.3, end: i * 0.3 + 0.25, clipId: "c", assetId: "a" })));
+
+  it.each([
+    "estão causando problemas para a guarnição, evitando que a guarnição entre em confronto físico direto.",
+    "Aquele indivíduo em surto psicótico, aquele indivíduo agressor, aquele indivíduo que recusa a obediência",
+    "indivíduos que estão causando distúrbios e estão causando problemas para a guarnição",
+    "jamais poderá ser utilizada em manifestações públicas e não deve ser utilizada quando há risco à vida",
+  ])("%s", (text) => {
+    expect(take(text).filter((r) => r.confidence === "alta")).toEqual([]);
+  });
+});
+
+describe("economia: lucro real depois de taxas, impostos e despesas", () => {
+  it("a margem líquida no pior caso fica acima de 35%", () => {
+    expect(MIN_NET_MARGIN).toBeGreaterThanOrEqual(0.35);
+  });
+
+  it("todo plano pago e todo pacote rende pelo menos a receita por crédito usada no teto", () => {
+    const floor = minRevenuePerCreditBRL();
+    for (const plan of Object.values(PLANS)) if (plan.priceBRL > 0) expect(plan.priceBRL / plan.monthlyCredits).toBeGreaterThanOrEqual(floor);
+    for (const t of TOPUPS) expect(t.priceBRL / t.credits).toBeGreaterThanOrEqual(floor);
+  });
+
+  it("o teto de custo de cada ação cobre o custo medido (a IA não é interrompida no caso comum)", () => {
+    const at = (tier: "full" | "sweep" | "adjust") => aiBudgetUSD(creditCost({ type: "agent", tier, durationSec: 60 }));
+    expect(at("full")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.fullEditShort);
+    expect(at("sweep")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.sweepShort);
+    expect(at("adjust")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.adjust);
+  });
+
+  it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {
+    const sec = PLANS.free.maxUploadMinutes * 60;
+    expect(SIGNUP_CREDITS).toBeGreaterThanOrEqual(creditCost({ type: "ingest", durationSec: sec }) + creditCost({ type: "agent", tier: "full", durationSec: sec }));
   });
 });

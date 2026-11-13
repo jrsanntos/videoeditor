@@ -5,7 +5,7 @@ const PHOTO: Record<SkillId, string> = {
   viral: "/landing/viral.webp",
   autoridade: "/landing/autoridade.webp",
   acao: "/landing/vsl.webp",
-  limpeza: "/landing/viral.webp",
+  limpeza: "/landing/vsl.webp",
 };
 
 /**
@@ -64,13 +64,17 @@ const LAYERS: Record<SkillId, React.ReactNode> = {
   ),
   acao: (
     <>
-      <span className={tag}>Número</span>
-      <div className="absolute inset-x-0 bottom-[19%] text-center [text-shadow:0_0.8cqw_3cqw_rgba(0,0,0,0.6)]">
-        <div className="font-['LP_Bebas'] text-[36cqw] leading-[0.8] text-white">+38%</div>
-        <div className="mt-[2.5cqw] text-[5.2cqw] font-bold uppercase tracking-[0.12em] text-[#59ffcd]">de vendas em 30 dias</div>
+      <span className={tag}>Câmera lenta</span>
+      {/* Barras de cinema e HUD: o tratamento do estilo, não um dado inventado. */}
+      <div className="absolute inset-x-0 top-0 h-[8%] bg-black" />
+      <div className="absolute inset-x-0 bottom-0 h-[8%] bg-black" />
+      <div className="absolute right-[6cqw] top-[12%] rounded-[1.4cqw] bg-[#59ffcd] px-[2.6cqw] py-[1.1cqw] text-[4.4cqw] font-bold uppercase tracking-[0.1em] text-[#07030a]">0,5×</div>
+      <div className="absolute inset-x-0 bottom-[22%] text-center [text-shadow:0_0.8cqw_3cqw_rgba(0,0,0,0.6)]">
+        <div className="font-['LP_Bebas'] text-[30cqw] leading-[0.8] text-white">IMPACTO</div>
+        <div className="mt-[2.5cqw] text-[5.2cqw] font-bold uppercase tracking-[0.12em] text-[#59ffcd]">no pico da cena</div>
       </div>
-      <div className="absolute inset-x-[4cqw] bottom-[6%] text-center text-[7.6cqw] font-extrabold uppercase leading-none text-white [text-shadow:0_0.5cqw_0_#000]">
-        <Words text="sem gastar mais anúncio" hi="#59ffcd" />
+      <div className="absolute inset-x-[4cqw] bottom-[11%] text-center text-[7.6cqw] font-extrabold uppercase leading-none text-white [text-shadow:0_0.5cqw_0_#000]">
+        <Words text="trilha e som no ponto exato" hi="#59ffcd" />
       </div>
     </>
   ),

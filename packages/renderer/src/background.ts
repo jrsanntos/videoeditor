@@ -127,9 +127,10 @@ export function drawWatermark(ctx: Ctx2D, width: number, height: number, text = 
   ctx.textBaseline = "middle";
   const w = ctx.measureText(text).width + 44 * u;
   const h = 62 * u;
-  // No canto superior esquerdo da área útil: visível, mas fora do rosto e dos textos centrais.
+  // No canto superior DIREITO da área útil: visível, fora do rosto e dos textos centrais, e do lado
+  // oposto ao rótulo da barra de etapas e às tarjas (que ficam à esquerda).
   const vertical = height > width;
-  const cx = (vertical ? width * 0.06 : width * 0.04) + w / 2;
+  const cx = width - (vertical ? width * 0.06 : width * 0.04) - w / 2;
   const cy = (vertical ? height * 0.13 : height * 0.06) + h / 2;
   ctx.fillStyle = "rgba(0,0,0,0.45)";
   ctx.beginPath();

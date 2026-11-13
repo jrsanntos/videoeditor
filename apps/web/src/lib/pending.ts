@@ -12,6 +12,8 @@ export type PendingUpload = {
   file: File;
   /** Estilo escolhido; null = abrir no editor e editar por conta própria. */
   style: SkillId | null;
+  /** Nome e credencial digitados na prévia: viram a tarja do vídeo e entram no Brand Kit. */
+  identity?: { name: string; credential: string };
   savedAt: number;
 };
 
@@ -44,9 +46,9 @@ async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
 }
 
 /** Guarda o vídeo e o estilo. Devolve false se o navegador não deixou (modo anônimo, cota). */
-export async function savePending(file: File, style: SkillId | null): Promise<boolean> {
+export async function savePending(file: File, style: SkillId | null, identity?: PendingUpload["identity"]): Promise<boolean> {
   try {
-    await run("readwrite", (s) => s.put({ file, style, savedAt: Date.now() } satisfies PendingUpload, KEY));
+    await run("readwrite", (s) => s.put({ file, style, ...(identity ? { identity } : {}), savedAt: Date.now() } satisfies PendingUpload, KEY));
     return true;
   } catch {
     return false;

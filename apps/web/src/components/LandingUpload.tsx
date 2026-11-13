@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { creditCost, PLANS, SIGNUP_CREDITS, silencesFromAudio, type SkillId, type TimeRange } from "@videoeditor/core";
-import { decodeBlobMono, probeVideo, SPEECH_RATE } from "@/lib/media";
+import { assertDecodable, decodeBlobMono, probeVideo, SPEECH_RATE } from "@/lib/media";
 import { savePending } from "@/lib/pending";
 import { GoogleButton, OrDivider } from "./GoogleButton";
 import { Icon } from "./icons";
@@ -13,7 +13,7 @@ const STYLES: { id: SkillId; name: string; hint: string }[] = [
   { id: "viral", name: "Retenção Viral", hint: "Gancho forte, legenda pop e zooms a cada corte" },
   { id: "autoridade", name: "Autoridade", hint: "Ritmo sóbrio, dados em cartões e tom quente" },
   { id: "acao", name: "Ação & Cinema", hint: "Câmera lenta, cor de cinema e impactos" },
-  { id: "limpeza", name: "Só limpeza", hint: "Tira erros e pausas; o acabamento fica com você" },
+  { id: "limpeza", name: "Só limpeza", hint: "Tira erros, muletas e pausas; o acabamento fica com você" },
 ];
 
 const FREE_MAX_SEC = PLANS.free.maxUploadMinutes * 60;
@@ -49,6 +49,8 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
   const [gate, setGate] = useState(false);
   const [going, setGoing] = useState(false);
   const [pendingStyle, setPendingStyle] = useState<SkillId | null>(null);
+  // Tarja do estilo Autoridade: só aparece (na prévia e no vídeo) se a pessoa disser quem é.
+  const [who, setWho] = useState({ name: "", credential: "" });
 
   useEffect(() => () => {
     if (video) URL.revokeObjectURL(video.url);
@@ -61,6 +63,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
     setReading(true);
     try {
       const meta = await probeVideo(file);
+      await assertDecodable(file);
       const url = URL.createObjectURL(file);
       setVideo({ file, url, ...meta });
       setAnalysis(null);
@@ -108,7 +111,8 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
   async function proceed(chosen: SkillId | null) {
     if (!video) return;
     setGoing(true);
-    const saved = await savePending(video.file, chosen);
+    const identity = chosen === "autoridade" && who.name.trim() ? { name: who.name.trim(), credential: who.credential.trim() } : undefined;
+    const saved = await savePending(video.file, chosen, identity);
     if (!saved) {
       setGoing(false);
       return setError("Seu navegador não deixou guardar o vídeo (janela anônima ou sem espaço). Entre na conta e envie o vídeo pelo editor.");
@@ -182,7 +186,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
               ))}
             </ol>
             <div className="mt-2 grid grid-cols-3 gap-2.5">
-              {(["viral", "autoridade", "acao"] as const).map((s) => (
+              {(["viral", "autoridade", "limpeza"] as const).map((s) => (
                 <Reel key={s} style={s} className="shadow-[0_14px_30px_rgba(0,0,0,0.45)]" />
               ))}
             </div>
@@ -191,7 +195,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
       ) : (
         <div className="lp-studio pop-in grid gap-6 rounded-[28px] p-4 sm:p-6 lg:grid-cols-[minmax(0,330px)_1fr] lg:gap-10 lg:p-8" data-testid="landing-studio">
           <div className="mx-auto w-full max-w-[330px]">
-            <StylePreview url={video.url} style={style} />
+            <StylePreview url={video.url} style={style} who={who} />
             <p className="mt-3 text-center text-[12.5px] text-haze">Prévia do estilo no seu vídeo · o resultado final é montado pela IA a partir da sua fala</p>
           </div>
 
@@ -227,6 +231,33 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
                 </button>
               ))}
             </div>
+
+            {style === "autoridade" && (
+              <div className="mt-4 rounded-2xl border border-white/12 bg-white/[0.03] p-4" data-testid="landing-identity">
+                <p className="text-[14px] font-semibold text-white">
+                  Tarja com seu nome <span className="font-normal text-haze">(opcional)</span>
+                </p>
+                <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+                  <input
+                    value={who.name}
+                    maxLength={40}
+                    onChange={(e) => setWho({ ...who, name: e.target.value })}
+                    placeholder="Dra. Ana Silva"
+                    aria-label="Seu nome na tarja"
+                    className="rounded-xl border border-white/12 bg-night-950/80 px-3.5 py-2.5 text-[15px] text-white outline-none placeholder:text-white/30 focus:border-neon-mint"
+                  />
+                  <input
+                    value={who.credential}
+                    maxLength={60}
+                    onChange={(e) => setWho({ ...who, credential: e.target.value })}
+                    placeholder="Cardiologista · CRM 12345"
+                    aria-label="Sua credencial"
+                    className="rounded-xl border border-white/12 bg-night-950/80 px-3.5 py-2.5 text-[15px] text-white outline-none placeholder:text-white/30 focus:border-neon-mint"
+                  />
+                </div>
+                <p className="mt-2 text-[12.5px] text-haze">Aparece no começo do vídeo para apresentar você. Sem nome, o vídeo sai sem tarja.</p>
+              </div>
+            )}
 
             {tooLong && (
               <p className="mt-5 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-[14px] text-amber-100" role="alert">
@@ -270,7 +301,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
 }
 
 /** O próprio vídeo da pessoa, enquadrado em 9:16, com o "look" do estilo por cima. */
-function StylePreview({ url, style }: { url: string; style: SkillId }) {
+function StylePreview({ url, style, who }: { url: string; style: SkillId; who: { name: string; credential: string } }) {
   const [muted, setMuted] = useState(true);
   return (
     <div className={`lp-preview lp-preview-${style} relative aspect-[9/16] overflow-hidden rounded-[22px] border border-white/15 bg-black shadow-[0_30px_60px_-20px_rgba(0,0,0,0.8)] [container-type:inline-size]`}>
@@ -294,6 +325,12 @@ function StylePreview({ url, style }: { url: string; style: SkillId }) {
         <SpeakerGlyph muted={muted} />
       </button>
       {PREVIEW_LAYERS[style]}
+      {style === "autoridade" && who.name.trim() && (
+        <div className="pointer-events-none absolute bottom-[22%] left-[6cqw] max-w-[80%] border-l-[0.9cqw] border-[#e8d5a8] bg-black/60 py-[2.2cqw] pl-[3.2cqw] pr-[5cqw] backdrop-blur">
+          <div className="truncate text-[5.4cqw] font-bold leading-tight text-white">{who.name}</div>
+          {who.credential.trim() && <div className="truncate text-[4.2cqw] leading-tight text-white/70">{who.credential}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -323,10 +360,6 @@ const PREVIEW_LAYERS: Record<SkillId, React.ReactNode> = {
   ),
   autoridade: (
     <>
-      <div className="pointer-events-none absolute bottom-[22%] left-[6cqw] border-l-[0.9cqw] border-[#e8d5a8] bg-black/60 py-[2.2cqw] pl-[3.2cqw] pr-[5cqw] backdrop-blur">
-        <div className="text-[5.4cqw] font-bold leading-tight text-white">Seu nome</div>
-        <div className="text-[4.2cqw] leading-tight text-white/70">Sua credencial</div>
-      </div>
       <div className="pointer-events-none absolute inset-x-[5cqw] bottom-[8%] text-center text-[6.2cqw] font-semibold leading-tight text-white/70 [text-shadow:0_0.4cqw_2cqw_rgba(0,0,0,0.8)]">
         <Words text="legenda editorial na base" hi="#ffffff" />
       </div>
@@ -343,7 +376,7 @@ const PREVIEW_LAYERS: Record<SkillId, React.ReactNode> = {
   limpeza: (
     <div className="pointer-events-none absolute inset-x-[6cqw] bottom-[8%] text-white">
       <div className="text-[4.4cqw] font-semibold uppercase tracking-[0.14em] text-white/70">Decupagem automática</div>
-      <div className="mt-[1.5cqw] text-[5.4cqw] font-medium leading-tight">Erros, recomeços e pausas longas saem; a fala fica contínua.</div>
+      <div className="mt-[1.5cqw] text-[5.4cqw] font-medium leading-tight">Erros, recomeços, muletas e pausas longas saem; a fala fica contínua.</div>
     </div>
   ),
 };

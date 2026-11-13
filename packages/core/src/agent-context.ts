@@ -1,5 +1,6 @@
 import { GENRE_NAMES, type Project, type StyleReferenceProfile, type TimeRange } from "./schema";
 import { findRetakes } from "./retakes";
+import { findFillers } from "./fillers";
 import { clipEnd, contextAssets, hasSpeed, mainClips, mainGaps, projectDuration, projectGenre, r3, sourceEnd, subjectAt, timelineWords, type TimelineWord } from "./timeline";
 import { timelineActionRanges, timelinePeaks, voiceRanges } from "./analysis";
 import { isCloseUp } from "./layout";
@@ -136,10 +137,19 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
     lines.push(
       "",
       "## Takes ruins detectados",
-      "Erros de gravação prováveis, já com o corte exato (mantém o último take). confiança alta: corte. confiança media: leia o trecho e decida — repetição também pode ser ênfase intencional.",
+      "Erros de gravação prováveis, já com o corte exato (mantém o último take). confiança alta: corte. confiança media: leia o trecho e decida — repetição também pode ser ênfase intencional. correction: a pessoa se corrigiu no meio da frase; a informação certa é a que vem DEPOIS da expressão de correção — confira o corte sugerido para manter a frase com sentido e com o dado corrigido.",
     );
     for (const r of takes)
       lines.push(`${r.confidence} | ${r.kind} | cortar {"from":"${r.from}","to":"${r.to}"} "${r.cutText}" → fica "${r.keepText}"`);
+  }
+  const fillers = findFillers(words);
+  if (fillers.length) {
+    lines.push(
+      "",
+      "## Muletas na fala",
+      `${fillers.length} muleta(s) ainda na timeline. remove_fillers tira de uma vez (level "hesitations" só os sons; "all" também "tipo", "né", "sabe?" soltos). Para escolher uma a uma, use cut_words.`,
+      ...fillers.slice(0, 40).map((f) => `${f.confidence} | ${f.kind} | {"from":"${f.from}","to":"${f.to}"} "${f.text}"`),
+    );
   }
   return lines.join("\n");
 }
@@ -162,10 +172,11 @@ function genreLines(project: Project): string[] {
 
 /** Referência de inspiração (YouTube) resumida para o Diretor. */
 export function styleReferenceLines(ref: StyleReferenceProfile): string[] {
+  const measured = ref.url.startsWith("arquivo:");
   const lines = [
-    "## Referência de inspiração (YouTube)",
+    measured ? "## Referência de inspiração (arquivo enviado — ritmo MEDIDO)" : "## Referência de inspiração (YouTube — ritmo ESTIMADO pelos metadados e legendas)",
     `"${ref.title}"${ref.channel ? ` — ${ref.channel}` : ""}${ref.durationSec ? ` — ${Math.round(ref.durationSec)}s` : ""}. O usuário quer este RITMO e ESTILO aplicados ao vídeo dele; não copie o conteúdo.`,
-    `Ritmo: ${ref.pacing.cutsPerMin ? `~${ref.pacing.cutsPerMin} cortes/min, ` : ""}${ref.pacing.avgShotSec ? `plano médio de ${ref.pacing.avgShotSec}s, ` : ""}${ref.pacing.wordsPerMin ? `fala a ${ref.pacing.wordsPerMin} palavras/min, ` : ""}energia ${ref.pacing.energy}.`,
+    `Ritmo: ${ref.pacing.cutsPerMin ? `${measured ? "" : "~"}${ref.pacing.cutsPerMin} cortes/min, ` : ""}${ref.pacing.avgShotSec ? `plano médio de ${ref.pacing.avgShotSec}s, ` : ""}${ref.pacing.wordsPerMin ? `fala a ${ref.pacing.wordsPerMin} palavras/min, ` : ""}energia ${ref.pacing.energy}.`,
   ];
   if (ref.cutStyle) lines.push(`Cortes: ${ref.cutStyle}`);
   if (ref.structure.length) lines.push(`Estrutura: ${ref.structure.map((s) => `${Math.round(s.t)}s ${s.title}`).join(" → ")}`);

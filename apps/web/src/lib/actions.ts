@@ -9,6 +9,7 @@ import {
   clipEnd,
   createEmptyProject,
   createProject,
+  findRetakes,
   creditCost,
   cutPoints,
   mainClips,
@@ -34,16 +35,17 @@ import {
   type OperationInput,
   type PlanId,
   type SkillId,
+  type AgentTier,
   type EditTemplate,
   type Project,
   type Transcript,
 } from "@videoeditor/core";
-import { analyzeVideo, wordEnergy, type VideoAnalysis } from "./analysis";
+import { analyzeVideo, contentBox, framingForContent, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
-import { clearMedia, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
+import { assertDecodable, clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
 import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
@@ -126,6 +128,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | null> => Promis
 /** Lê o arquivo e monta o asset, já com o hash e o que o cache souber dele. */
 async function ingest(file: File): Promise<Asset> {
   const meta = await probeVideo(file);
+  await assertDecodable(file);
   const plan = PLANS[(useEditor.getState().user?.plan ?? "free") as PlanId] ?? PLANS.free;
   if (meta.duration > plan.maxUploadMinutes * 60 + 1)
     throw new Error(`Seu plano aceita vídeos de até ${plan.maxUploadMinutes} minutos (este tem ${Math.ceil(meta.duration / 60)}). Corte o vídeo ou veja os planos.`);
@@ -172,6 +175,7 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
     useEditor.setState({ chat: [], time: 0, range: null, assistantPick: null });
     setProject(addAssetToProject(project, asset));
     if (asset.transcript) setNotice("Este vídeo já foi analisado antes: a transcrição veio do cache, sem custo.");
+    void reframeToContent(asset.id, file);
     void analyzeAsset(asset.id);
     if (opts.referenceUrl?.trim()) void attachStyleReference(opts.referenceUrl.trim());
     // Todo vídeo novo abre o assistente: escolher um estilo e deixar a IA editar é o caminho mais curto.
@@ -226,6 +230,24 @@ export async function addMainVideo(file: File, at?: number): Promise<string | nu
   }
 }
 
+/**
+ * Vídeo com faixas pretas (gravação vertical dentro de um quadro horizontal,
+ * comum no OBS): o quadro de saída passa a ser centralizado na área com
+ * imagem, e não no centro do arquivo. Sem ponto de desfazer: é o ajuste de
+ * entrada, como medir o vídeo.
+ */
+async function reframeToContent(assetId: string, file: Blob) {
+  const box = await contentBox(file);
+  const current = useEditor.getState().project;
+  const asset = current?.assets[assetId];
+  if (!box || !current || !asset?.width || !asset.height) return;
+  // Sem faixa relevante (menos de 8% de cada lado somado): nada a fazer.
+  if (box.w > 0.92 && box.h > 0.92) return;
+  const framing = framingForContent(box, { width: asset.width, height: asset.height }, { width: current.width, height: current.height });
+  useEditor.setState({ project: { ...current, framing } });
+  useEditor.getState().setNotice("O vídeo tem faixas pretas: o quadro foi centralizado na área com imagem. Ajuste em Estilo › Enquadramento, se quiser.");
+}
+
 /** Analisa o vídeo de referência (YouTube) e guarda o perfil de estilo no projeto. */
 export async function attachStyleReference(url: string): Promise<string | null> {
   const s = useEditor.getState();
@@ -244,6 +266,57 @@ export async function attachStyleReference(url: string): Promise<string | null> 
     const message = (e as Error).message;
     s.setNotice(message);
     return message;
+  }
+}
+
+/** Até onde a referência por arquivo é medida: o ritmo de um vídeo aparece nos primeiros minutos. */
+const REFERENCE_MAX_SEC = 180;
+
+/**
+ * Referência por arquivo: o ritmo é MEDIDO no navegador (mudanças de plano,
+ * pausas e fala no áudio) e só alguns quadros pequenos sobem, para o modelo
+ * ler cores, tipografia e legenda. O arquivo não sai do computador.
+ */
+export async function attachStyleReferenceFile(file: File): Promise<string | null> {
+  const s = useEditor.getState();
+  if (!s.project) return "Nenhum projeto aberto";
+  s.setBusy("Medindo o ritmo do vídeo de referência…");
+  try {
+    const meta = await probeVideo(file);
+    const samples = await decodeBlobMono(file).catch(() => null);
+    const span = Math.min(meta.duration, REFERENCE_MAX_SEC);
+    // Cortes rápidos pedem amostragem densa: 4 quadros por segundo nos primeiros minutos.
+    const head = samples ? samples.subarray(0, Math.round(span * SPEECH_RATE)) : null;
+    const result = await analyzeVideo(file, `ref:${file.name}`, head, SPEECH_RATE, undefined, { maxSamples: Math.round(span * 4), perSecond: 4, segment: false, until: span });
+    const a = result.analysis;
+    if (!a) throw new Error("Não foi possível ler o vídeo de referência.");
+    const minutes = Math.max(span / 60, 1 / 60);
+    const pauses = head ? silencesFromAudio(head, SPEECH_RATE, { mode: "natural" }).length : 0;
+    const measured = {
+      name: file.name.slice(0, 120),
+      durationSec: Math.round(meta.duration * 10) / 10,
+      vertical: meta.height > meta.width,
+      cutsPerMin: Math.round((a.cuts.length / minutes) * 10) / 10,
+      pausesPerMin: Math.round((pauses / minutes) * 10) / 10,
+      speechRatio: a.speechRatio,
+      motionLevel: Math.round(a.motionLevel * 1000) / 1000,
+      genre: a.genre,
+    };
+    s.setBusy("Lendo cores, tipografia e legenda da referência…");
+    const res = await fetch("/api/style-reference", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: { ...measured, frames: result.frames.slice(0, 4) } }) });
+    const data = (await res.json().catch(() => null)) as { profile?: StyleReferenceProfile; error?: string } | null;
+    if (!res.ok || !data?.profile) throw new Error(data?.error ?? "Não foi possível analisar o vídeo de referência.");
+    const current = useEditor.getState().project;
+    if (!current) return null;
+    useEditor.setState({ project: { ...current, styleReference: data.profile } });
+    s.setNotice(`Referência medida: ${measured.cutsPerMin} cortes por minuto${measured.pausesPerMin ? `, ${measured.pausesPerMin} pausas por minuto` : ""}. O Diretor de IA vai seguir esse ritmo e esse visual.`);
+    return null;
+  } catch (e) {
+    const message = (e as Error).message;
+    s.setNotice(message);
+    return message;
+  } finally {
+    s.setBusy(null);
   }
 }
 
@@ -299,7 +372,19 @@ export async function removeSilencesLocally(mode: SilenceMode = "natural", opts:
  * Envia só o áudio leve (16 kHz mono) para transcrição com timestamps por
  * palavra e mede a energia da voz em cada uma. Devolve true se deu certo.
  */
-export async function transcribe(opts: { captions?: boolean } = {}): Promise<boolean> {
+// Transcrição em andamento por arquivo: um segundo pedido simultâneo espera o primeiro em vez de cobrar de novo.
+const transcribing = new Map<string, Promise<boolean>>();
+export function transcribe(opts: { captions?: boolean } = {}): Promise<boolean> {
+  const project = useEditor.getState().project;
+  const key = project ? (primaryAssetId(project) ?? "") : "";
+  const running = transcribing.get(key);
+  if (running) return running;
+  const p = transcribeOnce(opts).finally(() => transcribing.delete(key));
+  transcribing.set(key, p);
+  return p;
+}
+
+async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolean> {
   // O saldo vem do servidor: se a conta ainda não carregou, espera por ela em vez de acusar falta de créditos.
   if (!useEditor.getState().user) await refreshMe();
   const { project, credits, setBusy, setNotice, setProject, setCredits } = useEditor.getState();
@@ -334,6 +419,7 @@ export async function transcribe(opts: { captions?: boolean } = {}): Promise<boo
     const body = new FormData();
     body.append("file", audio.blob, audio.filename);
     body.append("duration", String(asset.duration));
+    body.append("vocabulary", JSON.stringify(useEditor.getState().project?.brand.vocabulary ?? []));
     const res = await fetch("/api/transcribe", { method: "POST", body });
     const data = (await res.json()) as { transcript?: Transcript; balance?: number; error?: string };
     if (typeof data.balance === "number") setCredits(data.balance);
@@ -392,15 +478,18 @@ export async function autoClean() {
   if (!before) return;
   const wordsBefore = timelineWords(before).length;
   const lengthBefore = mainClips(before).reduce((m, c) => Math.max(m, c.start + c.duration), 0);
-  const error = s.apply([{ op: "remove_retakes" }, { op: "remove_silences", mode: "aggressive" }]);
+  const error = s.apply([{ op: "remove_retakes" }, { op: "remove_fillers", level: "all" }, { op: "remove_silences", mode: "aggressive" }]);
   if (error) return s.setNotice(error);
   const after = useEditor.getState().project!;
   const saved = lengthBefore - mainClips(after).reduce((m, c) => Math.max(m, c.start + c.duration), 0);
-  const retakes = wordsBefore - timelineWords(after).length;
+  const removed = wordsBefore - timelineWords(after).length;
+  // O que a limpeza automática não corta sozinha (repetição que pode ser ênfase, autocorreção): fica a sugestão.
+  const doubtful = findRetakes(timelineWords(after)).filter((r) => r.confidence === "media").length;
+  const review = doubtful ? ` ${doubtful} trecho(s) duvidoso(s) ficaram para você ou a IA decidir — peça “Revise os erros de gravação” no Diretor de IA.` : "";
   s.setNotice(
     saved < 0.05
-      ? "O vídeo já estava limpo: nenhum erro de gravação nem pausa longa."
-      : `Limpeza pronta: ${saved.toFixed(1)}s a menos${retakes ? `, ${retakes} palavras de takes errados removidas` : ""}. Ctrl+Z desfaz.`,
+      ? `O vídeo já estava limpo: nenhum erro de gravação, muleta nem pausa longa.${review}`
+      : `Limpeza pronta: ${saved.toFixed(1)}s a menos${removed ? `, ${removed} palavras de erros e muletas removidas` : ""}. Ctrl+Z desfaz.${review}`,
   );
 }
 
@@ -452,7 +541,19 @@ type AgentEvent =
  * pergunta, como no assistente de um clique); o Editor executa; o Crítico
  * avalia o resultado em até 3 ciclos de autocorreção.
  */
-export async function askAgent(message: string, label?: string, opts: { skill?: SkillId; confirm?: boolean } = {}) {
+/** Nível e passe de um pedido, classificado pela intenção no servidor. null se não deu (vale a regra local). */
+export async function classifyRequest(message: string, selection: boolean, duration: number, signal?: AbortSignal): Promise<{ tier: AgentTier; token: string } | null> {
+  try {
+    const res = await fetch("/api/agent/tier", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, selection, duration }), signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { tier?: AgentTier; token?: string };
+    return data.tier && data.token ? { tier: data.tier, token: data.token } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function askAgent(message: string, label?: string, opts: { skill?: SkillId; confirm?: boolean; tier?: AgentTier; tierToken?: string } = {}) {
   const s = useEditor.getState();
   if (!s.project || !message.trim()) return;
   const history = s.chat.filter((m) => !m.error && !m.plan).slice(-8).map((m) => ({ role: m.role, text: m.text }));
@@ -464,7 +565,8 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   }
   const project = useEditor.getState().project!;
   const range = useEditor.getState().range;
-  const full = agentTier(message, !!range) === "full";
+  const tier = range ? "adjust" : (opts.tier ?? agentTier(message, false));
+  const full = tier === "full";
   s.setBusy(full ? "Analisando o vídeo…" : "O agente está lendo o vídeo…");
   // Edição completa: o agente recebe quadros do vídeo, o enquadramento e a análise de movimento e som.
   const assetId = primaryAssetId(project);
@@ -486,7 +588,7 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
     }
     return;
   }
-  await executeAgent({ message, history, skill: opts.skill, frames, selection: range, phase: "auto" });
+  await executeAgent({ message, history, skill: opts.skill, frames, selection: range, phase: "auto", tierToken: opts.tierToken });
 }
 
 /** O usuário aprovou o plano no chat: o Editor executa e o Crítico confere. */
@@ -515,7 +617,7 @@ export function discardPlan(messageId: string) {
 
 export const pendingPlanOf = (m: ChatMessage): PendingPlan | undefined => m.pending;
 
-async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string }) {
+async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string; tierToken?: string }) {
   const s = useEditor.getState();
   let applied = false;
   const log: string[] = [];
@@ -577,9 +679,36 @@ async function streamAgent(body: unknown, onEvent: (e: AgentEvent) => void) {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Captura o preview nos instantes pedidos, em tamanho reduzido. Devolve o cursor ao lugar no fim. */
+/**
+ * Em aba escondida o navegador congela o vídeo e atrasa os timers: as capturas
+ * sairiam erradas. Espera a pessoa voltar (até 10 min) e avisa no caminho.
+ */
+async function whenVisible(): Promise<boolean> {
+  if (typeof document === "undefined" || !document.hidden) return true;
+  const s = useEditor.getState();
+  const before = s.busy;
+  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela.");
+  const ok = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      document.removeEventListener("visibilitychange", on);
+      resolve(false);
+    }, 10 * 60_000);
+    const on = () => {
+      if (document.hidden) return;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", on);
+      resolve(true);
+    };
+    document.addEventListener("visibilitychange", on);
+  });
+  useEditor.getState().setBusy(before);
+  return ok;
+}
+
 async function capturePreview(times: number[], maxSide: number): Promise<{ t: number; canvas: HTMLCanvasElement }[]> {
   const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="preview"]');
   if (!canvas) return [];
+  if (!(await whenVisible())) return [];
   const s = useEditor.getState();
   const back = s.time;
   s.setPlaying(false);
@@ -765,7 +894,15 @@ export function autoEditCost(project: Project): number {
  * conta. Sem créditos suficientes, o assistente abre com o estilo marcado.
  * Devolve true se havia um vídeo pendente.
  */
-export async function resumePending(): Promise<boolean> {
+// Uma retomada por carregamento da página: o efeito do editor pode rodar duas vezes
+// (modo estrito, remontagem) e duas retomadas importariam e cobrariam o mesmo vídeo em dobro.
+let resuming: Promise<boolean> | null = null;
+export function resumePending(): Promise<boolean> {
+  resuming ??= resumePendingOnce();
+  return resuming;
+}
+
+async function resumePendingOnce(): Promise<boolean> {
   const pending = await readPending();
   if (!pending) return false;
   // Sai da fila antes de importar: um vídeo que falha (longo demais para o plano) não volta em loop.
@@ -775,6 +912,9 @@ export async function resumePending(): Promise<boolean> {
   await importVideo(pending.file);
   const s = useEditor.getState();
   if (!s.project || s.project === before) return true;
+  // Nome e credencial digitados na prévia: a tarja que a pessoa viu é a que o vídeo recebe.
+  const name = pending.identity?.name.trim();
+  if (name) s.apply([{ op: "set_brand", brand: { displayName: name.slice(0, 40), credential: (pending.identity?.credential ?? "").trim().slice(0, 60), showLowerThird: true } }]);
   if (!pending.style) {
     editManually();
     return true;

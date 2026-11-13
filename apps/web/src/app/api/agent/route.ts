@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import {
   agentTier,
+  aiBudgetUSD,
   applyOperations,
   auditPacing,
   buildAgentContext,
@@ -23,15 +24,19 @@ import {
   projectDuration,
   wordLines,
   wordsBetween,
+  type AgentTier,
   type OperationInput,
   type PacingProfile,
   type Project,
   type Skill,
 } from "@videoeditor/core";
 import { screenTexts, validateComponent, validateSfx } from "@videoeditor/renderer";
-import { ACT_NAMES, AGENT_ROLES, agentModel, anthropicClient, anthropicError, fastAgentModel, MAX_WORDS_WINDOW, PlanSchema, ReadWordsSchema, ToolInputSchema, type AgentRole, type EditPlan } from "@/server/ai";
+import { ACT_NAMES, AGENT_ROLES, agentModel, anthropicClient, anthropicError, criticAgentModel, shouldFallBack, editorAgentModel, fastAgentModel, MAX_WORDS_WINDOW, PlanSchema, ReadWordsSchema, ToolInputSchema, type AgentRole, type EditPlan } from "@/server/ai";
 import { anthropicCostUSD, assertCredits, balance, charge, recordUsage } from "@/server/billing";
 import { decrypt, encrypt } from "@/server/crypto";
+import { rateLimit } from "@/server/ratelimit";
+import { geminiConfigured, geminiCostUSD, geminiTurn } from "@/server/gemini";
+import { unsealTier } from "@/server/tiers";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
 export const runtime = "nodejs";
@@ -52,6 +57,14 @@ const MAX_TURNS = 8;
 /** Edição completa: etapas de execução e as passagens de revisão. */
 const MAX_TURNS_EDITOR = 18;
 const MAX_TURNS_DIRECTOR = 5;
+/** Fração do teto de custo a partir da qual o Editor é avisado para fechar a edição. */
+const BUDGET_WARN = 0.75;
+/** O Diretor usa no máximo esta fração do teto da edição. */
+const DIRECTOR_SHARE = 0.5;
+/** Abaixo disto (US$) não vale abrir mais uma conferência visual. */
+const MIN_REVIEW_USD = 0.012;
+/** Passada no vídeo todo: uma tarefa, várias chamadas possíveis (vídeos longos). */
+const MAX_TURNS_SWEEP = 12;
 /** Modelos que aceitam fallback de recusa no servidor. */
 const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
@@ -67,6 +80,8 @@ const RequestSchema = z.object({
   /** Modelo de edição em uso: define o orçamento de ritmo e o acabamento que o Crítico cobra. */
   skill: z.enum(["viral", "acao", "autoridade", "limpeza"]).optional(),
   phase: z.enum(["auto", "plan", "execute"]).default("auto"),
+  /** Passe da classificação por intenção (/api/agent/tier): nível e preço mostrados antes do envio. */
+  tierToken: z.string().max(2000).optional(),
   /** Passe devolvido pela fase "plan": o plano que o usuário confirmou. */
   planToken: z.string().max(12_000).optional(),
   /** Quadros do vídeo (JPEG em base64) para o agente ver o enquadramento e o cenário. */
@@ -95,8 +110,10 @@ function unseal<T>(token: string, userId: string, kind: string): T | null {
     return null;
   }
 }
-const reviewToken = (userId: string, cycle: number, skill?: string) => seal({ u: userId, k: "review", n: cycle, s: skill });
-const planToken = (userId: string, plan: EditPlan) => seal({ u: userId, k: "plan", plan });
+/** O passe da revisão carrega o que sobrou do teto de custo da edição (b, em US$). */
+const reviewToken = (userId: string, cycle: number, skill: string | undefined, budgetLeft: number) => seal({ u: userId, k: "review", n: cycle, s: skill, b: budgetLeft });
+/** O passe do plano carrega o que o Diretor já gastou (g, em US$): sai do teto da execução. */
+const planToken = (userId: string, plan: EditPlan, spent: number) => seal({ u: userId, k: "plan", plan, g: spent });
 
 /** Eventos enviados ao navegador, um JSON por linha, enquanto o agente trabalha. */
 type AgentEvent =
@@ -106,6 +123,25 @@ type AgentEvent =
   | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
   | { type: "error"; error: string };
 
+/**
+ * Cache incremental da conversa: marca o fim da última mensagem como ponto de
+ * cache. Na volta seguinte tudo até ali (contexto, quadros, chamadas e
+ * resultados anteriores) é lido do cache a 1/10 do preço, em vez de pago de
+ * novo a cada volta. Não altera o histórico guardado: só a cópia enviada,
+ * para nunca passar de um ponto de cache por mensagem.
+ */
+function withCacheBreakpoint(messages: Anthropic.Beta.BetaMessageParam[]): Anthropic.Beta.BetaMessageParam[] {
+  const last = messages[messages.length - 1];
+  if (!last || (last.role !== "user" && last.role !== "assistant") || !last.content) return messages;
+  const blocks = (typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content]) as Anthropic.Beta.BetaContentBlockParam[];
+  const i = blocks.length - 1;
+  const tail = blocks[i];
+  // Blocos de raciocínio não aceitam marcação de cache; os demais aceitam.
+  if (!tail || tail.type === "thinking" || tail.type === "redacted_thinking") return messages;
+  blocks[i] = { ...tail, cache_control: { type: "ephemeral" } } as Anthropic.Beta.BetaContentBlockParam;
+  return [...messages.slice(0, -1), { role: last.role, content: blocks } as Anthropic.Beta.BetaMessageParam];
+}
+
 const jpegs = <T extends { data: string }>(list: T[]) => list.filter((f) => f.data.startsWith("/9j/") && f.data.length > 2000);
 
 export async function POST(req: Request) {
@@ -114,28 +150,53 @@ export async function POST(req: Request) {
     const parsed = RequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw new HttpError(400, "Requisição inválida.");
     const { project, selection, message, history, frames, review, phase } = parsed.data;
-    const pass = review ? unseal<{ n: number; s?: string }>(review.token, user.id, "review") : null;
+    const pass = review ? unseal<{ n: number; s?: string; b?: number }>(review.token, user.id, "review") : null;
     if (review && (!pass || pass.n >= MAX_CRITIC_CYCLES)) throw new HttpError(403, "A revisão visual expirou.");
-    const confirmed = parsed.data.planToken ? unseal<{ plan: EditPlan }>(parsed.data.planToken, user.id, "plan") : null;
+    const confirmed = parsed.data.planToken ? unseal<{ plan: EditPlan; g?: number }>(parsed.data.planToken, user.id, "plan") : null;
     if (phase === "execute" && !confirmed) throw new HttpError(409, "O plano expirou. Peça a edição de novo.");
     const skillId = parsed.data.skill ?? (pass?.s as keyof typeof SKILLS | undefined);
     const skill: Skill | undefined = skillId && skillId in SKILLS ? SKILLS[skillId] : undefined;
 
-    // Pedido pontual vai para o modelo rápido; direção do vídeo inteiro, para o principal.
-    // A mesma classificação roda no navegador, então o preço mostrado é o cobrado.
-    const tier = phase === "auto" ? agentTier(message, !!selection) : "full";
+    // Pedido pontual vai para o modelo rápido; passada no vídeo todo e direção completa, para o principal.
+    // O nível vem do passe da classificação por intenção (o preço que o usuário viu); sem ele, da regra determinística.
+    const tier: AgentTier = phase === "auto" ? (unsealTier(parsed.data.tierToken, user.id, message) ?? agentTier(message, !!selection)) : "full";
     // O plano e a revisão fazem parte da edição completa: quem tem preço é a execução.
     const price = review || phase === "plan" ? 0 : creditCost({ type: "agent", tier, durationSec: projectDuration(project) });
+    if (phase === "plan") await rateLimit("agentPlan", user.id);
     if (!review) await assertCredits(user.id, phase === "plan" ? creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) }) : price);
-    const client = await anthropicClient();
-    const model = tier === "full" || review ? await agentModel() : await fastAgentModel();
+    // Provedor da IA neste pedido: a Anthropic; se ela não atender (sem chave, sem saldo, chave
+    // recusada, sobrecarga, fora do ar) e o Gemini estiver configurado, o pedido segue nele.
+    const reserve = await geminiConfigured();
+    let provider: "anthropic" | "gemini" = "anthropic";
+    let client: Anthropic | null = null;
+    try {
+      client = await anthropicClient();
+    } catch (e) {
+      if (!reserve) throw e;
+      provider = "gemini";
+    }
     const available = await balance(user.id);
 
     const full = tier === "full" && !review;
+    // Um modelo por papel: o julgamento (Diretor) no principal; a execução de um plano pronto e a
+    // conferência visual nos modelos configurados para isso; ajuste pontual no rápido.
+    const mainModel = await agentModel();
+    const modelFor: Record<AgentRole, string> = {
+      director: mainModel,
+      editor: full ? await editorAgentModel() : tier === "adjust" ? await fastAgentModel() : mainModel,
+      critic: await criticAgentModel(),
+    };
+    // Teto de custo de IA deste pedido, derivado do preço (ver ECONOMICS no core): a margem não
+    // depende de a IA "se comportar". Plano: o teto da edição completa, que a execução herda descontado.
+    const fullPrice = creditCost({ type: "agent", tier: "full", durationSec: projectDuration(project) });
+    const uncapped = process.env.NODE_ENV !== "production" && process.env.AGENT_UNCAPPED === "1"; // só para medir custo em desenvolvimento
+    const capUSD = uncapped ? Infinity : review ? Math.max(0, pass?.b ?? 0) : phase === "plan" ? aiBudgetUSD(fullPrice) : Math.max(0, aiBudgetUSD(price) - (confirmed?.g ?? 0));
+    let spent = 0;
     const profile: PacingProfile = skill?.pacing ?? DEFAULT_PACING;
     let working = project;
     const log: string[] = [];
-    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    // Uso por modelo (cada um tem o seu preço).
+    const usageBy = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
     const apply = (ops: OperationInput[]) => applyOperations(working, ops, { validateComponent, validateSfx });
     /** Laudo determinístico do Crítico: ritmo + direção de arte + colisões medidas no quadro. */
     const critique = () => critiqueEdit(working, { skill, screen: screenTexts(working) });
@@ -151,23 +212,61 @@ export async function POST(req: Request) {
     const settle = async () => {
       // Administradores não consomem créditos: o custo real é registrado, o débito é zero.
       const credits = log.length && user.role !== "admin" ? price : 0;
-      if (usage.input || usage.output)
-        await recordUsage({ userId: user.id, kind: "agent", provider: "anthropic", model, tokens: usage, costUSD: anthropicCostUSD(model, usage), credits });
+      let first = true;
+      for (const [model, tokens] of usageBy) {
+        // O custo por modelo é a soma do custo de cada volta (a faixa de preço do Haiku é por requisição).
+        await recordUsage({ userId: user.id, kind: "agent", provider: model.startsWith("gemini") ? "google" : "anthropic", model, tokens, costUSD: costBy.get(model) ?? 0, credits: first ? credits : 0 });
+        first = false;
+      }
       return { credits, balance: credits ? await charge(user.id, credits, "pedido ao agente") : available };
     };
 
     /** Um turno de um dos papéis, em streaming: avisa o navegador assim que uma ferramenta começa a ser usada. */
-    const runTurn = async (role: AgentRole, messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string) => {
+    // Raciocínio onde há decisão: o Diretor decide o vídeo (alto); quem executa um plano pronto ou
+    // confere quadros raciocina menos (médio). Ajuste pontual usa o padrão do modelo rápido.
+    const effortFor = (role: AgentRole): "high" | "medium" | null =>
+      role === "director" ? "high" : role === "critic" || (role === "editor" && (full || tier === "sweep")) ? (process.env.AGENT_EDITOR_EFFORT === "high" ? "high" : "medium") : null;
+    const costBy = new Map<string, number>();
+    const runTurn = async (role: AgentRole, messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string): Promise<Anthropic.Beta.BetaMessage> => {
       const { system, tools } = AGENT_ROLES[role];
-      const stream = client.beta.messages.stream(
+      if (provider === "anthropic" && client) {
+        try {
+          return await anthropicTurn(client, role, system, tools, messages, send, status);
+        } catch (e) {
+          if (!reserve || !shouldFallBack(e, req.signal)) throw e;
+          console.warn("anthropic indisponível; seguindo no modelo reserva (Gemini):", (e as Error).message);
+          provider = "gemini";
+          send({ type: "status", role, text: "Usando o modelo reserva para continuar a edição…" });
+        }
+      }
+      // Modelo reserva: mesma conversa, mesmas ferramentas, mesmo teto de custo.
+      send({ type: "status", role, text: status(role === "director" ? "plan_edit" : "edit_timeline") });
+      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, signal: req.signal });
+      const turn = { input: message.usage.input_tokens, output: message.usage.output_tokens, cacheRead: message.usage.cache_read_input_tokens ?? 0, cacheWrite: 0 };
+      const cost = await geminiCostUSD(turn);
+      account(model, turn, cost, role);
+      return message;
+    };
+
+    const account = (model: string, turn: { input: number; output: number; cacheRead: number; cacheWrite: number }, cost: number, role: AgentRole) => {
+      const acc = usageBy.get(model) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      usageBy.set(model, { input: acc.input + turn.input, output: acc.output + turn.output, cacheRead: acc.cacheRead + turn.cacheRead, cacheWrite: acc.cacheWrite + turn.cacheWrite });
+      costBy.set(model, (costBy.get(model) ?? 0) + cost);
+      spent += cost;
+      if (process.env.NODE_ENV !== "production") console.info(`agente ${role} ${model}: US$ ${cost.toFixed(4)} (total ${spent.toFixed(4)} de ${capUSD.toFixed(4)})`, turn);
+    };
+
+    /** Uma volta de um dos papéis na Anthropic, em streaming: avisa o navegador assim que uma ferramenta começa a ser usada. */
+    const anthropicTurn = async (anthropic: Anthropic, role: AgentRole, system: string, tools: Anthropic.Beta.BetaTool[], messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void, status: (tool: string) => string) => {
+      const model = modelFor[role];
+      const stream = anthropic.beta.messages.stream(
         {
           model,
           max_tokens: 16000,
           system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-          // Raciocínio estendido na direção e na execução completas; o ajuste pontual responde direto.
-          ...(full ? { thinking: { type: "adaptive" as const }, output_config: { effort: "high" as const } } : review ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
+          ...(effortFor(role) ? { thinking: { type: "adaptive" as const }, output_config: { effort: effortFor(role)! } } : {}),
           tools,
-          messages,
+          messages: withCacheBreakpoint(messages),
           ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
         },
         // Se o usuário fechar a aba, a chamada ao modelo é cancelada e para de custar.
@@ -177,10 +276,8 @@ export async function POST(req: Request) {
         if (ev.type === "content_block_start" && ev.content_block.type === "tool_use") send({ type: "status", role, text: status(ev.content_block.name) });
       });
       const response = await stream.finalMessage();
-      usage.input += response.usage.input_tokens;
-      usage.output += response.usage.output_tokens;
-      usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
-      usage.cacheWrite += response.usage.cache_creation_input_tokens ?? 0;
+      const turn = { input: response.usage.input_tokens, output: response.usage.output_tokens, cacheRead: response.usage.cache_read_input_tokens ?? 0, cacheWrite: response.usage.cache_creation_input_tokens ?? 0 };
+      account(model, turn, anthropicCostUSD(model, turn), role);
       return response;
     };
     const textOf = (response: Anthropic.Beta.BetaMessage) =>
@@ -198,6 +295,8 @@ export async function POST(req: Request) {
         { role: "user", content: [...stills, { type: "text", text: `${context(project)}\n\n${budget}\n\n<pedido>\n${message}\n</pedido>` }] },
       ];
       for (let turn = 0; turn < MAX_TURNS_DIRECTOR; turn++) {
+        // O Diretor não pode gastar o orçamento da execução: no máximo metade do teto.
+        if (spent >= capUSD * DIRECTOR_SHARE) break;
         const response = await runTurn("director", messages, send, (tool) => (tool === "read_words" ? "Conferindo a transcrição…" : "Planejando o vídeo por atos…"));
         if (response.stop_reason === "refusal") return { refusal: "Não posso ajudar com esse pedido. Tente descrever a edição de outra forma." };
         if (response.stop_reason !== "tool_use") {
@@ -236,8 +335,21 @@ export async function POST(req: Request) {
     const edit = async (role: "editor" | "critic", messages: Anthropic.Beta.BetaMessageParam[], send: (e: AgentEvent) => void): Promise<string> => {
       let finalText = "";
       let cycles = 0;
-      const maxTurns = full ? MAX_TURNS_EDITOR : MAX_TURNS;
+      const maxTurns = full ? MAX_TURNS_EDITOR : tier === "sweep" ? MAX_TURNS_SWEEP : MAX_TURNS;
+      let warned = false;
       for (let turn = 0; turn < maxTurns; turn++) {
+        // Teto de custo: no fim do orçamento a edição para com o que já foi aplicado (cada etapa
+        // já está na timeline). Antes disso, o agente é avisado para fechar com o que importa.
+        if (spent >= capUSD) {
+          console.warn(`agente: teto de custo atingido (US$ ${spent.toFixed(4)} de ${capUSD.toFixed(4)}); entregando o que já foi aplicado`);
+          return finalText;
+        }
+        if (!warned && turn > 0 && spent >= capUSD * BUDGET_WARN) {
+          warned = true;
+          const last = messages[messages.length - 1];
+          if (last?.role === "user" && Array.isArray(last.content))
+            last.content.push({ type: "text", text: "Aviso do sistema: o orçamento desta edição está no fim. Faça no máximo UMA chamada final de edit_timeline com o que ainda falta de mais importante (na ordem: cortes, legendas, o resto) e então responda." });
+        }
         const response = await runTurn(role, messages, send, (tool) =>
           tool === "read_words" ? "Conferindo a transcrição…" : role === "critic" ? "O Crítico está corrigindo o que viu…" : cycles ? "Corrigindo o que o Crítico apontou…" : log.length ? "Aplicando a próxima etapa…" : "O Editor está montando a edição…",
         );
@@ -246,7 +358,7 @@ export async function POST(req: Request) {
         if (response.stop_reason === "max_tokens") return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
         if (response.stop_reason !== "tool_use") {
           // Crítico determinístico: a montagem pronta é auditada e o laudo volta ao Editor antes da entrega (até 3 ciclos).
-          if (role === "editor" && full && log.length && cycles < MAX_CRITIC_CYCLES && turn < maxTurns - 1) {
+          if (role === "editor" && full && log.length && cycles < MAX_CRITIC_CYCLES && turn < maxTurns - 1 && spent < capUSD * BUDGET_WARN) {
             const audit = auditPacing(working, profile);
             const issues = critique();
             if (audit.issues.some((i) => i.severity === "erro") || issues.some((i) => i.severity === "erro")) {
@@ -300,6 +412,11 @@ export async function POST(req: Request) {
     const run = async (send: (e: AgentEvent) => void) => {
       // ---------- Crítico visual ----------
       if (review && pass) {
+        // Sem orçamento para mais uma conferência: a edição já está entregue.
+        if (capUSD < MIN_REVIEW_USD) {
+          send({ type: "done", message: "ok", project: working, log, credits: 0, balance: available });
+          return;
+        }
         send({ type: "status", role: "critic", text: `O Crítico está conferindo os quadros do vídeo editado (ciclo ${pass.n + 1} de ${MAX_CRITIC_CYCLES})…` });
         const shots = jpegs(review.shots);
         const strip = review.strip && jpegs([{ data: review.strip }]).length ? review.strip : null;
@@ -327,7 +444,8 @@ export async function POST(req: Request) {
         );
         const bill = await settle();
         // Corrigiu algo e ainda há ciclos: o navegador captura de novo e o Crítico reavalia.
-        const next = log.length && pass.n + 1 < MAX_CRITIC_CYCLES ? reviewToken(user.id, pass.n + 1, skill?.id) : undefined;
+        const left = capUSD - spent;
+        const next = log.length && pass.n + 1 < MAX_CRITIC_CYCLES && left >= MIN_REVIEW_USD ? reviewToken(user.id, pass.n + 1, skill?.id, left) : undefined;
         send({ type: "done", message: plainMessage(text) || "ok", project: working, log, ...bill, ...(next ? { reviewToken: next } : {}) });
         return;
       }
@@ -354,7 +472,7 @@ export async function POST(req: Request) {
         ({ plan, notes } = directed);
         if (phase === "plan") {
           // O plano vai para o chat e espera o "sim" do usuário: nada foi editado nem cobrado.
-          send({ type: "plan", plan, planToken: planToken(user.id, plan) });
+          send({ type: "plan", plan, planToken: planToken(user.id, plan, spent) });
           const bill = await settle();
           send({ type: "done", message: plan.resumo, project: working, log, ...bill, awaitingConfirmation: true });
           return;
@@ -395,7 +513,8 @@ export async function POST(req: Request) {
         }
       }
       const bill = await settle();
-      send({ type: "done", ...(log.length ? { reviewToken: reviewToken(user.id, 0, skill?.id) } : {}), message: plainMessage(text) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
+      const left = capUSD - spent;
+      send({ type: "done", ...(log.length && left >= MIN_REVIEW_USD ? { reviewToken: reviewToken(user.id, 0, skill?.id, left) } : {}), message: plainMessage(text) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
     };
 
     const encoder = new TextEncoder();

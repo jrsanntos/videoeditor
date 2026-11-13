@@ -102,7 +102,7 @@ const comparisonSplit = define({
   id: "comparison_split",
   name: "Comparativo",
   description:
-    "Comparativo animado em duas metades: Antes vs. Depois, Prós vs. Contras, Mito vs. Verdade. O lado A entra primeiro; o lado B entra em `revealAt` (quando a fala vira) e ganha o destaque. Cena de tela cheia: use uma vez, numa virada de raciocínio.",
+    "Comparativo animado em duas metades: Antes vs. Depois, Prós vs. Contras, Mito vs. Verdade. O lado A entra primeiro; o lado B entra em `revealAt` (quando a fala vira) e ganha o destaque. Marcadores (`marks`): 'contrast' põe ✕ no lado A e ✓ no B (A é o errado/antes/mito); 'reversed' põe ✓ no A e ✕ no B (B é o proibido/contra/errado); 'neutral' usa pontos nos dois (dois tipos ou duas opções, sem certo e errado). Escolha pelo SENTIDO: um ✓ num item proibido é desinformação. Cena de tela cheia: use uma vez, numa virada de raciocínio.",
   defaultDuration: 6,
   schema: z.object({
     leftTitle: z.string().min(1).max(18).default("Antes"),
@@ -110,10 +110,11 @@ const comparisonSplit = define({
     left: z.array(z.string().min(1).max(42)).min(1).max(3).describe("pontos do lado A, curtos"),
     right: z.array(z.string().min(1).max(42)).min(1).max(3).describe("pontos do lado B, curtos"),
     revealAt: at,
+    marks: z.enum(["contrast", "reversed", "neutral"]).default("contrast").describe("contrast: ✕ no A, ✓ no B. reversed: ✓ no A, ✕ no B. neutral: pontos nos dois"),
     fullscreen: z.boolean().default(true),
   }),
-  example: { leftTitle: "Antes", rightTitle: "Depois", left: ["3 horas editando", "Vídeo parado"], right: ["10 minutos", "Ritmo de profissional"], revealAt: 2.4 },
-  labels: { leftTitle: "Título do lado A", rightTitle: "Título do lado B", left: "Pontos do lado A", right: "Pontos do lado B", revealAt: "Quando o lado B entra (s)", fullscreen: "Tela cheia" },
+  example: { leftTitle: "Antes", rightTitle: "Depois", left: ["3 horas editando", "Vídeo parado"], right: ["10 minutos", "Ritmo de profissional"], revealAt: 2.4, marks: "contrast" },
+  labels: { leftTitle: "Título do lado A", rightTitle: "Título do lado B", left: "Pontos do lado A", right: "Pontos do lado B", revealAt: "Quando o lado B entra (s)", marks: "Marcadores", fullscreen: "Tela cheia" },
   sounds: (params, duration) => {
     const reveal = params.revealAt ?? Math.min(duration * 0.42, 2.6);
     return [{ at: 0.05, sfx: "swoosh_texto" as const }, { at: reveal, sfx: "whoosh_rapido" as const }, ...params.right.map((_, i) => ({ at: reveal + 0.35 + i * 0.3, sfx: i === 0 ? ("pop" as const) : ("click_suave" as const) }))];
@@ -173,18 +174,25 @@ const comparisonSplit = define({
         ctx.lineCap = "round";
         const mx = px + 16 * u;
         const my = cy + layout.style.size * 0.55;
+        // O marcador segue o sentido de cada lado, não a posição: "proibido" nunca leva ✓.
+        const mark = params.marks === "neutral" ? "dot" : (index === 1) === (params.marks !== "reversed") ? "check" : "cross";
         ctx.beginPath();
-        if (index === 1) {
+        if (mark === "check") {
           ctx.moveTo(mx - 14 * u, my);
           ctx.lineTo(mx - 3 * u, my + 12 * u);
           ctx.lineTo(mx + 16 * u, my - 14 * u);
-        } else {
+          ctx.stroke();
+        } else if (mark === "cross") {
           ctx.moveTo(mx - 12 * u, my - 12 * u);
           ctx.lineTo(mx + 12 * u, my + 12 * u);
           ctx.moveTo(mx + 12 * u, my - 12 * u);
           ctx.lineTo(mx - 12 * u, my + 12 * u);
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = color;
+          ctx.arc(mx, my, 8 * u, 0, Math.PI * 2);
+          ctx.fill();
         }
-        ctx.stroke();
         drawRich(ctx, layout, px + 54 * u, cy);
         region(`${index ? "right" : "left"}.${i}`, px + 54 * u, cy, layout.width, layout.height);
         ctx.restore();
@@ -603,12 +611,12 @@ const stepProgressBar = define({
         if (i === current) {
           const lk = EASE.snap(stage(t, starts[i]!, 0.4));
           ctx.globalAlpha = out * lk;
-          ctx.font = font(800, 34 * u);
+          ctx.font = font(800, 44 * u);
           ctx.textBaseline = "middle";
           ctx.textAlign = "left";
           ctx.fillStyle = brand.textColor;
-          ctx.fillText(`${i + 1}. ${s.label}`, x + thick + 16 * u, y + 22 * u);
-          region(`steps.${i}.label`, x + thick + 16 * u, y, ctx.measureText(`${i + 1}. ${s.label}`).width, 44 * u);
+          ctx.fillText(`${i + 1}. ${s.label}`, x + thick + 16 * u, y + 26 * u);
+          region(`steps.${i}.label`, x + thick + 16 * u, y, ctx.measureText(`${i + 1}. ${s.label}`).width, 52 * u);
           ctx.globalAlpha = out * clamp01(e * 1.6);
         }
       });
@@ -635,7 +643,7 @@ const stepProgressBar = define({
       const lk = EASE.snap(stage(t, starts[current]!, 0.4));
       const label = `${current + 1}/${n}  ${params.steps[current]!.label}`;
       ctx.globalAlpha = out * lk;
-      ctx.font = font(800, 34 * u);
+      ctx.font = font(800, 44 * u);
       ctx.textBaseline = "top";
       ctx.textAlign = "left";
       ctx.fillStyle = brand.textColor;

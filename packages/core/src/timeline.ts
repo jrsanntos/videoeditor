@@ -9,7 +9,7 @@ import type {
   TrackKind,
   Word,
 } from "./schema";
-import { CaptionStyleSchema, defaultBrandKit, FORMATS, LookSchema, MusicSchema, type AspectRatio, type Genre } from "./schema";
+import { CaptionStyleSchema, defaultBrandKit, FORMATS, LookSchema, LOW_CONFIDENCE, MusicSchema, type AspectRatio, type Genre } from "./schema";
 
 export const r3 = (n: number) => Math.round(n * 1000) / 1000;
 export const clipEnd = (c: { start: number; duration: number }) => r3(c.start + c.duration);
@@ -319,6 +319,14 @@ export function timelineWords(project: Project, range?: TimeRange): TimelineWord
     }
   }
   return out.sort((a, b) => a.start - b.start);
+}
+
+/** A palavra precisa de conferência na legenda: o transcritor não teve certeza e ninguém conferiu ainda. */
+export const isDoubtful = (w: Word) => w.confidence !== undefined && w.confidence < LOW_CONFIDENCE && !w.reviewed && !w.hidden && w.text.trim().length > 0;
+
+/** Palavras da timeline que a revisão rápida de legenda deve mostrar, em ordem. */
+export function wordsToReview(project: Project): TimelineWord[] {
+  return timelineWords(project).filter(isDoubtful);
 }
 
 /** Converte faixas em tempo de origem de um asset para tempo de timeline. */

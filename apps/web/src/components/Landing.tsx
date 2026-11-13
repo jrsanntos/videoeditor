@@ -1,5 +1,7 @@
-import { PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
+import { creditCost, formatCredits, PLANS, SIGNUP_CREDITS, SKILLS, TOPUPS, videosEstimate, type PlanId } from "@videoeditor/core";
 import { Icon } from "./icons";
+import { LandingDemo } from "./LandingDemo";
+import { DEMOS } from "./landing-demos";
 import { LandingStyles } from "./LandingStyles";
 import { LandingUpload } from "./LandingUpload";
 
@@ -8,6 +10,9 @@ const videos = (credits: number) => {
   const { min, max } = videosEstimate(credits);
   return min === max ? String(max) : `${min} a ${max}`;
 };
+
+/** Transcrição + edição completa de um vídeo de até 1 minuto: o número da tabela, não um texto fixo. */
+const SHORT_VIDEO_CREDITS = creditCost({ type: "ingest", durationSec: 60 }) + creditCost({ type: "agent", tier: "full", durationSec: 60 });
 
 const wrap = "mx-auto w-full max-w-[1240px] px-4 sm:px-6";
 const h2 = "lp-display mt-4 text-[32px] font-semibold leading-[1.08] sm:text-[46px]";
@@ -44,15 +49,27 @@ const FAQ = [
   },
   {
     q: "Como funcionam os créditos?",
-    a: "Créditos pagam o que usa inteligência artificial: transcrição, edição completa e ajustes por texto. Tudo que você faz à mão na timeline e a exportação no navegador são gratuitos. Um vídeo curto, do bruto ao pronto, costuma gastar de 20 a 28 créditos.",
+    a: `Créditos pagam o que usa inteligência artificial: transcrição, edição completa e ajustes por texto. Tudo que você faz à mão na timeline e a exportação no navegador são gratuitos. Um vídeo de até 1 minuto, do bruto ao pronto, gasta ${formatCredits(SHORT_VIDEO_CREDITS)} créditos, mais 1 por ajuste que você pedir por texto.`,
   },
   {
     q: "Posso testar sem pagar?",
-    a: `Sim. Envie o vídeo nesta página e veja a prévia do estilo e as pausas encontradas sem criar conta. Para a IA editar, crie a conta grátis (com Google ou e-mail): você ganha ${SIGNUP_CREDITS} créditos, sem cartão, o suficiente para os primeiros vídeos.`,
+    a: `Sim. Envie o vídeo nesta página e veja a prévia do estilo e as pausas encontradas sem criar conta. Para a IA editar, crie a conta grátis (com Google ou e-mail): você ganha ${SIGNUP_CREDITS} créditos, sem cartão, o suficiente para a IA editar um vídeo de até ${PLANS.free.maxUploadMinutes} minutos.`,
   },
   {
     q: "Para que tipo de vídeo serve?",
     a: "Vídeo falado para a câmera: Reels, Shorts e TikTok, aulas, vídeos de vendas e conteúdo de especialistas como médicos, advogados, consultores e criadores.",
+  },
+  {
+    q: "A IA tira “né”, “tipo” e “hum”?",
+    a: "Sim. Sons de hesitação (“hum”, “ahn”, “é…”) saem sempre; “tipo” e “né” saem quando estão soltos na frase, como muleta. Em “um tipo de produto” a palavra fica. No estilo Autoridade, um “né” natural pode ficar.",
+  },
+  {
+    q: "E se a legenda errar uma palavra?",
+    a: "As palavras em que a transcrição ficou em dúvida aparecem destacadas para você conferir em um clique. Nomes, marcas e termos técnicos que você cadastra no vocabulário da sua marca saem escritos do jeito certo nos próximos vídeos.",
+  },
+  {
+    q: "Funciona com vídeo do iPhone?",
+    a: "Funciona com MP4, MOV e WebM. Se o iPhone gravou em HEVC (alta eficiência) e o seu navegador não lê esse formato, avisamos logo no envio e mostramos como resolver: em Ajustes › Câmera › Formatos, escolha “Mais Compatível” para os próximos vídeos.",
   },
   {
     q: "E se eu não gostar do que a IA fez?",
@@ -62,6 +79,7 @@ const FAQ = [
 
 const NAV = [
   ["#enviar", "Testar agora"],
+  ...(DEMOS.length ? [["#antes-depois", "Antes e depois"]] : []),
   ["#estilos", "Estilos"],
   ["#como-funciona", "Como funciona"],
   ["#recursos", "Recursos"],
@@ -110,7 +128,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
               <span className="bg-[linear-gradient(100deg,#f64cff,#ffd1ff_45%,#59ffcd)] bg-clip-text text-transparent">Receba pronto para postar.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-[640px] text-[18px] leading-relaxed text-haze sm:text-[19px]">
-              Cortes, legendas, zooms e motion design montados a partir da sua fala, no estilo que você escolher. Teste agora com o seu próprio vídeo, sem sair desta página.
+              A IA tira os erros, as pausas e os “né”, legenda, enquadra e anima o vídeo a partir da sua fala. Você revisa, ajusta o que quiser e posta. Teste agora com um vídeo seu, sem sair desta página.
             </p>
             <ul className="mt-7 flex flex-wrap justify-center gap-x-6 gap-y-2 text-[14.5px] text-haze">
               {[`${SIGNUP_CREDITS} créditos grátis`, "Sem cartão", "Entre com Google", "O vídeo não sai do seu navegador"].map((t) => (
@@ -136,6 +154,18 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
             ))}
           </dl>
         </section>
+
+        {/* Antes e depois: só com vídeos reais exportados pelo editor */}
+        {DEMOS.length > 0 && (
+          <section id="antes-depois" className={`${wrap} scroll-mt-28 pt-24 sm:pt-32`}>
+            <p className="lp-overline">Antes e depois</p>
+            <h2 className={`${h2} max-w-3xl`}>O mesmo vídeo, antes e depois da IA.</h2>
+            <p className={lead}>Vídeo gravado no celular, sem roteiro decorado. À direita, o que o editor entregou e foi exportado como está.</p>
+            <div className="mt-10">
+              <LandingDemo />
+            </div>
+          </section>
+        )}
 
         {/* Estilos */}
         <section id="estilos" className={`${wrap} scroll-mt-28 pt-24 sm:pt-32`}>
@@ -178,7 +208,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
                 <span className="text-[13px] text-haze">arraste para reposicionar</span>
               </div>
             </Tile>
-            <Tile title="Limpeza automática" text="Erros de gravação, recomeços e pausas longas saem em um clique. A fala fica contínua e natural." />
+            <Tile title="Limpeza automática" text="Erros de gravação, recomeços, “hum”, “tipo”, “né” e pausas longas saem em um clique. A fala fica contínua e natural." />
             <Tile title="Câmera virtual" text="Punch-ins, avanços lentos e pans fechados no seu rosto, na palavra em que a voz enfatiza." />
             <Tile title="Motion design pronto" text="Título de gancho com profundidade, listas, números animados e cartões cinéticos nas cores da sua marca." />
             <Tile className="lg:col-span-3" wide title="Sua marca em todo vídeo" text="Cores, fontes, nome e credencial definidos uma vez. Cada vídeo novo já nasce com a sua identidade.">
@@ -266,7 +296,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
                     {plan.priceBRL > 0 && <span className="text-haze">/mês</span>}
                   </p>
                   <p className="mt-3 text-[15px] leading-snug text-haze">
-                    {id === "free" ? `${SIGNUP_CREDITS} créditos de boas-vindas: ${videos(SIGNUP_CREDITS)} vídeos curtos para testar` : `${plan.monthlyCredits.toLocaleString("pt-BR")} créditos por mês: cerca de ${videos(plan.monthlyCredits)} vídeos curtos`}
+                    {id === "free" ? `${SIGNUP_CREDITS} créditos de boas-vindas: ${videos(SIGNUP_CREDITS) === "1" ? "1 vídeo editado pela IA" : `${videos(SIGNUP_CREDITS)} vídeos curtos`} para testar` : `${plan.monthlyCredits.toLocaleString("pt-BR")} créditos por mês: cerca de ${videos(plan.monthlyCredits)} vídeos curtos`}
                   </p>
                   <ul className="mt-7 flex-1 space-y-3 border-t border-edge pt-6 text-[15.5px]">
                     {[

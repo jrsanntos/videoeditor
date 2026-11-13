@@ -405,13 +405,16 @@ export function Timeline() {
                   <div
                     key={id}
                     data-testid="caption-clip"
-                    title={`${g.text || "(vazia)"} — clique para editar, arraste para mover`}
+                    title={`${g.text || "(vazia)"} — ${g.doubtful.length ? "confira: a transcrição pode ter errado aqui. " : ""}clique para editar, arraste para mover`}
+                    data-doubtful={g.doubtful.length ? "true" : undefined}
                     onPointerDown={(e) => startCaptionDrag(e, g)}
                     onDoubleClick={(e) => e.stopPropagation()}
                     className={`absolute bottom-1 top-1 cursor-grab overflow-hidden rounded-md border px-1.5 text-[10.5px] leading-[22px] transition-colors ${
                       g.hidden
                         ? "border-dashed border-zinc-700 bg-transparent text-zinc-600 line-through"
-                        : project.captions.enabled
+                        : g.doubtful.length && project.captions.enabled
+                          ? "border-dashed border-amber-300/80 bg-amber-400/15 text-amber-50 hover:bg-amber-400/25"
+                          : project.captions.enabled
                           ? "border-sky-400/40 bg-sky-400/15 text-sky-100 hover:bg-sky-400/25"
                           : "border-zinc-700 bg-zinc-800/60 text-zinc-500"
                     } ${selected ? "ring-2 ring-white" : ""}`}

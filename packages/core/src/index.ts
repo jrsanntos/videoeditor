@@ -4,6 +4,7 @@ export * from "./ops";
 export * from "./silence";
 export * from "./credits";
 export * from "./retakes";
+export * from "./fillers";
 export * from "./agent-context";
 export * from "./template";
 export * from "./skills";
