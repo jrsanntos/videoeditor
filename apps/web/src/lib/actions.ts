@@ -378,7 +378,19 @@ function transcriptionLanguage(): string {
  * Envia só o áudio leve (16 kHz mono) para transcrição com timestamps por
  * palavra e mede a energia da voz em cada uma. Devolve true se deu certo.
  */
-export async function transcribe(opts: { captions?: boolean } = {}): Promise<boolean> {
+// Transcrição em andamento por arquivo: um segundo pedido simultâneo espera o primeiro em vez de cobrar de novo.
+const transcribing = new Map<string, Promise<boolean>>();
+export function transcribe(opts: { captions?: boolean } = {}): Promise<boolean> {
+  const project = useEditor.getState().project;
+  const key = project ? (primaryAssetId(project) ?? "") : "";
+  const running = transcribing.get(key);
+  if (running) return running;
+  const p = transcribeOnce(opts).finally(() => transcribing.delete(key));
+  transcribing.set(key, p);
+  return p;
+}
+
+async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolean> {
   // O saldo vem do servidor: se a conta ainda não carregou, espera por ela em vez de acusar falta de créditos.
   if (!useEditor.getState().user) await refreshMe();
   const { project, credits, setBusy, setNotice, setProject, setCredits } = useEditor.getState();
@@ -889,7 +901,15 @@ export function autoEditCost(project: Project): number {
  * conta. Sem créditos suficientes, o assistente abre com o estilo marcado.
  * Devolve true se havia um vídeo pendente.
  */
-export async function resumePending(): Promise<boolean> {
+// Uma retomada por carregamento da página: o efeito do editor pode rodar duas vezes
+// (modo estrito, remontagem) e duas retomadas importariam e cobrariam o mesmo vídeo em dobro.
+let resuming: Promise<boolean> | null = null;
+export function resumePending(): Promise<boolean> {
+  resuming ??= resumePendingOnce();
+  return resuming;
+}
+
+async function resumePendingOnce(): Promise<boolean> {
   const pending = await readPending();
   if (!pending) return false;
   // Sai da fila antes de importar: um vídeo que falha (longo demais para o plano) não volta em loop.
