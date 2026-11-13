@@ -24,7 +24,15 @@ export async function POST(req: Request) {
     // A duração informada só serve para a checagem prévia; a cobrança usa a medida pelo provedor.
     await assertCredits(user.id, creditCost({ type: "ingest", durationSec: duration }));
 
-    const { transcript, seconds } = await transcribeAudio(file);
+    const language = String(form?.get("language") ?? "").slice(0, 5).toLowerCase() || undefined;
+    let vocabulary: string[] = [];
+    try {
+      const parsed = JSON.parse(String(form?.get("vocabulary") ?? "[]")) as unknown;
+      if (Array.isArray(parsed)) vocabulary = parsed.filter((v): v is string => typeof v === "string").slice(0, 40).map((v) => v.slice(0, 40));
+    } catch {
+      // vocabulário malformado: transcreve sem ele
+    }
+    const { transcript, seconds } = await transcribeAudio(file, { language, vocabulary });
     const credits = creditCost({ type: "ingest", durationSec: seconds });
     await recordUsage({
       userId: user.id,

@@ -42,10 +42,41 @@ type GroqVerbose = {
   language?: string;
   duration?: number;
   words?: { word: string; start: number; end: number }[];
+  segments?: { start: number; end: number; avg_logprob?: number; no_speech_prob?: number }[];
 };
 
+/**
+ * Dica de contexto para o transcritor, por idioma. O Whisper tende a "limpar"
+ * a fala (apaga "hum", gaguejos e repetições); um texto de exemplo com essas
+ * marcas faz ele transcrever como foi dito — é disso que a limpeza de erros e
+ * de muletas precisa para enxergar o que cortar.
+ */
+const VERBATIM_HINT: Record<string, string> = {
+  pt: "Hum, é... então, tipo, eu, eu acho que, ahn, a gente precisa, né, vender mais. O o segredo é, é consistência.",
+  en: "Um, uh... so, like, I, I think that, uh, we need to, you know, sell more. The the secret is, is consistency.",
+  es: "Eh, este... o sea, yo, yo creo que, eh, tenemos que, ¿sabes?, vender más. El el secreto es, es constancia.",
+};
+
+/** Idiomas em que a dica e o idioma fixo valem; fora deles o transcritor detecta sozinho. */
+export const TRANSCRIBE_LANGUAGES = Object.keys(VERBATIM_HINT);
+
+/**
+ * Confiança de cada palavra, a partir do trecho (segmento) em que ela cai:
+ * probabilidade média do segmento, derrubada quando o transcritor achou que
+ * ali não havia fala (onde costuma inventar texto).
+ */
+export function wordConfidence(words: { start: number; end: number }[], segments: GroqVerbose["segments"] = []): (number | undefined)[] {
+  return words.map((w) => {
+    const mid = (w.start + w.end) / 2;
+    const seg = segments.find((s) => mid >= s.start && mid <= s.end) ?? segments.find((s) => w.start < s.end && w.end > s.start);
+    if (!seg || seg.avg_logprob === undefined) return undefined;
+    const p = Math.exp(seg.avg_logprob) * (1 - Math.min(1, Math.max(0, (seg.no_speech_prob ?? 0) - 0.3)));
+    return Math.round(Math.min(1, Math.max(0, p)) * 100) / 100;
+  });
+}
+
 /** Transcrição com timestamps por palavra via Groq Whisper. */
-export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcript; seconds: number }> {
+export async function transcribeAudio(file: Blob, opts: { language?: string; vocabulary?: string[] } = {}): Promise<{ transcript: Transcript; seconds: number }> {
   const key = await getSetting("GROQ_API_KEY");
   if (!key)
     throw new HttpError(
@@ -61,6 +92,15 @@ export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcr
   body.append("model", "whisper-large-v3-turbo");
   body.append("response_format", "verbose_json");
   body.append("timestamp_granularities[]", "word");
+  body.append("timestamp_granularities[]", "segment");
+  const language = opts.language && TRANSCRIBE_LANGUAGES.includes(opts.language) ? opts.language : undefined;
+  if (language) {
+    body.append("language", language);
+    // Vocabulário do usuário entra na dica: nomes e termos saem escritos do jeito certo.
+    // O transcritor só lê o fim de uma dica longa, então ela é curta.
+    const vocabulary = (opts.vocabulary ?? []).map((v) => v.trim()).filter(Boolean).join(", ").slice(0, 500);
+    body.append("prompt", vocabulary ? `${VERBATIM_HINT[language]} ${vocabulary}.` : VERBATIM_HINT[language]!);
+  }
 
   const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST",
@@ -78,7 +118,10 @@ export async function transcribeAudio(file: Blob): Promise<{ transcript: Transcr
   }
   const data = (await res.json()) as GroqVerbose;
   // Vídeo sem fala (cena de ação, b-roll, demonstração muda) é um vídeo válido: transcrição vazia, não erro.
-  const words = (data.words ?? []).map((w, i) => ({ id: `w${i}`, text: w.word.trim(), start: w.start, end: w.end }));
+  // Pontuação solta ("." num trecho de ruído) não é palavra.
+  const raw = (data.words ?? []).filter((w) => /[\p{L}\p{N}]/u.test(w.word));
+  const confidence = wordConfidence(raw, data.segments);
+  const words = raw.map((w, i) => ({ id: `w${i}`, text: w.word.trim(), start: w.start, end: w.end, ...(confidence[i] !== undefined ? { confidence: confidence[i] } : {}) }));
   return {
     transcript: { language: data.language, words },
     seconds: data.duration ?? words[words.length - 1]?.end ?? 0,

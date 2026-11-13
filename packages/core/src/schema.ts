@@ -19,12 +19,22 @@ export const WordSchema = z.object({
    * (medida no navegador). Positivo = dita com mais força: ênfase real.
    */
   energy: z.number().optional(),
+  /**
+   * Confiança do transcritor no trecho desta palavra (0–1). Abaixo de
+   * LOW_CONFIDENCE a palavra vai para a revisão rápida de legendas.
+   */
+  confidence: z.number().min(0).max(1).optional(),
+  /** O usuário já conferiu (ou corrigiu) esta palavra na revisão. */
+  reviewed: z.boolean().optional(),
   /** Some só da legenda; a fala e a transcrição continuam. */
   hidden: z.boolean().optional(),
   /** Deslocamento (s) da legenda desta palavra na timeline. */
   shift: z.number().min(-5).max(5).optional(),
 });
 export type Word = z.infer<typeof WordSchema>;
+
+/** Abaixo disto a palavra é marcada para conferência na legenda. */
+export const LOW_CONFIDENCE = 0.55;
 
 export const TranscriptSchema = z.object({
   language: z.string().optional(),
@@ -309,6 +319,12 @@ export const BrandKitSchema = z.object({
    * liga (1 clique) ou pede explicitamente ao agente.
    */
   showLowerThird: z.boolean().default(false),
+  /**
+   * Nomes, marcas e termos técnicos que a transcrição deve escrever do jeito
+   * certo (ex.: "Dra. Ana Souza", "Hipertrofia Max", "CRM"). Vão como dica
+   * para o transcritor em todo vídeo.
+   */
+  vocabulary: z.array(z.string().trim().min(1).max(40)).max(40).default([]),
 });
 export type BrandKit = z.infer<typeof BrandKitSchema>;
 export const defaultBrandKit = (): BrandKit => BrandKitSchema.parse({});

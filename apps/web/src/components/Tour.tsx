@@ -11,7 +11,7 @@ const STEPS: Step[] = [
   {
     target: "clean",
     title: "Comece pela Limpeza automática",
-    text: "Um clique transcreve a fala, remove os erros de gravação e retira as pausas. O vídeo fica enxuto e profissional antes de qualquer efeito — e todo o resto da edição parte daqui.",
+    text: "Um clique transcreve a fala, remove os erros de gravação, as muletas (“hum”, “tipo”, “né”) e as pausas. O vídeo fica enxuto e profissional antes de qualquer efeito — e todo o resto da edição parte daqui.",
     action: { label: "Limpar meu vídeo", run: () => void autoClean() },
     side: "right",
   },

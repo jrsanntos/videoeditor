@@ -9,6 +9,7 @@ import {
   type EditTemplate,
   type OperationInput,
   findRetakes,
+  fillersFor,
   AgentOperationSchema,
   ProjectSchema,
   safeArea,
@@ -1291,5 +1292,30 @@ describe("takes ruins com transcrições reais (Groq Whisper)", () => {
       "Então,[0.00-0.56] o[0.56-0.86] segredo[0.86-1.52] do[1.52-1.68] sucesso,[1.68-2.34] o[2.34-2.56] segredo[2.56-3.10] do[3.10-3.28] sucesso[3.28-3.70] é[3.70-3.96] consistência.[3.96-5.44]",
     );
     expect(r[0]).toMatchObject({ kind: "restart", confidence: "alta", cutText: "o segredo do sucesso," });
+  });
+});
+
+describe("muletas", () => {
+  const words = (s: string) =>
+    s.split(" ").map((text, i) => ({ id: `w${i}`, text, start: i * 0.4, end: i * 0.4 + 0.3, clipId: "c", assetId: "a" }));
+  const cut = (s: string, level: "hesitations" | "all" = "all") => fillersFor(words(s), level).map((f) => f.text);
+
+  it("hesitações saem sempre; 'é' verbo fica", () => {
+    expect(cut("Hum, eu acho que é... é, é importante, ahn, medir. Isso é fácil.")).toEqual(["Hum,", "é...", "é,", "ahn,"]);
+  });
+
+  it("'tipo' e 'né' soltos saem; com função na frase ficam", () => {
+    expect(cut("a gente precisa, tipo, vender mais, né? Esse tipo de produto vende. Faça assim todo dia.")).toEqual(["tipo,", "né?"]);
+  });
+
+  it("no nível 'hesitations' as palavras de apoio ficam", () => {
+    expect(cut("Hum, a gente precisa, tipo, vender mais, né?", "hesitations")).toEqual(["Hum,"]);
+  });
+
+  it("remove_fillers corta da timeline", () => {
+    const w = words("Hum, a gente precisa, tipo, vender mais.").map(({ clipId: _c, assetId: _a, ...x }) => x);
+    const p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 4, hasAudio: true, transcript: { words: w } });
+    const { project } = applyOperations(p, [{ op: "remove_fillers" }]);
+    expect(timelineWords(project).map((x) => x.text).join(" ")).toBe("a gente precisa, vender mais.");
   });
 });

@@ -41,6 +41,7 @@ import {
   wordCutRange,
 } from "./timeline";
 import { findRetakes } from "./retakes";
+import { fillersFor } from "./fillers";
 import { silencesFromWords, SILENCE_MODES } from "./silence";
 import { timelineActionRanges, voiceRanges } from "./analysis";
 
@@ -96,6 +97,13 @@ const RemoveRetakes = z
     minConfidence: z.enum(["alta", "media"]).default("alta").describe("alta = só erros quase certos; media inclui os duvidosos"),
   })
   .describe("Remove de forma determinística os takes ruins detectados na transcrição (retomadas, gaguejos, avisos de erro), mantendo o último take.");
+const RemoveFillers = z
+  .object({
+    op: z.literal("remove_fillers"),
+    level: z.enum(["hesitations", "all"]).default("all").describe("hesitations: só sons sem conteúdo (hum, ahn, é…). all: também 'tipo', 'né', 'sabe?', 'tá?' ditos soltos"),
+    minConfidence: z.enum(["alta", "media"]).default("alta").describe("media inclui interjeições ambíguas ('ah', 'eh')"),
+  })
+  .describe("Remove muletas da fala detectadas na transcrição (hesitações e palavras de apoio soltas). Palavras com função na frase ('um tipo de', 'faça assim') ficam.");
 const RemoveSilences = z
   .object({
     op: z.literal("remove_silences"),
@@ -339,6 +347,7 @@ export const OperationSchema = z.discriminatedUnion("op", [
   RemoveRanges,
   CutWords,
   RemoveRetakes,
+  RemoveFillers,
   RemoveSilences,
   Split,
   DeleteClip,
@@ -379,6 +388,7 @@ const NEEDS_ANCHOR = "informe atWord (id de palavra) ou atSource (segundos do v�
 export const AgentOperationSchema = z.discriminatedUnion("op", [
   CutWords,
   RemoveRetakes,
+  RemoveFillers,
   RemoveSilences.omit({ range: true }),
   CutSource,
   AddZoom.omit({ start: true }).refine(anchored, NEEDS_ANCHOR),
@@ -468,6 +478,16 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       const takes = findRetakes(words).filter((r) => op.minConfidence === "media" || r.confidence === "alta");
       if (!takes.length) return "nenhum take ruim encontrado";
       return cutWords(p, takes).replace("corte(s)", "take(s) ruim(ns) cortado(s)");
+    }
+    case "remove_fillers": {
+      const words = timelineWords(p);
+      if (!words.length) {
+        if (Object.values(p.assets).some((a) => a.transcript)) return "sem fala: nenhuma muleta para tirar";
+        throw new Error("o vídeo ainda não tem transcrição; transcreva antes de remover muletas");
+      }
+      const fillers = fillersFor(words, op.level, op.minConfidence);
+      if (!fillers.length) return "nenhuma muleta encontrada";
+      return cutWords(p, fillers).replace(/^\d+ corte\(s\)/, `${fillers.length} muleta(s) removida(s)`);
     }
     case "remove_silences": {
       const words = timelineWords(p);

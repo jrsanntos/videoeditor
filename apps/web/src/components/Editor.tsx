@@ -100,7 +100,7 @@ function UploadScreen() {
   const [reference, setReference] = useState("");
   const pick = (file?: File | null) => file && void importVideo(file, { referenceUrl: reference });
   const steps = [
-    { icon: <Icon.wand size={16} />, title: "Limpeza automática", text: "Erros de gravação e pausas saem em um clique." },
+    { icon: <Icon.wand size={16} />, title: "Limpeza automática", text: "Erros de gravação, muletas e pausas saem em um clique." },
     { icon: <Icon.sparkles size={16} />, title: "Diretor de IA", text: "Analisa o vídeo, planeja o ritmo e monta a edição." },
     { icon: <Icon.download size={16} />, title: "Ajuste e exporte", text: "Edite na timeline de graça e exporte no navegador." },
   ];

@@ -113,7 +113,7 @@ export function Sidebar() {
             <span className="flex items-center gap-2 text-[13px] font-semibold">
               <Icon.wand size={16} /> Limpeza automática
             </span>
-            <span className="mt-1 block text-[11.5px] leading-snug text-white/85">Remove erros de gravação e retira pausas, deixando profissional e limpo.</span>
+            <span className="mt-1 block text-[11.5px] leading-snug text-white/85">Remove erros de gravação, muletas (“hum”, “tipo”, “né”) e pausas, deixando profissional e limpo.</span>
             {!hasTranscript && <span className="mt-1.5 inline-block rounded-md bg-black/25 px-1.5 py-0.5 text-[10.5px] text-white/90">inclui a transcrição · {credits(ingestCost)}</span>}
           </button>
           <div className="rounded-xl border border-line bg-ink-850 p-2.5" data-testid="silence-panel">

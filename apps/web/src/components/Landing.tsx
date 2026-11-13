@@ -178,7 +178,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
                 <span className="text-[13px] text-haze">arraste para reposicionar</span>
               </div>
             </Tile>
-            <Tile title="Limpeza automática" text="Erros de gravação, recomeços e pausas longas saem em um clique. A fala fica contínua e natural." />
+            <Tile title="Limpeza automática" text="Erros de gravação, recomeços, “hum”, “tipo”, “né” e pausas longas saem em um clique. A fala fica contínua e natural." />
             <Tile title="Câmera virtual" text="Punch-ins, avanços lentos e pans fechados no seu rosto, na palavra em que a voz enfatiza." />
             <Tile title="Motion design pronto" text="Título de gancho com profundidade, listas, números animados e cartões cinéticos nas cores da sua marca." />
             <Tile className="lg:col-span-3" wide title="Sua marca em todo vídeo" text="Cores, fontes, nome e credencial definidos uma vez. Cada vídeo novo já nasce com a sua identidade.">

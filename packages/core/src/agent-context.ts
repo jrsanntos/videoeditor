@@ -1,5 +1,6 @@
 import { GENRE_NAMES, type Project, type StyleReferenceProfile, type TimeRange } from "./schema";
 import { findRetakes } from "./retakes";
+import { findFillers } from "./fillers";
 import { clipEnd, contextAssets, hasSpeed, mainClips, mainGaps, projectDuration, projectGenre, r3, sourceEnd, subjectAt, timelineWords, type TimelineWord } from "./timeline";
 import { timelineActionRanges, timelinePeaks, voiceRanges } from "./analysis";
 import { isCloseUp } from "./layout";
@@ -140,6 +141,15 @@ export function buildAgentContext(project: Project, selection?: TimeRange | null
     );
     for (const r of takes)
       lines.push(`${r.confidence} | ${r.kind} | cortar {"from":"${r.from}","to":"${r.to}"} "${r.cutText}" → fica "${r.keepText}"`);
+  }
+  const fillers = findFillers(words);
+  if (fillers.length) {
+    lines.push(
+      "",
+      "## Muletas na fala",
+      `${fillers.length} muleta(s) ainda na timeline. remove_fillers tira de uma vez (level "hesitations" só os sons; "all" também "tipo", "né", "sabe?" soltos). Para escolher uma a uma, use cut_words.`,
+      ...fillers.slice(0, 40).map((f) => `${f.confidence} | ${f.kind} | {"from":"${f.from}","to":"${f.to}"} "${f.text}"`),
+    );
   }
   return lines.join("\n");
 }

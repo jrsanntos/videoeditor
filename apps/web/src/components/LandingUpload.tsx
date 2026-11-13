@@ -13,7 +13,7 @@ const STYLES: { id: SkillId; name: string; hint: string }[] = [
   { id: "viral", name: "Retenção Viral", hint: "Gancho forte, legenda pop e zooms a cada corte" },
   { id: "autoridade", name: "Autoridade", hint: "Ritmo sóbrio, dados em cartões e tom quente" },
   { id: "acao", name: "Ação & Cinema", hint: "Câmera lenta, cor de cinema e impactos" },
-  { id: "limpeza", name: "Só limpeza", hint: "Tira erros e pausas; o acabamento fica com você" },
+  { id: "limpeza", name: "Só limpeza", hint: "Tira erros, muletas e pausas; o acabamento fica com você" },
 ];
 
 const FREE_MAX_SEC = PLANS.free.maxUploadMinutes * 60;
@@ -343,7 +343,7 @@ const PREVIEW_LAYERS: Record<SkillId, React.ReactNode> = {
   limpeza: (
     <div className="pointer-events-none absolute inset-x-[6cqw] bottom-[8%] text-white">
       <div className="text-[4.4cqw] font-semibold uppercase tracking-[0.14em] text-white/70">Decupagem automática</div>
-      <div className="mt-[1.5cqw] text-[5.4cqw] font-medium leading-tight">Erros, recomeços e pausas longas saem; a fala fica contínua.</div>
+      <div className="mt-[1.5cqw] text-[5.4cqw] font-medium leading-tight">Erros, recomeços, muletas e pausas longas saem; a fala fica contínua.</div>
     </div>
   ),
 };

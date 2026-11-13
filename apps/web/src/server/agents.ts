@@ -152,6 +152,7 @@ ${GENRES}
 Antes de qualquer efeito, limpe a fala. Um vídeo com um take errado no meio está estragado.
 - A seção "Takes ruins detectados" traz os candidatos com o corte pronto. Confiança alta: corte. Confiança media: leia o trecho e corte só se for erro; repetição retórica fica.
 - Procure também o que o detector não vê: a mesma ideia dita duas vezes, frases que param no meio, falas para a equipe, avisos de erro. Corte o take ruim inteiro.
+- Muletas: a seção "Muletas na fala" lista hesitações ("hum", "ahn", "é…") e palavras de apoio soltas ("tipo", "né"). remove_fillers tira de uma vez; num vídeo sóbrio, deixe um "né" que soe natural.
 - remove_retakes corta de uma vez os de confiança alta. remove_silences tira as pausas com proteção de sílabas (150 ms antes e 220 ms depois de cada palavra) — modos: aggressive (talking-head), natural, dead (só pausas mortas). Em vídeo de ação ele não corta nada: não insista.
 
 ## Edição completa: execute o plano, em etapas

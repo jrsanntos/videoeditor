@@ -105,7 +105,7 @@ const isDefaultBrand = (b: BrandKit) => {
  */
 export function skillOperations(skill: Skill, project: Project): OperationInput[] {
   const hasWords = timelineWords(project).length > 0;
-  const ops = skill.local.filter((op) => hasWords || (op.op !== "remove_retakes" && op.op !== "remove_silences" && op.op !== "set_captions"));
+  const ops = skill.local.filter((op) => hasWords || (op.op !== "remove_retakes" && op.op !== "remove_fillers" && op.op !== "remove_silences" && op.op !== "set_captions"));
   if (Object.keys(skill.brand).length && isDefaultBrand(project.brand)) ops.push({ op: "set_brand", brand: skill.brand });
   return ops.map((op) => (op.op === "set_look" && project.aspectRatio === "9:16" && op.look.letterbox ? { ...op, look: { ...op.look, letterbox: Math.min(op.look.letterbox, 0.05) } } : op));
 }
@@ -120,6 +120,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     genres: ["talking_head", "vlog_montage"],
     local: [
       { op: "remove_retakes" },
+      { op: "remove_fillers", level: "all" },
       { op: "remove_silences", mode: "aggressive" },
       { op: "set_captions", enabled: true, style: { preset: "viral_pop", position: "bottom", maxWords: 3, highlightColor: "#FFE14D" } },
       { op: "set_look", look: { grade: "clean_punch", intensity: 0.7, vignette: 0.15, letterbox: 0 } },
@@ -171,6 +172,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     genres: ["talking_head", "tutorial_demo"],
     local: [
       { op: "remove_retakes" },
+      { op: "remove_fillers", level: "hesitations" },
       { op: "remove_silences", mode: "natural" },
       { op: "set_captions", enabled: true, style: { preset: "editorial_clean", position: "bottom", maxWords: 6 } },
       { op: "set_look", look: { grade: "warm_cinematic", intensity: 0.75, vignette: 0.2, letterbox: 0 } },
@@ -181,7 +183,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     recipe: { captions: "editorial_clean", look: "warm_cinematic", music: "ambient", sfx: ["swoosh_texto", "click_suave", "ding"], cards: ["stat_counter_card", "comparison_split", "step_progress_bar", "acronym_list"], speedRamps: false, cutZoom: true },
     pacing: { ...DEFAULT_PACING, maxStatic: 10, componentGap: 6, fullscreenGap: 12, maxPer5s: 2, componentsPerMin: [2, 4], zoomsPerMin: [4, 7], minZoomScale: 1.1, maxPunchStreak: 1 },
     direction: `Modelo "Autoridade & Documentário Moderno": sóbrio, mas editado. Sobriedade está na escolha dos movimentos, não na falta deles.
-- Fala: preserve as pausas de raciocínio curtas; corte erros, frases abandonadas e qualquer aquecimento antes da primeira afirmação.
+- Fala: preserve as pausas de raciocínio curtas; corte erros, frases abandonadas e qualquer aquecimento antes da primeira afirmação. Os sons de hesitação já saíram; "né" e "tipo" soltos ficam a seu critério (tire os que atrapalham o ritmo, mantenha os que soam naturais).
 - Gancho (0–3s): a afirmação mais forte do começo ganha um avanço lento de câmera e um cartão que nomeie o assunto. A tarja de nome e cargo está DESLIGADA por padrão: só use executive_lower_third se o contexto disser que ela está disponível.
 - Câmera suave (Ken Burns): avanço lento (mode creep, 1.12–1.18x, 4–6 s) nas frases que carregam a tese; push-in com ease 0.4–0.5 (ease-out, 1.15–1.2x) nas conclusões. Nada de punch-in seco em sequência, nada de impacto de câmera.
 - Cartões de dados: stat_counter_card para todo número relevante (com a barra de progresso quando for porcentagem), comparison_split para UM antes/depois ou mito/verdade, step_progress_bar no topo quando a explicação tiver etapas, acronym_list para os pontos de um diagnóstico ou estratégia. Textos curtos, sem exclamação.
@@ -195,7 +197,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     audience: "Editores em lote e aulas longas",
     focus: "Pré-edição",
     genres: ["talking_head", "tutorial_demo"],
-    local: [{ op: "remove_retakes" }, { op: "remove_silences", mode: "aggressive" }],
+    local: [{ op: "remove_retakes" }, { op: "remove_fillers", level: "all" }, { op: "remove_silences", mode: "aggressive" }],
     brand: {},
     recipe: { captions: null, look: "none", music: "none", sfx: [], cards: [], speedRamps: false, cutZoom: true },
     pacing: { ...DEFAULT_PACING, maxStatic: 25, componentsPerMin: [0, 0.5], zoomsPerMin: [2, 6], captions: false, edges: false },
@@ -216,6 +218,6 @@ export function skillForGenre(genre: Genre | null): SkillId {
 }
 
 export function skillPrompt(skill: Skill): string {
-  const local = skill.id === "acao" ? "O tratamento de cor, a trilha e as legendas do modelo já foram aplicados; as rampas de velocidade, os sons e os textos são seus." : "Uma limpeza determinística (takes ruins de confiança alta e silêncios) e o acabamento do modelo (legenda, cor, trilha) já rodaram, mas a limpeza só enxerga repetição literal e pausa: a revisão da fala continua sendo sua.";
+  const local = skill.id === "acao" ? "O tratamento de cor, a trilha e as legendas do modelo já foram aplicados; as rampas de velocidade, os sons e os textos são seus." : "Uma limpeza determinística (takes ruins de confiança alta, muletas e silêncios) e o acabamento do modelo (legenda, cor, trilha) já rodaram, mas a limpeza só enxerga repetição literal e pausa: a revisão da fala continua sendo sua.";
   return `Edite este vídeo com o modelo "${skill.name}", do início ao fim, deixando pronto para publicar.\n\n${skill.direction}\n\n${local}`;
 }
