@@ -338,6 +338,7 @@ export async function POST(req: Request) {
           }
           try {
             accepted = { plan: plan.data, notes: reviewPlan(working, plan.data, profile) };
+            if (process.env.NODE_ENV !== "production") console.info("diretor: sugestões de mídia", JSON.stringify(plan.data.midias ?? []));
             results.push({ type: "tool_result", tool_use_id: block.id, content: accepted.notes });
           } catch (e) {
             results.push({ type: "tool_result", tool_use_id: block.id, is_error: true, content: `${(e as Error).message}\nCorrija as âncoras e envie o plano de novo.` });

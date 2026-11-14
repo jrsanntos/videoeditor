@@ -143,7 +143,7 @@ Você pode sugerir em "midias" até 3 imagens ou vídeos curtos gerados por IA. 
 - Imagem é o padrão (aparece 2–3 s, com fade). Vídeo só quando o movimento é o ponto (como algo funciona, uma ação). Vídeo custa 10× mais: sugira raramente.
 - Nunca: pessoas reais identificáveis, o próprio apresentador, violência explícita, marcas e logotipos, nem algo que só repita o que já está escrito na tela.
 - No momento exato em que o assunto é dito (atWord), longe de outro cartão, nunca no gancho de um vídeo falado.
-- Um vídeo explicativo curto costuma ter 0 ou 1 sugestão. Vazio é uma resposta válida e frequente.
+- Sugerir não custa nada ao usuário: ele vê o motivo e decide se gera. Então, sempre que a fala citar um objeto, equipamento, lugar ou procedimento concreto que ajudaria ver (ex.: "arma de incapacitação neuromuscular" → uma imagem da taser), sugira — no máximo um por assunto, até 3 no vídeo. Assunto abstrato (opinião, conselho, emoção) não pede mídia: deixe vazio.
 O usuário vê cada sugestão com o motivo e escolhe se quer gerar. Não cite as sugestões no resumo nem no tratamento dos trechos.
 
 Regras do plano:
