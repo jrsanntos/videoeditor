@@ -63,14 +63,29 @@ function play(ctx: BaseAudioContext, buffer: AudioBuffer, e: SoundEvent, volume:
   } else src.start(when, e.skip);
 }
 
-/** Agenda todos os efeitos do projeto num contexto (usado na exportação). */
-export async function scheduleSfx(ctx: BaseAudioContext, project: Project) {
-  const events = soundEvents(project);
+/**
+ * Agenda os efeitos do projeto num contexto (usado na exportação). `window`
+ * limita a um trecho da timeline (o tempo 0 do contexto é `window.base`): um
+ * som que começou antes do trecho entra já pela metade, do ponto em que estaria.
+ */
+export async function scheduleSfx(ctx: BaseAudioContext, project: Project, window?: { base: number; end: number }) {
+  const base = window?.base ?? 0;
+  const end = window?.end ?? Infinity;
+  // Nenhum som do catálogo passa de alguns segundos: o que começou muito antes do trecho já acabou.
+  const events = soundEvents(project).filter((e) => e.start < end && e.start > base - 12);
   if (!events.length) return;
   const buffers = await loadSfx(ctx, events.map((e) => e.sfx));
   for (const e of events) {
     const buffer = buffers.get(e.sfx);
-    if (buffer) play(ctx, buffer, e, project.sfx.volume, e.start, ctx.destination);
+    if (!buffer) continue;
+    const late = base - e.start;
+    if (late <= 0) {
+      play(ctx, buffer, e, project.sfx.volume, e.start - base, ctx.destination);
+      continue;
+    }
+    // Começou antes do trecho: toca só o que sobra dele.
+    const left = (e.duration ?? buffer.duration - e.skip) - late;
+    if (left > 0.005) play(ctx, buffer, { ...e, skip: e.skip + late, ...(e.duration !== undefined ? { duration: left } : {}) }, project.sfx.volume, 0, ctx.destination);
   }
 }
 

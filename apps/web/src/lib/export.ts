@@ -13,16 +13,15 @@ import {
   Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
+  StreamTarget,
   WebMOutputFormat,
 } from "mediabunny";
-import { clipEnd, CUT_FADE, hasSpeed, mainClips, projectDuration, ratePoints, sourceSpan, sourceTimeAt, toOTIO, type BrollClip, type MediaClip, type Project } from "@videoeditor/core";
-import { drawWatermark, personIntervals, renderFrame, soundEvents, type FrameSource } from "@videoeditor/renderer";
+import { clipEnd, mainClips, projectDuration, sourceTimeAt, toOTIO, type BrollClip, type MediaClip, type Project } from "@videoeditor/core";
+import { drawWatermark, personIntervals, renderFrame, type FrameSource } from "@videoeditor/renderer";
 import { loadProjectFonts } from "./fonts";
 import { mediaBlob } from "./media";
 import { ensureSegmenter, maskKey, personMask } from "./segmentation";
-import { hasMusic, scheduleMusic } from "./music";
-import { scheduleSfx } from "./sfx";
-import { voiceCompressor, voiceGain } from "./voice";
+import { MIX_CHANNELS, MIX_RATE, prepareAudioMix } from "./export-audio";
 
 /**
  * Exportação local via WebCodecs: decodifica, compõe e codifica o vídeo final
@@ -50,8 +49,12 @@ export async function exportInBrowser(
   const clips = mainClips(project).sort((a, b) => a.start - b.start);
   if (duration <= 0) throw new Error("A timeline está vazia.");
 
-  // MP4/H.264 quando o navegador codifica; senão WebM/VP9.
-  let format: Mp4OutputFormat | WebMOutputFormat = new Mp4OutputFormat({ fastStart: "in-memory" });
+  // O arquivo final é gravado no disco pelo navegador (armazenamento privado do site) conforme é
+  // codificado; sem esse recurso, é montado na memória, como antes (limitado pela RAM da aba).
+  const disk = await openDiskFile();
+  // MP4/H.264 quando o navegador codifica; senão WebM/VP9. Em disco, o índice do MP4 vai no fim do
+  // arquivo (pô-lo no começo exigiria guardar o vídeo inteiro na memória antes de gravar).
+  let format: Mp4OutputFormat | WebMOutputFormat = new Mp4OutputFormat({ fastStart: disk ? false : "in-memory" });
   let videoCodec = await getFirstEncodableVideoCodec(format.getSupportedVideoCodecs(), { width, height });
   if (!videoCodec) {
     format = new WebMOutputFormat();
@@ -64,7 +67,8 @@ export async function exportInBrowser(
   const direct = scale === 1 && !limits.watermark;
   const stage = direct ? canvas : new OffscreenCanvas(project.width, project.height);
   const ctx = direct ? out : stage.getContext("2d", { alpha: false })!;
-  const output = new Output({ format, target: new BufferTarget() });
+  const memory = disk ? null : new BufferTarget();
+  const output = new Output({ format, target: disk ? new StreamTarget(disk.writable, { chunked: true }) : memory! });
   const videoSource = new CanvasSource(canvas, { codec: videoCodec, bitrate: QUALITY_HIGH });
   output.addVideoTrack(videoSource, { frameRate: fps });
 
@@ -73,13 +77,9 @@ export async function exportInBrowser(
   const depth = personIntervals(project);
   if (depth.length) await ensureSegmenter();
 
-  const audioBuffer = await mixAudio(project, duration);
-  const audioCodec = audioBuffer
-    ? await getFirstEncodableAudioCodec(format.getSupportedAudioCodecs(), {
-        numberOfChannels: audioBuffer.numberOfChannels,
-        sampleRate: audioBuffer.sampleRate,
-      })
-    : null;
+  // O áudio é mixado em trechos, lendo do arquivo só o que cada trecho usa (ver export-audio.ts).
+  const mix = await prepareAudioMix(project, duration);
+  const audioCodec = mix ? await getFirstEncodableAudioCodec(format.getSupportedAudioCodecs(), { numberOfChannels: MIX_CHANNELS, sampleRate: MIX_RATE }) : null;
   const audioSource = audioCodec ? new AudioBufferSource({ codec: audioCodec, bitrate: QUALITY_HIGH }) : null;
   if (audioSource) output.addAudioTrack(audioSource);
 
@@ -152,7 +152,14 @@ export async function exportInBrowser(
     };
 
     await output.start();
-    const audioDone = audioSource && audioBuffer ? audioSource.add(audioBuffer) : Promise.resolve();
+    // O áudio corre em paralelo com o vídeo: cada trecho mixado vai direto para o codificador, que
+    // segura o ritmo quando o áudio se adianta. Uma falha aqui aparece no `await audioDone`.
+    const audioDone = (async () => {
+      if (!audioSource || !mix) return;
+      for await (const segment of mix.segments(signal)) await audioSource.add(segment);
+    })();
+    // Se o vídeo falhar primeiro, a falha do áudio (cancelamento) não vira erro solto.
+    audioDone.catch(() => {});
 
     const totalFrames = Math.max(1, Math.round(duration * fps));
     let frame = 0;
@@ -200,89 +207,41 @@ export async function exportInBrowser(
     audioSource?.close();
     await output.finalize();
     onProgress(1);
-    const buffer = output.target.buffer;
+    if (disk) {
+      // Arquivo em disco: o Blob devolvido só aponta para ele, sem carregar nada.
+      const file = await disk.handle.getFile();
+      if (!file.size) throw new Error("A exportação não gerou dados.");
+      return { blob: file.slice(0, file.size, format.mimeType), extension: format.fileExtension };
+    }
+    const buffer = memory?.buffer;
     if (!buffer) throw new Error("A exportação não gerou dados.");
     return { blob: new Blob([buffer], { type: format.mimeType }), extension: format.fileExtension };
   } catch (e) {
     await output.cancel().catch(() => {});
     throw e;
   } finally {
+    mix?.dispose();
     for (const { input } of inputs.values()) input.dispose();
   }
 }
 
-/** Monta o áudio final seguindo os cortes da timeline. Retorna null se não houver áudio. */
-async function mixAudio(project: Project, duration: number): Promise<AudioBuffer | null> {
-  const RATE = 48000;
-  const clips = mainClips(project);
-  const decoded = new Map<string, AudioBuffer | null>();
-  // Decodifica JÁ na taxa da mixagem: com a taxa do aparelho (44,1 kHz em muitos), a fonte
-  // tocaria reamostrada por interpolação linear, que vira chiado agudo junto da voz.
-  const ac = new OfflineAudioContext(2, 1, RATE);
-  try {
-    for (const clip of clips) {
-      if (decoded.has(clip.assetId)) continue;
-      const blob = mediaBlob(clip.assetId);
-      try {
-        decoded.set(clip.assetId, blob ? await ac.decodeAudioData(await blob.arrayBuffer()) : null);
-      } catch {
-        decoded.set(clip.assetId, null);
-      }
-    }
-  } finally {
-    // Contexto offline: nada a fechar.
-  }
-  if (![...decoded.values()].some(Boolean) && !soundEvents(project).length && !hasMusic(project)) return null;
+const EXPORT_PREFIX = "ve-export-";
 
-  const off = new OfflineAudioContext(2, Math.ceil(duration * RATE), RATE);
-  // Barramento da voz: com o acabamento ligado, ganho até o volume padrão das redes e compressão leve.
-  const master = project.finish.voice;
-  const voiceBus = master ? voiceCompressor(off) : off.destination;
-  if (master) voiceBus.connect(off.destination);
-  const boost = new Map<string, number>();
-  if (master) for (const clip of clips) if (!boost.has(clip.assetId)) boost.set(clip.assetId, await voiceGain(clip.assetId));
-  for (const clip of clips) {
-    const buffer = decoded.get(clip.assetId);
-    if (!buffer) continue;
-    const src = off.createBufferSource();
-    src.buffer = buffer;
-    const gain = off.createGain();
-    // Micro-fade de 30 ms (entrada e saída) em TODA fronteira de corte: sem cliques nem pops.
-    const edge = Math.min(CUT_FADE, clip.duration / 4);
-    const level = clip.volume * (boost.get(clip.assetId) ?? 1);
-    gain.gain.setValueAtTime(0, clip.start);
-    gain.gain.linearRampToValueAtTime(level, clip.start + edge);
-    gain.gain.setValueAtTime(level, clip.start + clip.duration - edge);
-    gain.gain.linearRampToValueAtTime(0, clip.start + clip.duration);
-    if (hasSpeed(clip)) {
-      // Rampa de velocidade: o playbackRate do áudio segue a mesma curva, em rampas lineares
-      // (o pitch desliza junto, sem degrau).
-      const pts = ratePoints(clip);
-      src.playbackRate.setValueAtTime(pts[0]!.rate, clip.start);
-      for (const p of pts.slice(1)) src.playbackRate.linearRampToValueAtTime(p.rate, clip.start + p.u * clip.duration);
-    }
-    src.connect(gain).connect(voiceBus);
-    // O terceiro argumento é em segundos de ORIGEM: o trecho que o clip consome.
-    src.start(clip.start, clip.sourceStart, sourceSpan(clip));
-    src.stop(clip.start + clip.duration + 0.005);
+/**
+ * Abre um arquivo no armazenamento privado do site (OPFS) para receber a
+ * exportação. Apaga as exportações anteriores que ficaram lá. null quando o
+ * navegador não oferece o recurso (a exportação segue na memória).
+ */
+async function openDiskFile(): Promise<{ handle: FileSystemFileHandle; writable: FileSystemWritableFileStream } | null> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const dir = root as unknown as { keys(): AsyncIterable<string> };
+    for await (const name of dir.keys()) if (name.startsWith(EXPORT_PREFIX)) await root.removeEntry(name).catch(() => {});
+    const handle = await root.getFileHandle(`${EXPORT_PREFIX}${Date.now()}`, { create: true });
+    return { handle, writable: await handle.createWritable() };
+  } catch {
+    return null;
   }
-  // Trilha de fundo com auto-ducking de −14 dB sob a voz; fora do compressor da fala.
-  await scheduleMusic(off, project, duration);
-  // Efeitos sonoros nos mesmos instantes do preview.
-  await scheduleSfx(off, project);
-  const mixed = await off.startRendering();
-  // Teto de segurança: nenhum pico acima de −1 dBFS (sem distorção em nenhum aparelho).
-  let peak = 0;
-  for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
-    const data = mixed.getChannelData(ch);
-    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]!));
-  }
-  const ceiling = 0.89;
-  if (peak > ceiling) for (let ch = 0; ch < mixed.numberOfChannels; ch++) {
-    const data = mixed.getChannelData(ch);
-    for (let i = 0; i < data.length; i++) data[i] = (data[i]! * ceiling) / peak;
-  }
-  return mixed;
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
