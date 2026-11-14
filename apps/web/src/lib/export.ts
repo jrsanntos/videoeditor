@@ -216,7 +216,9 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
   const RATE = 48000;
   const clips = mainClips(project);
   const decoded = new Map<string, AudioBuffer | null>();
-  const ac = new AudioContext();
+  // Decodifica JÁ na taxa da mixagem: com a taxa do aparelho (44,1 kHz em muitos), a fonte
+  // tocaria reamostrada por interpolação linear, que vira chiado agudo junto da voz.
+  const ac = new OfflineAudioContext(2, 1, RATE);
   try {
     for (const clip of clips) {
       if (decoded.has(clip.assetId)) continue;
@@ -228,7 +230,7 @@ async function mixAudio(project: Project, duration: number): Promise<AudioBuffer
       }
     }
   } finally {
-    void ac.close();
+    // Contexto offline: nada a fechar.
   }
   if (![...decoded.values()].some(Boolean) && !soundEvents(project).length && !hasMusic(project)) return null;
 
