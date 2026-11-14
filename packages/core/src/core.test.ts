@@ -1550,6 +1550,16 @@ describe("hesitações escondidas pela transcrição (equilíbrio: na dúvida, n
     expect(splitHesitations(estao, [{ text: "vou", start: 0.3, end: 1.5 }, { text: "fazer", start: 1.5, end: 2.4 }], 28.91)).toEqual([estao]);
   });
 
+  it("'É,' alongado e solto entre frases sai; o verbo 'é' dentro da frase fica", () => {
+    const mk = (list: [string, number, number][]) => addAssetToProject(createProject({ name: "e" }), { id: "a1", kind: "video", name: "v.mp4", duration: 10, hasAudio: true, transcript: { words: list.map(([text, start, end], i) => ({ id: `w${i}`, text, start, end })) } });
+    const solto = findFillers(timelineWords(mk([["guarnição.", 0, 0.5], ["É,", 1.2, 1.7], ["evitando", 2, 2.5]])));
+    expect(solto.map((f) => f.text)).toEqual(["É,"]);
+    const verbo = findFillers(timelineWords(mk([["Esse", 0, 0.3], ["é,", 0.3, 0.8], ["sem", 0.9, 1.1], ["dúvida", 1.1, 1.5]])));
+    expect(verbo).toEqual([]);
+    const curto = findFillers(timelineWords(mk([["Pronto.", 0, 0.5], ["É,", 1, 1.15], ["assim", 1.2, 1.5]])));
+    expect(curto.filter((f) => f.text === "É,")).toEqual([]);
+  });
+
   it("a limpeza corta o que foi marcado, como hesitação de confiança alta", () => {
     const words = [{ id: "a", text: "e", start: 0, end: 0.2 }, { id: "b", text: "…", start: 0.2, end: 2, disfluency: "hesitation" as const }, { id: "c", text: "estão", start: 2, end: 2.4 }];
     const p = addAssetToProject(createProject({ name: "d" }), { id: "a1", kind: "video", name: "v.mp4", duration: 3, hasAudio: true, transcript: { words } });

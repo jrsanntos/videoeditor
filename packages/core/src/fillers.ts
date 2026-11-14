@@ -58,6 +58,11 @@ export function findFillers(words: TimelineWord[]): Filler[] {
       push("hesitation", "alta");
       continue;
     }
+    // "É," / "Ah," alongado e solto entre pausas: o som de quem está pensando, não o verbo.
+    if ((b === "é" || b === "e" || b === "ah") && w.end - w.start >= 0.4 && leftOpen(prev, w) && rightOpen(w, next)) {
+      push("hesitation", "alta");
+      continue;
+    }
     if (MAYBE.has(b) && leftOpen(prev, w) && rightOpen(w, next)) {
       push("hesitation", "media");
       continue;

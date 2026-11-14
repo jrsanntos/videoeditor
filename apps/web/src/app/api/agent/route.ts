@@ -68,6 +68,13 @@ const DIRECTOR_SHARE = 0.5;
 const MIN_REVIEW_USD = 0.012;
 /** Passada no vídeo todo: uma tarefa, várias chamadas possíveis (vídeos longos). */
 const MAX_TURNS_SWEEP = 12;
+/**
+ * Limite de saída por volta (streaming). Com raciocínio ligado, o Editor no Haiku
+ * chegou a 16 mil tokens só pensando no vídeo de teste e terminou sem editar;
+ * a saída do Haiku custa US$ 0,50 por milhão, então folga aqui é barata.
+ */
+const MAX_OUTPUT_TOKENS = 48_000;
+
 /** Modelos que aceitam fallback de recusa no servidor. */
 const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
@@ -252,7 +259,7 @@ export async function POST(req: Request) {
       }
       // Modelo reserva: mesma conversa, mesmas ferramentas, mesmo teto de custo.
       send({ type: "status", role, text: status(role === "director" ? "plan_edit" : "edit_timeline") });
-      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, effort: effortFor(role), signal: req.signal });
+      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: MAX_OUTPUT_TOKENS, effort: effortFor(role), signal: req.signal });
       const turn = { input: message.usage.input_tokens, output: message.usage.output_tokens, cacheRead: message.usage.cache_read_input_tokens ?? 0, cacheWrite: 0 };
       const cost = await geminiCostUSD(turn);
       account(model, turn, cost, role);
@@ -273,7 +280,7 @@ export async function POST(req: Request) {
       const stream = anthropic.beta.messages.stream(
         {
           model,
-          max_tokens: 16000,
+          max_tokens: MAX_OUTPUT_TOKENS,
           system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
           ...(effortFor(role) ? { thinking: { type: "adaptive" as const }, output_config: { effort: effortFor(role)! } } : {}),
           tools,
@@ -348,6 +355,7 @@ export async function POST(req: Request) {
       let cycles = 0;
       const maxTurns = full ? MAX_TURNS_EDITOR : tier === "sweep" ? MAX_TURNS_SWEEP : MAX_TURNS;
       let warned = false;
+      let retriedLong = false;
       for (let turn = 0; turn < maxTurns; turn++) {
         // Teto de custo: no fim do orçamento a edição para com o que já foi aplicado (cada etapa
         // já está na timeline). Antes disso, o agente é avisado para fechar com o que importa.
@@ -366,7 +374,17 @@ export async function POST(req: Request) {
         );
         finalText = textOf(response);
         if (response.stop_reason === "refusal") return "Não posso ajudar com esse pedido. Tente descrever a edição de outra forma.";
-        if (response.stop_reason === "max_tokens") return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
+        if (response.stop_reason === "max_tokens" && !response.content.some((b) => b.type === "tool_use")) {
+          // Raciocinou demais e não chegou a editar: uma nova chance, indo direto à ferramenta.
+          if (!retriedLong) {
+            retriedLong = true;
+            const last = messages[messages.length - 1];
+            if (last?.role === "user" && Array.isArray(last.content))
+              last.content.push({ type: "text", text: "Aviso do sistema: a resposta anterior passou do limite antes de editar. Não planeje de novo: chame edit_timeline agora com a próxima etapa." });
+            continue;
+          }
+          return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
+        }
         if (response.stop_reason !== "tool_use") {
           // Crítico determinístico: a montagem pronta é auditada e o laudo volta ao Editor antes da entrega (até 3 ciclos).
           if (role === "editor" && full && log.length && cycles < MAX_CRITIC_CYCLES && turn < maxTurns - 1 && spent < capUSD * BUDGET_WARN) {
