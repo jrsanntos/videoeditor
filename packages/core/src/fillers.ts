@@ -28,7 +28,7 @@ const bare = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
  * Sons sem conteúdo, inclusive alongados ("hummm", "ééé", "ããã"). "um" sozinho
  * é artigo ou numeral ("número um", "um produto"): só alongado ("uum", "ummm") é hesitação.
  */
-const HESITATION = /^(h+u+m+|h+m+|u{2,}m+|u+m{2,}|u+h+m*|a+h+n+|ã+h*|h+ã+|é+h+|e+h+|é{2,}|e{3,}|a{3,}|ã{2,})$/;
+export const HESITATION = /^(h+u+m+|h+m+|u{2,}m+|u+m{2,}|u+h+m*|a+h+n+|ã+h*|h+ã+|é+h+|e+h+|é{2,}|e{3,}|a{3,}|ã{2,})$/;
 /** Palavras de apoio que só são muleta quando soltas. */
 const MARKERS = new Set(["tipo", "né", "sabe", "tá", "assim", "entendeu", "entende"]);
 /** Interjeições que às vezes têm sentido ("Ah, entendi"): decisão do agente. */
@@ -44,9 +44,14 @@ export function findFillers(words: TimelineWord[]): Filler[] {
     const prev = words[i - 1];
     const next = words[i + 1];
     const b = bare(w.text);
-    if (!b) continue;
     const push = (kind: Filler["kind"], confidence: Filler["confidence"], to = w) => out.push({ kind, confidence, from: w.id, to: to.id, text: to === w ? w.text : `${w.text} ${to.text}` });
 
+    // Achado pela segunda escuta ou pelo áudio: não é palavra, sai sempre.
+    if (w.disfluency) {
+      push("hesitation", "alta");
+      continue;
+    }
+    if (!b) continue;
     // "é…" com reticências, ou "é, é" repetido antes de continuar: hesitação, não o verbo.
     const trailing = /(\.\.\.|…)$/.test(w.text.trim());
     if (HESITATION.test(b) || ((b === "é" || b === "e") && (trailing || (next && bare(next.text) === b && /,$/.test(w.text.trim()))))) {

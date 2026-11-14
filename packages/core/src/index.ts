@@ -15,3 +15,4 @@ export * from "./motion-graphic";
 export * from "./critic";
 export * from "./otio";
 export * from "./lower-third";
+export * from "./disfluency";

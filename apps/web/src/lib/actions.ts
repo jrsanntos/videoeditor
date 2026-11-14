@@ -43,6 +43,7 @@ import {
 } from "@videoeditor/core";
 import { analyzeVideo, contentBox, framingForContent, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
+import { refineDisfluencies } from "./disfluency";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
@@ -428,7 +429,10 @@ async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolea
     const current = useEditor.getState().project;
     if (!current?.assets[assetId]) return false;
     const next = structuredClone(current);
-    const transcript = { ...data.transcript, words: wordEnergy(samples, SPEECH_RATE, data.transcript.words) };
+    // Hesitações que o transcritor esconde dentro de palavras esticadas ("hum", tentativa e repetição).
+    setBusy("Conferindo hesitações…");
+    const refined = await refineDisfluencies(data.transcript, samples, SPEECH_RATE);
+    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, refined.words) };
     next.assets[assetId]!.transcript = transcript;
     const spoken = transcript.words.length > 0;
     if (opts.captions !== false && spoken) next.captions.enabled = true;

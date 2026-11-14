@@ -49,6 +49,13 @@ import {
   type Project,
   ensureLowerThird,
   findFillers,
+  falseStart,
+  isHesitationToken,
+  speechRate,
+  splitFalseStart,
+  splitHesitations,
+  stretchedWords,
+  syllables,
 } from "./index";
 
 function fixture(): Project {
@@ -1486,6 +1493,67 @@ describe("muletas: o numeral fica", () => {
     expect(cut).toContain("hum");
     expect(cut).not.toContain("um,");
     expect(cut).not.toContain("um");
+  });
+});
+
+describe("hesitações escondidas pela transcrição (equilíbrio: na dúvida, não corta)", () => {
+  // Ritmo de ~0,17 s por sílaba, como no vídeo de teste.
+  const normal = ["As", "armas", "de", "choque", "são", "utilizadas", "em", "momentos", "muito", "específicos", "durante", "o", "patrulhamento", "ostensivo"].map((text, i) => ({ id: `n${i}`, text, start: i, end: i + syllables(text) * 0.17 }));
+  const rate = speechRate(normal);
+  // Envelope (dB, quadros de 20 ms): voz = -20, silêncio = -60.
+  const env = (parts: [number, number][]) => parts.flatMap(([db, sec]) => Array(Math.round(sec / 0.02)).fill(db) as number[]);
+
+  it("mede o ritmo da pessoa e só olha palavras muito mais longas que ele", () => {
+    expect(rate).toBeGreaterThan(0.14);
+    expect(rate).toBeLessThan(0.2);
+    expect(stretchedWords(normal, rate)).toEqual([]);
+    const long = { id: "x", text: "incapacitação", start: 8.4, end: 10.64 };
+    expect(stretchedWords([long], rate)).toHaveLength(1);
+  });
+
+  it("engasgo de verdade (tentativa de 0,7 s, pausa, palavra inteira): corta só a tentativa", () => {
+    const w = { id: "x", text: "incapacitação", start: 8.4, end: 10.64 };
+    const cut = falseStart(w, env([[-20, 0.7], [-60, 0.24], [-20, 1.3]]), rate)!;
+    expect(cut.start).toBe(8.4);
+    expect(cut.end).toBeGreaterThan(9.2);
+    expect(cut.end).toBeLessThan(9.4);
+    const [mark, kept] = splitFalseStart(w, cut);
+    expect(mark!.disfluency).toBe("false_start");
+    expect(kept!.text).toBe("incapacitação");
+  });
+
+  it("NÃO corta: fim da palavra anterior + respiro, palavra curta + pausa, palavra lenta sem pausa", () => {
+    // "causando | distúrbios": 0,16 s do "-do" mal alinhado, respiro, a palavra.
+    expect(falseStart({ id: "a", text: "distúrbios", start: 27.24, end: 28.6 }, env([[-20, 0.16], [-60, 0.22], [-20, 0.98]]), rate)).toBeNull();
+    // "em [pausa] confronto": palavra curta, a pausa é o respiro antes da próxima.
+    expect(falseStart({ id: "b", text: "em", start: 37.92, end: 38.9 }, env([[-20, 0.2], [-60, 0.6], [-20, 0.18]]), rate)).toBeNull();
+    // Palavra dita devagar, de uma vez (sem silêncio no meio).
+    expect(falseStart({ id: "c", text: "patrulhamento", start: 0, end: 2.6 }, env([[-20, 2.6]]), rate)).toBeNull();
+    // Palavra no ritmo normal nunca é analisada.
+    expect(falseStart({ id: "d", text: "incapacitação", start: 0, end: 1.1 }, env([[-20, 0.4], [-60, 0.2], [-20, 0.5]]), rate)).toBeNull();
+  });
+
+  it("segunda escuta: o 'hum' e o 'é' alongado viram hesitação; o 'e' conjunção e palavras inventadas ficam", () => {
+    const estao = { id: "w1", text: "estão", start: 29.14, end: 31.84 };
+    const split = splitHesitations(estao, [{ text: "E,", start: 0, end: 0.24 }, { text: "hum,", start: 0.24, end: 2.48 }, { text: "estão", start: 2.48, end: 3.02 }], 28.91);
+    expect(split.map((w) => w.disfluency ?? w.text)).toEqual(["hesitation", "estão"]);
+    expect(split[1]!.start).toBeCloseTo(31.39, 2);
+    const guarnicao = { id: "w2", text: "guarnição,", start: 33.82, end: 35.86 };
+    const g = splitHesitations(guarnicao, [{ text: "guarnição,", start: 0.14, end: 1.02 }, { text: "é,", start: 1.02, end: 1.94 }], 33.57);
+    expect(g.map((w) => w.disfluency ?? w.text)).toEqual(["guarnição,", "hesitation"]);
+    // "E não deve": o "e" reouvido é a própria palavra.
+    const e = { id: "w3", text: "e", start: 47.64, end: 48.42 };
+    expect(splitHesitations(e, [{ text: "E", start: 0, end: 0.6 }, { text: "não", start: 0.6, end: 1.2 }], 47.39)).toEqual([e]);
+    // Um "é" curto é o verbo, não hesitação; frases inventadas pelo transcritor não contam.
+    expect(isHesitationToken("é", 0.15)).toBe(false);
+    expect(isHesitationToken("é", 0.6)).toBe(true);
+    expect(splitHesitations(estao, [{ text: "vou", start: 0.3, end: 1.5 }, { text: "fazer", start: 1.5, end: 2.4 }], 28.91)).toEqual([estao]);
+  });
+
+  it("a limpeza corta o que foi marcado, como hesitação de confiança alta", () => {
+    const words = [{ id: "a", text: "e", start: 0, end: 0.2 }, { id: "b", text: "…", start: 0.2, end: 2, disfluency: "hesitation" as const }, { id: "c", text: "estão", start: 2, end: 2.4 }];
+    const p = addAssetToProject(createProject({ name: "d" }), { id: "a1", kind: "video", name: "v.mp4", duration: 3, hasAudio: true, transcript: { words } });
+    expect(findFillers(timelineWords(p)).map((f) => [f.from, f.confidence])).toEqual([["b", "alta"]]);
   });
 });
 

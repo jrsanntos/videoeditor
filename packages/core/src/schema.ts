@@ -24,6 +24,12 @@ export const WordSchema = z.object({
    * LOW_CONFIDENCE a palavra vai para a revisão rápida de legendas.
    */
   confidence: z.number().min(0).max(1).optional(),
+  /**
+   * Não é palavra: som de hesitação ("hum", "é...") ou tentativa abandonada
+   * antes da repetição ("incapaci-… incapacitação"), achados pela segunda
+   * escuta e pelo áudio. A limpeza de fala corta sempre.
+   */
+  disfluency: z.enum(["hesitation", "false_start"]).optional(),
   /** O usuário já conferiu (ou corrigiu) esta palavra na revisão. */
   reviewed: z.boolean().optional(),
   /** Some só da legenda; a fala e a transcrição continuam. */

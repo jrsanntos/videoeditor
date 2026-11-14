@@ -183,8 +183,11 @@ const ANTHROPIC_PRICES: Record<string, { input: number; output: number; cacheRea
   "claude-fable-5-2": { input: 8, output: 40, cacheRead: 0.2 },
 };
 
-/** Groq whisper-large-v3-turbo: US$ 0,04 por hora de áudio (confira a tabela atual do provedor). */
-const GROQ_USD_PER_SECOND = 0.04 / 3600;
+/**
+ * Groq: whisper-large-v3-turbo US$ 0,04/h (detecção de idioma) + whisper-large-v3
+ * US$ 0,111/h (passe literal). Conta os dois passes no preço do mais caro, com folga.
+ */
+const GROQ_USD_PER_SECOND = (0.04 + 0.111) / 3600;
 
 export type TokenUsage = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
