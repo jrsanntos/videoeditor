@@ -64,6 +64,12 @@ const MAX_TURNS_DIRECTOR = 5;
 const BUDGET_WARN = 0.75;
 /** O Diretor usa no máximo esta fração do teto da edição. */
 const DIRECTOR_SHARE = 0.5;
+/**
+ * Edição interrompida antes do fim (teto de custo, limite de etapas ou falha no
+ * meio): o usuário é avisado e paga só esta fração do preço.
+ */
+const INTERRUPTED_CHARGE = 0.5;
+const INTERRUPTED_NOTE = "Atenção: a edição foi interrompida antes de terminar o plano, e por isso cobramos metade do preço. O que já foi aplicado ficou na timeline; peça os ajustes que faltarem ou desfaça com Ctrl+Z.";
 /** Abaixo disto (US$) não vale abrir mais uma conferência visual. */
 const MIN_REVIEW_USD = 0.012;
 /** Passada no vídeo todo: uma tarefa, várias chamadas possíveis (vídeos longos). */
@@ -130,7 +136,7 @@ type AgentEvent =
   | { type: "status"; text: string; role?: AgentRole }
   | { type: "plan"; plan: EditPlan; planToken?: string }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean; interrupted?: boolean }
   | { type: "error"; error: string };
 
 /**
@@ -205,6 +211,8 @@ export async function POST(req: Request) {
     const profile: PacingProfile = skill?.pacing ?? DEFAULT_PACING;
     let working = project;
     const log: string[] = [];
+    /** O Editor parou antes de concluir (teto de custo ou limite de etapas). */
+    let interrupted = false;
     // Uso por modelo (cada um tem o seu preço).
     const usageBy = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
     /** Aplica as operações do agente; o que não cabe no quadro volta como erro, com o porquê. */
@@ -229,7 +237,9 @@ export async function POST(req: Request) {
     /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
     const settle = async () => {
       // Administradores não consomem créditos: o custo real é registrado, o débito é zero.
-      const credits = log.length && user.role !== "admin" ? price : 0;
+      // Créditos têm uma casa decimal em passos de meio: a metade é arredondada para baixo.
+      const due = interrupted ? Math.floor(price * INTERRUPTED_CHARGE * 2) / 2 : price;
+      const credits = log.length && user.role !== "admin" ? due : 0;
       let first = true;
       for (const [model, tokens] of usageBy) {
         // O custo por modelo é a soma do custo de cada volta (a faixa de preço do Haiku é por requisição).
@@ -362,6 +372,8 @@ export async function POST(req: Request) {
         // já está na timeline). Antes disso, o agente é avisado para fechar com o que importa.
         if (spent >= capUSD) {
           console.warn(`agente: teto de custo atingido (US$ ${spent.toFixed(4)} de ${capUSD.toFixed(4)}); entregando o que já foi aplicado`);
+          // O Crítico visual é um acabamento opcional: ficar sem orçamento nele não é edição incompleta.
+          if (role === "editor") interrupted = true;
           return finalText;
         }
         if (!warned && turn > 0 && spent >= capUSD * BUDGET_WARN) {
@@ -384,6 +396,7 @@ export async function POST(req: Request) {
               last.content.push({ type: "text", text: "Aviso do sistema: a resposta anterior passou do limite antes de editar. Não planeje de novo: chame edit_timeline agora com a próxima etapa." });
             continue;
           }
+          if (role === "editor") interrupted = true;
           return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
         }
         if (response.stop_reason !== "tool_use") {
@@ -436,7 +449,14 @@ export async function POST(req: Request) {
         }
         messages.push({ role: "user", content: results });
       }
+      // Saiu do laço ainda pedindo ferramentas: acabaram as etapas antes de o trabalho acabar.
+      if (role === "editor") interrupted = true;
       return finalText;
+    };
+    /** Texto final para o chat, com o aviso de edição interrompida quando for o caso. */
+    const closing = (text: string, fallback: string) => {
+      const base = plainMessage(text) || fallback;
+      return interrupted && log.length ? `${base} ${INTERRUPTED_NOTE}` : base;
     };
 
     const run = async (send: (e: AgentEvent) => void) => {
@@ -485,7 +505,7 @@ export async function POST(req: Request) {
         send({ type: "status", role: "editor", text: "Lendo a transcrição…" });
         const text = await edit("editor", [...history.map((h) => ({ role: h.role, content: h.text })), { role: "user", content: `${context(project)}\n\n<pedido>\n${message}\n</pedido>` }], send);
         const bill = await settle();
-        send({ type: "done", message: plainMessage(text) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
+        send({ type: "done", message: closing(text, log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
         return;
       }
 
@@ -547,7 +567,7 @@ export async function POST(req: Request) {
       }
       const bill = await settle();
       const left = capUSD - spent;
-      send({ type: "done", ...(log.length && left >= MIN_REVIEW_USD ? { reviewToken: reviewToken(user.id, 0, skill?.id, left) } : {}), message: plainMessage(text) || (log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill });
+      send({ type: "done", ...(log.length && left >= MIN_REVIEW_USD ? { reviewToken: reviewToken(user.id, 0, skill?.id, left) } : {}), message: closing(text, log.length ? "Edição aplicada." : "Não fiz alterações."), project: working, log, ...bill, ...(interrupted && log.length ? { interrupted: true } : {}) });
     };
 
     const encoder = new TextEncoder();
@@ -563,11 +583,13 @@ export async function POST(req: Request) {
         try {
           await run(send);
         } catch (e) {
-          // O que já foi gasto e entregue antes da falha é registrado e cobrado.
+          // O que já foi gasto e entregue antes da falha é registrado; a edição ficou pela metade, e a cobrança também.
+          interrupted = true;
           await settle().catch((err) => console.error("agent: falha ao registrar uso", err));
           const known = anthropicError(e) ?? e;
           if (!(known instanceof HttpError) && !req.signal.aborted) console.error(known);
-          send({ type: "error", error: known instanceof HttpError ? known.message : "Erro inesperado no servidor." });
+          const reason = known instanceof HttpError ? known.message : "Erro inesperado no servidor.";
+          send({ type: "error", error: log.length && user.role !== "admin" ? `${reason} Como a edição ficou pela metade, cobramos metade do preço.` : reason });
         } finally {
           try {
             controller.close();

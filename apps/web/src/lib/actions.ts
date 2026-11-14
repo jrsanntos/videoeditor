@@ -18,10 +18,12 @@ import {
   MAX_CRITIC_CYCLES,
   newId,
   PLANS,
+  ProjectSchema,
   projectDuration,
   projectGenre,
   SILENCE_MODES,
   silencesFromAudio,
+  snapWordOnsets,
   SKILLS,
   skillOperations,
   skillPrompt,
@@ -48,8 +50,8 @@ import { refineDisfluencies } from "./disfluency";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
-import { assertDecodable, clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
-import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
+import { assertDecodable, decodeBlobMono, decodeMono, deleteMedia, encodeSpeech, loadMedia, mediaBlob, probeVideo, releaseMedia, SPEECH_RATE, storeMedia } from "./media";
+import { dropForeignProject, markSaved, saveNow, TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
 const analyses = new Map<string, Promise<VideoAnalysis | null>>();
@@ -164,7 +166,8 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
   setBusy("Lendo o vídeo…");
   try {
     const asset = await ingest(file);
-    await clearMedia();
+    // O projeto anterior continua salvo na conta (e os arquivos dele, neste navegador).
+    await leaveProject();
     clearBroll();
     thumbs.clear();
     analyses.clear();
@@ -196,7 +199,7 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
  * cards, sons e banco de imagens também valem.
  */
 export async function startEmptyProject() {
-  await clearMedia();
+  await leaveProject();
   clearBroll();
   thumbs.clear();
   analyses.clear();
@@ -433,7 +436,9 @@ async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolea
     // Hesitações que o transcritor esconde dentro de palavras esticadas ("hum", tentativa e repetição).
     setBusy("Conferindo hesitações…");
     const refined = await refineDisfluencies(data.transcript, samples, SPEECH_RATE);
-    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, refined.words) };
+    // Fronteiras de palavra conferidas no áudio: é onde os cortes por palavra vão cair.
+    const snapped = snapWordOnsets(refined.words, samples, SPEECH_RATE);
+    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, snapped) };
     next.assets[assetId]!.transcript = transcript;
     const spoken = transcript.words.length > 0;
     if (opts.captions !== false && spoken) next.captions.enabled = true;
@@ -507,10 +512,14 @@ export async function refreshMe() {
     return;
   }
   const data = (await res.json()) as { user?: SessionUser; credits?: number; unlimited?: boolean; brands?: SavedBrand[]; brandLimit?: number };
+  if (data.user) dropForeignProject(data.user.id);
   if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, unlimited: !!data.unlimited, brands: data.brands ?? [], brandLimit: data.brandLimit ?? 1 });
 }
 
 export async function logout() {
+  // O projeto sobe antes de a sessão acabar e sai deste navegador: a próxima conta não o vê.
+  await saveNow();
+  useEditor.getState().setProject(null);
   await fetch("/api/auth/logout", { method: "POST" });
   window.location.href = "/";
 }
@@ -534,7 +543,7 @@ type AgentEvent =
   | { type: "status"; text: string }
   | { type: "plan"; plan: EditPlan; planToken?: string }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean; interrupted?: boolean }
   | { type: "error"; error: string };
 
 /**
@@ -707,7 +716,7 @@ async function executeAgent(req: { message: string; history: { role: string; tex
       } else if (e.type === "done") {
         s.setCredits(e.balance);
         reviewToken = e.reviewToken;
-        s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits });
+        s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits, ...(e.interrupted ? { interrupted: true } : {}) });
       } else {
         void refreshMe();
         s.pushChat({ role: "assistant", text: applied ? `${e.error} As etapas já aplicadas foram mantidas (Ctrl+Z desfaz).` : e.error, log: log.length ? log : undefined, error: true });
@@ -1011,7 +1020,10 @@ export async function autoEdit(id: SkillId) {
   const reply = s.chat.slice(before).filter((m) => m.role === "assistant" && !m.plan);
   const ok = reply.length > 0 && !reply[reply.length - 1]!.error;
   // Se algo falhou, o motivo já está no aviso ou no chat: o assistente só sai da frente.
-  useEditor.setState({ assistant: ok ? "done" : null });
+  // Edição interrompida não é "vídeo pronto": a pessoa vai para o chat, onde está o aviso.
+  const partial = reply.some((m) => m.interrupted);
+  useEditor.setState({ assistant: ok && !partial ? "done" : null });
+  if (partial) s.setNotice("A edição foi interrompida antes de terminar e cobramos metade do preço. Veja o que foi feito no chat e peça o que faltar.");
 }
 
 /** Só a limpeza, pelo assistente. */
@@ -1062,13 +1074,106 @@ export async function deleteBrand(id: string): Promise<string | null> {
   return null;
 }
 
+/** Fecha o projeto aberto e volta para a lista. Nada é apagado: ele fica salvo na conta. */
 export async function closeProject() {
-  await clearMedia();
+  await leaveProject();
   clearBroll();
   thumbs.clear();
   analyses.clear();
-  useEditor.setState({ chat: [], time: 0, range: null, playing: false });
+  useEditor.setState({ chat: [], time: 0, range: null, playing: false, missingMedia: [], assistant: null });
   useEditor.getState().setProject(null);
+  markSaved(null);
+}
+
+/** Antes de trocar de projeto: garante o salvamento do atual e solta os arquivos dele da memória. */
+async function leaveProject() {
+  await saveNow();
+  releaseMedia();
+}
+
+// ---------- Projetos salvos na conta ----------
+
+export type ProjectSummary = { id: string; name: string; duration: number; updatedAt: string; createdAt: string };
+
+export async function listProjects(): Promise<ProjectSummary[] | null> {
+  const res = await fetch("/api/projects").catch(() => null);
+  const data = res?.ok ? ((await res.json().catch(() => null)) as { projects?: ProjectSummary[] } | null) : null;
+  return data?.projects ?? null;
+}
+
+/** Arquivos que a timeline usa (vídeo principal e mídias por cima). */
+const usedAssets = (project: Project) => [...new Set(project.tracks.flatMap((t) => t.clips).flatMap((c) => (c.type === "media" || c.type === "broll" ? [c.assetId] : [])))];
+
+/**
+ * Confere quais arquivos do projeto estão neste navegador. Os que faltam e são
+ * usados na timeline vão para `missingMedia`: o editor pede para religá-los.
+ */
+export async function checkMedia(project: Project) {
+  const missing = new Set(await loadMedia(Object.keys(project.assets)));
+  useEditor.setState({ missingMedia: usedAssets(project).filter((id) => missing.has(id)) });
+}
+
+/** Abre um projeto salvo na conta. Em outro aparelho, os arquivos de vídeo precisam ser religados. */
+export async function openProject(id: string) {
+  const s = useEditor.getState();
+  s.setBusy("Abrindo o projeto…");
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+    const data = (await res.json().catch(() => null)) as { project?: unknown; error?: string } | null;
+    const parsed = ProjectSchema.safeParse(data?.project);
+    if (!res.ok || !parsed.success) throw new Error(data?.error ?? "Não foi possível abrir este projeto.");
+    await leaveProject();
+    clearBroll();
+    thumbs.clear();
+    analyses.clear();
+    useEditor.setState({ chat: [], time: 0, range: null, playing: false, assistant: null, tour: null });
+    markSaved(parsed.data);
+    s.setProject(parsed.data);
+    await checkMedia(parsed.data);
+  } catch (e) {
+    s.setNotice((e as Error).message);
+  } finally {
+    s.setBusy(null);
+  }
+}
+
+/** Apaga um projeto da conta e os arquivos dele deste navegador. Devolve a mensagem de erro, ou null. */
+export async function deleteSavedProject(id: string): Promise<string | null> {
+  // Os ids dos arquivos estão no próprio projeto: lê antes de apagar.
+  const got = await fetch(`/api/projects/${encodeURIComponent(id)}`).catch(() => null);
+  const parsed = ProjectSchema.safeParse(got?.ok ? ((await got.json().catch(() => null)) as { project?: unknown } | null)?.project : null);
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+  if (!res?.ok) return "Não foi possível apagar o projeto. Tente de novo.";
+  if (parsed.success) await deleteMedia(Object.keys(parsed.data.assets));
+  return null;
+}
+
+/**
+ * Religa um arquivo que falta (projeto aberto em outro aparelho, ou navegador
+ * limpo). Precisa ser o MESMO arquivo: confere pelo hash guardado no projeto
+ * e, sem hash, pela duração. Devolve a mensagem de erro, ou null.
+ */
+export async function relinkMedia(assetId: string, file: File): Promise<string | null> {
+  const project = useEditor.getState().project;
+  const asset = project?.assets[assetId];
+  if (!project || !asset) return "Projeto fechado.";
+  try {
+    const hash = asset.hash ? await fileHash(file) : null;
+    if (asset.hash && hash && hash !== asset.hash) return `Este não é o arquivo original de "${asset.name}". Escolha o mesmo vídeo que você enviou quando criou o projeto.`;
+    if (!asset.hash || !hash) {
+      if (asset.kind === "video") {
+        const meta = await probeVideo(file);
+        if (Math.abs(meta.duration - asset.duration) > 0.5) return `Este vídeo tem outra duração. Escolha o arquivo original de "${asset.name}".`;
+      }
+    }
+    if (asset.kind === "video") await assertDecodable(file);
+    await storeMedia(assetId, file);
+    useEditor.setState((st) => ({ missingMedia: st.missingMedia.filter((m) => m !== assetId) }));
+    if (!useEditor.getState().missingMedia.length && asset.role !== "context") void analyzeAsset(assetId);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 // ---------- Mídia de contexto (b-roll) ----------

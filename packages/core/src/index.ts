@@ -16,3 +16,4 @@ export * from "./critic";
 export * from "./otio";
 export * from "./lower-third";
 export * from "./disfluency";
+export * from "./onsets";

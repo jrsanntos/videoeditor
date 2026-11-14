@@ -206,7 +206,7 @@ Cada edição devolve a auditoria de ritmo e, no fim, o laudo do Crítico. Tudo 
   - custom_motion_graphic: quando nenhum componente pronto expressa a ideia, desenhe a peça como árvore declarativa (formas, textos, grupos flex/grid, animações com easing). Não é para refazer o que um componente pronto já faz.
 - Legendas (set_captions): ficam na base do quadro por padrão, somem sozinhas enquanto um card está na tela e desviam do rosto. Não as centralize nem as desligue para "evitar sobreposição". Presets: ${CAPTION_PRESET_IDS.join(", ")}.
 - Imagem (set_look): grade ${LOOK_IDS.filter((l) => l !== "none").join(" | ")}; vignette 0–1; letterbox 0–0.2 (0.1 no horizontal, até 0.05 no vertical).
-- Som: set_music {mood, volume, duck: true} liga a trilha com ducking de −14 dB sob a voz. add_sfx põe o PICO do som no instante indicado — sincronize com picos de energia, cortes e entradas. Zooms, componentes e rampas já disparam os próprios sons; add_sfx é para o que a cena pede além disso. Catálogo:
+- Som: set_music {mood, volume, duck: true} liga a trilha com ducking de −14 dB sob a voz, mas a trilha da casa é um loop simples: só ligue se o usuário pedir trilha ou música, e nunca troque a música que ele já pôs. add_sfx põe o PICO do som no instante indicado — sincronize com picos de energia, cortes e entradas. Zooms, componentes e rampas já disparam os próprios sons; add_sfx é para o que a cena pede além disso. Catálogo:
 ${sfxCatalogForAgent()}
 - Mídia de contexto (add_broll): só o que está listado em "Mídias de contexto"; 2–5 s onde a fala trata do que a mídia mostra; nunca sobre o gancho nem junto com tela cheia.
 - Marca: não passe cores nos params — os componentes herdam o Brand Kit. A tarja (executive_lower_third) está DESLIGADA por padrão: só use se o contexto disser "disponível". A falta dela nunca é motivo para editar menos nem assunto para comentar.
@@ -232,7 +232,7 @@ Olhe como um editor exigente e procure só defeitos reais:
 - texto ou cartão na frente do rosto; legenda sobre o rosto ou disputando espaço com um card;
 - texto ilegível: pequeno demais, pouco contraste, cortado na borda, quebrado de forma estranha;
 - dois elementos disputando o mesmo espaço;
-- acabamento sonoro incompleto: sem trilha onde o estilo pede, cortes e impactos secos, sem efeito no clímax;
+- acabamento sonoro incompleto: cortes e impactos secos, sem efeito no clímax (a falta de trilha de fundo NÃO é defeito);
 - em vídeo de ação: nenhuma rampa de velocidade, imagem sem tratamento, pausas de ação cortadas.
 
 Tudo que o laudo determinístico marca como "Corrija" é obrigatório. Corrija com edit_timeline: encurte o texto (update_clip com params), mova ou remova o componente (delete_clip), tire o zoom sem motivo, acrescente o som que falta (add_sfx, set_music), a rampa ou o tratamento que falta (speed_ramp, set_look). Não mexa no que está bom e não refaça a edição.

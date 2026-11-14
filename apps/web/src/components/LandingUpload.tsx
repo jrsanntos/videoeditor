@@ -173,7 +173,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
             <ol className="space-y-4 text-[15.5px] text-haze">
               {[
                 ["Você vê o seu vídeo no estilo escolhido", "na hora, aqui mesmo"],
-                ["Encontramos as pausas e os erros", "análise grátis, no seu navegador"],
+                ["Encontramos as pausas", "análise grátis, no seu navegador"],
                 ["A IA edita tudo", `com os ${SIGNUP_CREDITS} créditos grátis da sua conta`],
               ].map(([title, sub], i) => (
                 <li key={title} className="flex gap-4">

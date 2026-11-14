@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatCredits, PLANS, PRICING, projectDuration, type PlanId } from "@videoeditor/core";
-import { closeProject, importVideo, logout, refreshMe, resumePending, startEmptyProject } from "@/lib/actions";
+import { checkMedia, closeProject, deleteSavedProject, importVideo, listProjects, logout, openProject, refreshMe, relinkMedia, resumePending, startEmptyProject, type ProjectSummary } from "@/lib/actions";
 import { downloadBlob, exportInBrowser, exportOTIO } from "@/lib/export";
-import { loadMedia } from "@/lib/media";
 import { hydrateEditor, useEditor } from "@/lib/store";
 import { ChatPanel } from "./ChatPanel";
 import { Inspector } from "./Inspector";
@@ -17,6 +16,7 @@ import { Icon, Logo, ResizeHandle } from "./ui";
 
 export function Editor() {
   const project = useEditor((s) => s.project);
+  const missing = useEditor((s) => s.missingMedia);
   const [ready, setReady] = useState(false);
   const [small, setSmall] = useSmallScreen();
 
@@ -25,12 +25,8 @@ export function Editor() {
     void refreshMe();
     const p = useEditor.getState().project;
     void (async () => {
-      if (p) {
-        const missing = await loadMedia(Object.keys(p.assets));
-        // O JSON da edição sobrevive, mas sem o arquivo bruto de um clip da timeline não há o que exibir.
-        const used = new Set(p.tracks.flatMap((t) => t.clips).flatMap((c) => (c.type === "media" || c.type === "broll" ? [c.assetId] : [])));
-        if (missing.some((id) => used.has(id))) useEditor.getState().setProject(null);
-      }
+      // Arquivo bruto que não está neste navegador: a edição continua aqui e o editor pede para religá-lo.
+      if (p) await checkMedia(p);
       setReady(true);
       // Vídeo enviado na página inicial antes do cadastro: entra agora, já com a conta.
       await resumePending();
@@ -68,6 +64,7 @@ export function Editor() {
       </div>
     );
   if (!project) return <UploadScreen />;
+  if (missing.length) return <RelinkScreen />;
   if (small) return <MobileEditor onFull={() => setSmall(false)} />;
   const { resize, resetLayout } = useEditor.getState();
 
@@ -170,6 +167,7 @@ function UploadScreen() {
             className="mt-1.5 w-full rounded-xl border border-line bg-ink-900/70 px-3.5 py-2.5 text-[13px] text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-brand-400"
           />
         </label>
+        <ProjectList />
         <ol className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
           {steps.map((s, i) => (
             <li key={s.title} className="panel rounded-2xl p-4">
@@ -187,10 +185,128 @@ function UploadScreen() {
   );
 }
 
+const clock = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+const when = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** Projetos salvos na conta: abrir de onde parou, em qualquer aparelho. */
+function ProjectList() {
+  const busy = useEditor((s) => s.busy);
+  const [list, setList] = useState<ProjectSummary[] | null>(null);
+  useEffect(() => {
+    void listProjects().then((l) => setList(l ?? []));
+  }, []);
+  if (!list?.length) return null;
+  return (
+    <section className="w-full max-w-2xl" aria-label="Seus projetos" data-testid="project-list">
+      <h2 className="text-[13px] font-semibold text-zinc-200">Seus projetos</h2>
+      <p className="mt-0.5 text-[12px] text-zinc-500">A edição fica salva na sua conta. O arquivo de vídeo fica no navegador em que você enviou.</p>
+      <ul className="mt-3 max-h-64 space-y-1.5 overflow-y-auto pr-1">
+        {list.map((p) => (
+          <li key={p.id} className="panel flex items-center gap-3 rounded-xl px-3.5 py-2.5">
+            <button className="min-w-0 flex-1 text-left disabled:opacity-50" disabled={!!busy} onClick={() => void openProject(p.id)} data-testid="project-open">
+              <span className="block truncate text-[13.5px] font-medium text-zinc-100">{p.name}</span>
+              <span className="block text-[11.5px] text-zinc-500">
+                {clock(p.duration)} · editado em {when(p.updatedAt)}
+              </span>
+            </button>
+            <button
+              className="shrink-0 rounded-lg px-2 py-1.5 text-[12px] text-zinc-500 transition hover:bg-white/8 hover:text-rose-300"
+              disabled={!!busy}
+              aria-label={`Apagar o projeto ${p.name}`}
+              onClick={async () => {
+                if (!confirm(`Apagar o projeto "${p.name}"? A edição salva na conta e o vídeo guardado neste navegador serão removidos. Isso não pode ser desfeito.`)) return;
+                const error = await deleteSavedProject(p.id);
+                if (error) useEditor.getState().setNotice(error);
+                else setList((l) => (l ?? []).filter((x) => x.id !== p.id));
+              }}
+            >
+              Apagar
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Projeto aberto num navegador que não tem os arquivos de vídeo (outro
+ * aparelho, ou dados do navegador apagados): a edição está inteira, e basta
+ * escolher de novo os mesmos arquivos.
+ */
+function RelinkScreen() {
+  const project = useEditor((s) => s.project)!;
+  const missing = useEditor((s) => s.missingMedia);
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState<string | null>(null);
+  return (
+    <div className="stage-bg flex min-h-screen flex-col" data-testid="relink">
+      <header className="flex h-14 items-center justify-between px-5">
+        <a href="/" aria-label="Página inicial">
+          <Logo />
+        </a>
+        <UserMenu />
+      </header>
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
+        <div className="max-w-xl text-center">
+          <h1 className="text-3xl font-semibold tracking-tight text-white">Escolha de novo o vídeo deste projeto</h1>
+          <p className="mx-auto mt-3 text-[14.5px] leading-relaxed text-zinc-400">
+            A edição de <b className="font-semibold text-zinc-200">{project.name}</b> está salva na sua conta, mas o arquivo de vídeo não está neste navegador (ele não sobe para o servidor). Escolha o mesmo arquivo e tudo volta como estava.
+          </p>
+        </div>
+        <ul className="w-full max-w-xl space-y-2">
+          {missing.map((id) => {
+            const asset = project.assets[id];
+            if (!asset) return null;
+            return (
+              <li key={id} className="panel flex items-center gap-3 rounded-xl px-4 py-3">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13.5px] font-medium text-zinc-100">{asset.name}</span>
+                  <span className="block text-[11.5px] text-zinc-500">{asset.kind === "image" ? "imagem" : clock(asset.duration)}</span>
+                </span>
+                <label className={`btn-brand shrink-0 cursor-pointer rounded-lg px-3.5 py-2 text-[13px] font-semibold ${working ? "pointer-events-none opacity-60" : ""}`}>
+                  {working === id ? "Conferindo…" : "Escolher arquivo"}
+                  <input
+                    type="file"
+                    accept={asset.kind === "image" ? "image/*" : asset.kind === "audio" ? "audio/*,video/*" : "video/*"}
+                    className="hidden"
+                    data-testid="relink-input"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      setError(null);
+                      setWorking(id);
+                      setError(await relinkMedia(id, file));
+                      setWorking(null);
+                    }}
+                  />
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+        {error && (
+          <p className="max-w-xl rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[13.5px] text-rose-200" role="alert">
+            {error}
+          </p>
+        )}
+        <button className="text-[13px] text-zinc-400 underline-offset-4 hover:text-white hover:underline" onClick={() => void closeProject()}>
+          Voltar para os meus projetos
+        </button>
+      </div>
+      <Notice />
+    </div>
+  );
+}
+
+const SYNC_LABEL = { idle: "", saving: "Salvando…", saved: "Salvo na conta", error: "Sem conexão: salvo só neste navegador" } as const;
+
 function TopBar() {
   const project = useEditor((s) => s.project)!;
   const credits = useEditor((s) => s.credits);
   const unlimited = useEditor((s) => s.unlimited);
+  const sync = useEditor((s) => s.sync);
 
   return (
     <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-ink-900 px-4">
@@ -200,6 +316,11 @@ function TopBar() {
       <span className="h-5 w-px bg-line" />
       <span className="truncate text-[13px] text-zinc-400">{project.name}</span>
       <span className="hidden rounded-md border border-line px-1.5 py-0.5 font-mono text-[10px] text-zinc-500 sm:inline">{project.aspectRatio}</span>
+      {sync !== "idle" && (
+        <span className={`hidden shrink-0 text-[11.5px] md:inline ${sync === "error" ? "text-amber-300" : "text-zinc-500"}`} role="status" data-testid="sync">
+          {SYNC_LABEL[sync]}
+        </span>
+      )}
       <div className="ml-auto flex items-center gap-2.5">
         <a href="/planos" className="flex items-center gap-1.5 rounded-full border border-line bg-ink-850 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-line-strong" title="Saldo de créditos da sua conta. Clique para ver planos e comprar créditos.">
           <Icon.bolt size={13} className="text-amber-300" />
@@ -210,11 +331,11 @@ function TopBar() {
         </a>
         <button
           className="rounded-lg px-2.5 py-1.5 text-[13px] text-zinc-300 transition hover:bg-white/8 hover:text-white"
-          onClick={() => {
-            if (confirm("Fechar este projeto? O vídeo e a edição salvos neste navegador serão removidos.")) void closeProject();
-          }}
+          title="Fecha este projeto (ele fica salvo na sua conta) e mostra os seus projetos"
+          onClick={() => void closeProject()}
+          data-testid="projects"
         >
-          Novo projeto
+          Projetos
         </button>
         <Shortcuts />
         <ExportMenu />
@@ -273,6 +394,9 @@ function MobileEditor({ onFull }: { onFull: () => void }) {
           <Logo size={22} />
         </a>
         <span className="min-w-0 flex-1 truncate text-[12.5px] text-zinc-400">{project.name}</span>
+        <button className="shrink-0 rounded-lg px-2 py-1 text-[11.5px] text-zinc-300" onClick={() => void closeProject()}>
+          Projetos
+        </button>
         <a href="/planos" className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-ink-850 px-2.5 py-1 text-[11.5px] text-zinc-300">
           <Icon.bolt size={12} className="text-amber-300" />
           <b className="font-semibold text-white">{unlimited ? "∞" : formatCredits(credits)}</b>

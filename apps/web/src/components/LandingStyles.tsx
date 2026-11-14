@@ -21,7 +21,7 @@ const MOVES: Record<SkillId, string[]> = {
   acao: [
     "As pausas sem fala ficam: silêncio com ação é a cena, não tempo morto.",
     "Câmera lenta nos ápices e aceleração nos deslocamentos, com cor de cinema.",
-    "Trilha de ação, impactos e efeitos sonoros no pico exato de cada golpe.",
+    "Impactos e efeitos sonoros no pico exato de cada golpe.",
   ],
   limpeza: [
     "Recomeços, falas para a equipe e trechos fora do conteúdo são cortados.",

@@ -53,13 +53,28 @@ export async function loadMedia(assetIds: string[]): Promise<string[]> {
   return missing;
 }
 
-export async function clearMedia() {
+/**
+ * Solta a mídia da memória (ao trocar de projeto) sem apagar do navegador: o
+ * projeto continua salvo na conta e reabre com os mesmos arquivos.
+ */
+export function releaseMedia() {
   for (const { url } of urls.values()) URL.revokeObjectURL(url);
   urls.clear();
-  try {
-    await idb("readwrite", (s) => s.clear());
-  } catch {
-    // nada a limpar
+  monoCache.clear();
+}
+
+/** Apaga do navegador os arquivos de um projeto excluído. */
+export async function deleteMedia(assetIds: string[]) {
+  for (const id of assetIds) {
+    const entry = urls.get(id);
+    if (entry) URL.revokeObjectURL(entry.url);
+    urls.delete(id);
+    monoCache.delete(id);
+    try {
+      await idb("readwrite", (s) => s.delete(id));
+    } catch {
+      // nada a apagar
+    }
   }
 }
 

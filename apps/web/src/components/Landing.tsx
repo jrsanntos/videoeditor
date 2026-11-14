@@ -45,7 +45,7 @@ const FAQ = [
   },
   {
     q: "O meu vídeo é enviado para algum servidor?",
-    a: "O arquivo de vídeo fica no seu navegador. Só o áudio comprimido sobe para a transcrição, e a IA trabalha com o texto da fala e alguns quadros em baixa resolução para entender o enquadramento.",
+    a: "O arquivo de vídeo fica no seu navegador. Só o áudio comprimido sobe para a transcrição, e a IA trabalha com o texto da fala e alguns quadros em baixa resolução para entender o enquadramento. A edição (cortes, legendas, tudo que foi montado) fica salva na sua conta: para continuar em outro aparelho, basta escolher o mesmo arquivo de vídeo de novo.",
   },
   {
     q: "Como funcionam os créditos?",
@@ -301,7 +301,7 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
                   <ul className="mt-7 flex-1 space-y-3 border-t border-edge pt-6 text-[15.5px]">
                     {[
                       `Vídeos de até ${plan.maxUploadMinutes} minutos`,
-                      `Exportação em ${plan.maxExportHeight >= 2160 ? "4K" : plan.maxExportHeight >= 1080 ? "Full HD (1080p)" : "HD (720p)"}`,
+                      `Exportação em ${plan.maxExportHeight >= 1080 ? "Full HD (1080p)" : "HD (720p)"}`,
                       plan.watermark ? "Com marca d'água" : "Sem marca d'água",
                       plan.brandKits === 1 ? "1 Brand Kit salvo" : `Até ${plan.brandKits} Brand Kits, um por cliente`,
                       "Edição manual e exportação ilimitadas",

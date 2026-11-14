@@ -145,7 +145,8 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
   const spec = CAPTION_PRESETS[style.preset];
   const { width, height } = project;
   let size = spec.size * u * style.fontScale;
-  const texts = group.words.map((w) => (spec.upper ? w.text.toUpperCase() : w.text));
+  // Estilos de impacto (caixa alta): vírgula e ponto do transcritor saem; "?" e "!" ficam, porque mudam a leitura.
+  const texts = group.words.map((w) => (spec.upper ? w.text.toUpperCase().replace(/[.,;:]+$/u, "") || w.text.toUpperCase() : w.text));
 
   const measure = () => {
     ctx.font = font(spec.weight, size);

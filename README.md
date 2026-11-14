@@ -78,7 +78,7 @@ Na primeira execução, crie uma conta em http://localhost:3000/login. Em desenv
 ### Configurando o Stripe
 
 1. Crie três preços em BRL: dois recorrentes mensais (Creator R$ 127 com 330 créditos, Pro R$ 347 com 1.000 créditos) e um avulso (pacote de 180 créditos, R$ 79). Os créditos de cada um estão em `packages/core/src/credits.ts`. Copie os ids `price_…` para as variáveis acima (ou para o painel `/admin`).
-2. Crie um endpoint de webhook para `{APP_URL}/api/stripe/webhook` com os eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`. Copie o segredo `whsec_…`.
+2. Crie um endpoint de webhook para `{APP_URL}/api/stripe/webhook` com os eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded` e `charge.dispute.created` (estorno e contestação abatem a receita e removem os créditos). Copie o segredo `whsec_…`.
 3. Ative o Portal do Cliente com os dois planos como produtos permitidos para troca. Para o upgrade liberar os créditos do plano maior na hora, configure a troca para cobrar a diferença imediatamente.
 4. Os meios de pagamento (cartão, Pix no pacote avulso, boleto) são os habilitados no Dashboard.
 
@@ -129,6 +129,6 @@ Ainda não existe: projetos e armazenamento em nuvem, render em nuvem. Ver o roa
 | Cards novos, `custom_motion_graphic`, 3 modelos prontos | `renderer/components/v2.ts`, `core/motion-graphic.ts`, `core/skills.ts`, `core/template.ts` |
 
 Limites conhecidos: as grades de cor são aproximações em Canvas 2D (filtro + camadas), não LUTs 3D;
-a trilha de fundo é um loop sintetizado por clima (não há biblioteca de músicas no repositório);
+a trilha de fundo é um loop sintetizado por clima (não há biblioteca de músicas no repositório) e por isso nenhum modelo a liga sozinho: fica no painel para quem quiser, e o usuário pode usar a própria música;
 na câmera lenta o áudio desce de tom junto (sem preservação de pitch); o ritmo de cortes de uma
 referência do YouTube é estimado por metadados, legendas e miniatura, não medido quadro a quadro.

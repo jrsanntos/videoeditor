@@ -74,7 +74,7 @@ const LAYERS: Record<SkillId, React.ReactNode> = {
         <div className="mt-[2.5cqw] text-[5.2cqw] font-bold uppercase tracking-[0.12em] text-[#59ffcd]">no pico da cena</div>
       </div>
       <div className="absolute inset-x-[4cqw] bottom-[11%] text-center text-[7.6cqw] font-extrabold uppercase leading-none text-white [text-shadow:0_0.5cqw_0_#000]">
-        <Words text="trilha e som no ponto exato" hi="#59ffcd" />
+        <Words text="som no ponto exato" hi="#59ffcd" />
       </div>
     </>
   ),

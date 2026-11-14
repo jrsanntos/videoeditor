@@ -9,12 +9,12 @@ import { Icon } from "./icons";
 
 /** Os estilos em linguagem de quem não é editor: para que serve e como fica. */
 const STYLES: { id: SkillId; name: string; icon: React.ReactNode; forWho: string; look: string }[] = [
-  { id: "viral", name: "Retenção Viral", icon: <Icon.bolt size={18} />, forWho: "Reels, Shorts e TikTok", look: "Gancho em 2 s, legenda pop na base, micro-zooms nos cortes e trilha animada." },
-  { id: "acao", name: "Ação & Cinema", icon: <Icon.film size={18} />, forWho: "Esportes, treinos, cenas com pouca fala", look: "Câmera lenta nos ápices, cor de cinema, impactos, trilha de ação. Não corta os silêncios." },
+  { id: "viral", name: "Retenção Viral", icon: <Icon.bolt size={18} />, forWho: "Reels, Shorts e TikTok", look: "Gancho em 2 s, legenda pop na base, micro-zooms nos cortes e efeitos sonoros." },
+  { id: "acao", name: "Ação & Cinema", icon: <Icon.film size={18} />, forWho: "Esportes, treinos, cenas com pouca fala", look: "Câmera lenta nos ápices, cor de cinema e impactos no ponto exato. Não corta os silêncios." },
   { id: "autoridade", name: "Autoridade", icon: <Icon.shield size={18} />, forWho: "Negócios, saúde, direito, educação", look: "Tom quente e limpo, números em cartões, câmera suave e legenda editorial." },
 ];
 
-const INCLUDED = ["Plano por atos para você aprovar", "Legendas na base, fora do rosto", "Zooms com motivo, no sujeito", "Cards, trilha e efeitos sonoros", "Revisão automática antes de entregar"];
+const INCLUDED = ["Plano por atos para você aprovar", "Legendas na base, fora do rosto", "Zooms com motivo, no sujeito", "Cards e efeitos sonoros", "Revisão automática antes de entregar"];
 
 /**
  * Assistente de edição automática. É o caminho de quem nunca editou um vídeo:

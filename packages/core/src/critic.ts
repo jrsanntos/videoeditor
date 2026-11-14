@@ -146,7 +146,8 @@ export function critiqueEdit(project: Project, opts: { skill?: Skill; screen?: S
   for (const o of framingObjections(project, components)) issues.push({ severity: "erro", code: "sem_espaco_no_quadro", clipIds: [o.clipId], message: `${o.message} Remova o clip ${o.clipId}.` });
 
   // 4. Acabamento sonoro completo.
-  const wantsMusic = opts.skill ? opts.skill.recipe.music !== "none" : projectGenre(project) === "action_cinematic";
+  // A trilha só é cobrada quando o modelo em uso a inclui (hoje nenhum inclui: ver skills.ts).
+  const wantsMusic = !!opts.skill && opts.skill.recipe.music !== "none";
   const hasMusic = project.music.mood !== "none" || !!project.music.assetId;
   if (wantsMusic && !hasMusic) issues.push({ severity: "erro", code: "som_incompleto", message: "O vídeo está sem trilha de fundo. Use set_music com o clima do vídeo (com ducking sob a voz)." });
   if (hasMusic && !project.music.duck && words.length) issues.push({ severity: "aviso", code: "som_incompleto", message: "A trilha está sem ducking: ela disputa com a voz. Ligue duck em set_music." });

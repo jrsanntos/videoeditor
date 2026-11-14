@@ -827,7 +827,8 @@ describe("2. gênero, playbook de ação e crítico", () => {
     const base = applyOperations(actionVideo(), local).project;
     expect(base.look).toMatchObject({ grade: "tactical_teal_orange", vignette: 0.55 });
     expect(base.look.letterbox).toBeGreaterThan(0);
-    expect(base.music).toMatchObject({ mood: "action", duck: true });
+    // Nenhum modelo liga a trilha da casa (loop sintético): fica desligada, com o ducking pronto.
+    expect(base.music).toMatchObject({ mood: "none", duck: true });
     expect(base.captions.style).toMatchObject({ preset: "minimal_cinema", position: "bottom" });
 
     // O plano que o Editor executa, só com o vocabulário do agente (âncoras por tempo do bruto).
@@ -884,7 +885,8 @@ describe("2. gênero, playbook de ação e crítico", () => {
     const codes = critiqueEdit(project, { skill: SKILLS.acao }).map((i) => i.code);
     expect(codes).toContain("zoom_sem_motivo");
     expect(codes).toContain("acao_sem_tratamento");
-    expect(codes).toContain("som_incompleto");
+    // Falta de trilha de fundo não é defeito: nenhum modelo a inclui.
+    expect(critiqueEdit(project, { skill: SKILLS.acao }).some((i) => /trilha de fundo/.test(i.message))).toBe(false);
   });
 
   it("o Crítico acusa texto na tela repetindo a fala", () => {
@@ -1314,7 +1316,8 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     expect(SKILLS.acao.name).toBe("Ação & Cinematográfico");
     expect(SKILLS.autoridade.name).toBe("Autoridade & Documentário Moderno");
     const recipes = TEMPLATE_SKILLS.map((id) => SKILLS[id].recipe);
-    for (const key of ["captions", "look", "music"] as const) expect(new Set(recipes.map((r) => r[key])).size).toBe(3);
+    for (const key of ["captions", "look"] as const) expect(new Set(recipes.map((r) => r[key])).size).toBe(3);
+    for (const r of recipes) expect(r.music).toBe("none");
     expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.fontPair)).size).toBe(3);
     expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.primaryColor)).size).toBe(3);
 
@@ -1322,12 +1325,12 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     expect(SKILLS.viral.recipe.sfx).toEqual(expect.arrayContaining(["pop", "whoosh_rapido", "riser"]));
     expect(SKILLS.viral.direction).toContain("2 s");
 
-    expect(SKILLS.acao.recipe).toMatchObject({ captions: "minimal_cinema", speedRamps: true, music: "action" });
+    expect(SKILLS.acao.recipe).toMatchObject({ captions: "minimal_cinema", speedRamps: true, music: "none" });
     expect(SKILLS.acao.recipe.sfx).toEqual(expect.arrayContaining(["impacto_cinematico", "sub_drop"]));
     expect(SKILLS.acao.recipe.cards).toContain("tactical_hud_overlay");
     expect(SKILLS.acao.local.some((o) => o.op === "remove_silences")).toBe(false);
 
-    expect(SKILLS.autoridade.recipe).toMatchObject({ captions: "editorial_clean", look: "warm_cinematic", music: "ambient" });
+    expect(SKILLS.autoridade.recipe).toMatchObject({ captions: "editorial_clean", look: "warm_cinematic", music: "none" });
     expect(SKILLS.autoridade.recipe.cards).toEqual(expect.arrayContaining(["stat_counter_card", "comparison_split"]));
     // A tarja de cargo é opcional e fica desligada: nenhum modelo a liga sozinho.
     for (const id of TEMPLATE_SKILLS) expect(JSON.stringify(SKILLS[id].local)).not.toContain("showLowerThird");
@@ -1363,7 +1366,7 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
       expect(templatePrompt(t.data)).toContain(t.data.name);
     }
     const action = BUILTIN_TEMPLATES[1]!.data;
-    expect(action).toMatchObject({ speedRamps: true, music: "action", silence: { remove: false } });
+    expect(action).toMatchObject({ speedRamps: true, music: "none", silence: { remove: false } });
     expect(templatePrompt(action)).toContain("Rampas de velocidade");
   });
 });
@@ -1595,5 +1598,58 @@ describe("economia: lucro real depois de taxas, impostos e despesas", () => {
   it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {
     const sec = PLANS.free.maxUploadMinutes * 60;
     expect(SIGNUP_CREDITS).toBeGreaterThanOrEqual(creditCost({ type: "ingest", durationSec: sec }) + creditCost({ type: "agent", tier: "full", durationSec: sec }));
+  });
+});
+
+import { snapWordOnsets } from "./onsets";
+
+describe("fronteiras de palavra conferidas no áudio (cortes sem comer consoante)", () => {
+  const RATE = 16000;
+  /** Voz sintética: tom nos trechos indicados, ruído baixo no resto. */
+  const audio = (total: number, voiced: [number, number][]) => {
+    const s = new Float32Array(Math.round(total * RATE));
+    let seed = 7;
+    for (let i = 0; i < s.length; i++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      const t = i / RATE;
+      const on = voiced.some(([a, b]) => t >= a && t < b);
+      s[i] = (seed / 2147483648 - 1) * 0.002 + (on ? Math.sin(2 * Math.PI * 180 * t) * 0.3 : 0);
+    }
+    return s;
+  };
+  const word = (id: string, start: number, end: number) => ({ id, text: id, start, end });
+
+  it("com pausa antes: o início recua até onde a voz começa, sem invadir a palavra anterior", () => {
+    // A voz de "b" começa em 0,80 s; o transcritor disse 0,88 s.
+    const samples = audio(2, [[0, 0.5], [0.8, 1.4], [1.7, 2]]);
+    const out = snapWordOnsets([word("a", 0, 0.5), word("b", 0.88, 1.4), word("c", 1.7, 2)], samples, RATE);
+    expect(out[1]!.start).toBeGreaterThan(0.74);
+    expect(out[1]!.start).toBeLessThanOrEqual(0.8);
+    expect(out[0]!.end).toBe(0.5);
+    // Início já em silêncio (folga de sobra) fica como veio.
+    const early = snapWordOnsets([word("a", 0, 0.5), word("b", 0.7, 1.4), word("c", 1.7, 2)], samples, RATE);
+    expect(early[1]!.start).toBe(0.7);
+  });
+
+  it("palavras coladas: a fronteira vai para o vale de energia; fala contínua não muda", () => {
+    // Micro-pausa real entre 0,50 e 0,54 s; o transcritor pôs a fronteira em 0,60 s.
+    const samples = audio(2, [[0, 0.5], [0.54, 1.2], [1.6, 2]]);
+    const out = snapWordOnsets([word("a", 0, 0.6), word("b", 0.6, 1.2), word("c", 1.6, 2)], samples, RATE);
+    expect(out[1]!.start).toBeGreaterThan(0.5);
+    expect(out[1]!.start).toBeLessThanOrEqual(0.54);
+    expect(out[0]!.end).toBe(out[1]!.start);
+    const flat = audio(2, [[0, 1.2], [1.6, 2]]);
+    const same = snapWordOnsets([word("a", 0, 0.6), word("b", 0.6, 1.2), word("c", 1.6, 2)], flat, RATE);
+    expect(same[1]!.start).toBe(0.6);
+    expect(same[0]!.end).toBe(0.6);
+  });
+
+  it("áudio sem contraste e marcas de hesitação ficam intactos", () => {
+    const loud = audio(2, [[0, 2]]);
+    const words = [word("a", 0, 0.6), word("b", 0.9, 1.2)];
+    expect(snapWordOnsets(words, loud, RATE)).toEqual(words);
+    const samples = audio(2, [[0, 0.5], [0.8, 1.4]]);
+    const marked = [word("a", 0, 0.5), { ...word("b", 0.88, 1.4), disfluency: "hesitation" as const }];
+    expect(snapWordOnsets(marked, samples, RATE)[1]!.start).toBe(0.88);
   });
 });

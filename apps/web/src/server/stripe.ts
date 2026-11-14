@@ -1,7 +1,7 @@
 import "server-only";
 import Stripe from "stripe";
 import { PLANS, TOPUPS, type PlanId } from "@videoeditor/core";
-import { grantCredits, resetPlanCredits } from "./billing";
+import { grantCredits, resetPlanCredits, revokeCredits } from "./billing";
 import { db, tx } from "./db";
 import { HttpError } from "./errors";
 import { getSettings } from "./settings";
@@ -242,6 +242,61 @@ async function onCheckoutPaid(session: Stripe.Checkout.Session) {
   await recordStripePayment(user.id, session.amount_total ?? 0, session.currency ?? "brl", `Pacote de ${credits} créditos`, session.id, new Date());
 }
 
+/** O que uma cobrança comprou: um pacote avulso (com quantos créditos) ou uma fatura de assinatura. */
+type ChargeOrigin = { kind: "topup"; credits: number } | { kind: "subscription" };
+
+/** Descobre a origem de uma cobrança pelo checkout que a gerou. Fora da transação (lê a API do Stripe). */
+async function chargeOrigin(stripe: Stripe, paymentIntent: string | null): Promise<ChargeOrigin> {
+  if (!paymentIntent) return { kind: "subscription" };
+  const sessions = await stripe.checkout.sessions.list({ payment_intent: paymentIntent, limit: 1 });
+  const session = sessions.data[0];
+  const credits = Number(session?.metadata?.credits);
+  return session?.mode === "payment" && session.metadata?.kind === "topup" && Number.isInteger(credits) && credits > 0 ? { kind: "topup", credits } : { kind: "subscription" };
+}
+
+/**
+ * Dinheiro devolvido (estorno) ou contestado no cartão: a receita é abatida no
+ * financeiro e os créditos comprados saem do saldo, até onde ainda existirem.
+ *
+ * - pacote avulso: saem os créditos proporcionais ao valor devolvido;
+ * - assinatura: só o estorno TOTAL da fatura zera os créditos do plano no ciclo
+ *   (devolução parcial é desconto, não cancelamento). O plano em si segue o
+ *   estado da assinatura, que chega pelos eventos customer.subscription.*.
+ *
+ * `returnedCents` é o total devolvido até agora nesta cobrança: um segundo
+ * estorno parcial só tira a diferença.
+ */
+async function onMoneyReturned(o: { chargeId: string; customerId: string | null; amountCents: number; returnedCents: number; currency: string; origin: ChargeOrigin; why: "estorno" | "contestação" }) {
+  const user = await findUser(null, o.customerId);
+  if (!user) {
+    console.error(`stripe: ${o.why} da cobrança ${o.chargeId} sem usuário correspondente (cliente ${o.customerId})`);
+    return;
+  }
+  if (o.returnedCents <= 0 || o.amountCents <= 0) return;
+  const tag = `${o.why === "estorno" ? "refund" : "dispute"}:${o.chargeId}`;
+  // Receita: lança só o que ainda não foi abatido desta cobrança.
+  const already = (await db.one<{ total: number }>("SELECT COALESCE(SUM(amount_brl), 0) AS total FROM payments WHERE ref LIKE $1", [`%:${o.chargeId}:%`]))?.total ?? 0;
+  const pending = brl(o.returnedCents) + already;
+  if (pending > 0.004) {
+    if (o.currency !== "brl") console.error(`stripe: ${o.why} ${o.chargeId} em ${o.currency}; lançado como R$ sem conversão`);
+    await db.run(
+      `INSERT INTO payments (user_id, amount_brl, description, source, ref, paid_at) VALUES ($1, $2, $3, 'stripe', $4, now())
+       ON CONFLICT (ref) DO NOTHING`,
+      [user.id, -pending, `${o.why === "estorno" ? "Estorno" : "Contestação"} (${o.origin.kind === "topup" ? "pacote de créditos" : "assinatura"})`, `${tag}:${o.returnedCents}`],
+    );
+  }
+  const full = o.returnedCents >= o.amountCents;
+  if (o.origin.kind === "topup") {
+    const owed = Math.floor(((o.origin.credits * Math.min(1, o.returnedCents / o.amountCents)) * 2)) / 2;
+    const done = -((await db.one<{ total: number }>("SELECT COALESCE(SUM(delta), 0) AS total FROM credit_ledger WHERE ref LIKE $1", [`%:${o.chargeId}:%`]))?.total ?? 0);
+    await revokeCredits(user.id, owed - done, "extra", `${o.why} do pacote de ${o.origin.credits} créditos`, `${tag}:${o.returnedCents}`);
+  } else if (full) {
+    const plan = (await db.one<{ credits_plan: number }>("SELECT credits_plan FROM users WHERE id = $1", [user.id]))?.credits_plan ?? 0;
+    await revokeCredits(user.id, plan, "plan", `${o.why} da assinatura: créditos do ciclo removidos`, `${tag}:${o.returnedCents}`);
+  }
+  if (o.why === "contestação") console.error(`ALERTA OPERACIONAL: contestação no cartão (cobrança ${o.chargeId}, usuário ${user.id}). Responda no painel do Stripe; os créditos já foram removidos.`);
+}
+
 function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return idOf(invoice.parent?.subscription_details?.subscription);
 }
@@ -264,6 +319,20 @@ export async function handleStripeEvent(stripe: Stripe, event: Stripe.Event): Pr
           ? (event.data.object as Stripe.Subscription).id
           : null;
   if (subId) sub = await stripe.subscriptions.retrieve(subId);
+  // Estorno e contestação: a cobrança e a origem dela também são lidas antes da transação.
+  let returned: Parameters<typeof onMoneyReturned>[0] | null = null;
+  if (event.type === "charge.refunded") {
+    const charge = event.data.object;
+    returned = { chargeId: charge.id, customerId: idOf(charge.customer), amountCents: charge.amount, returnedCents: charge.amount_refunded, currency: charge.currency, origin: await chargeOrigin(stripe, idOf(charge.payment_intent)), why: "estorno" };
+  } else if (event.type === "charge.dispute.created") {
+    const dispute = event.data.object;
+    const chargeId = idOf(dispute.charge);
+    if (chargeId) {
+      const charge = await stripe.charges.retrieve(chargeId);
+      // Contestado + o que já tinha sido devolvido antes: o total que saiu desta cobrança.
+      returned = { chargeId, customerId: idOf(charge.customer), amountCents: charge.amount, returnedCents: Math.min(charge.amount, charge.amount_refunded + dispute.amount), currency: charge.currency, origin: await chargeOrigin(stripe, idOf(charge.payment_intent)), why: "contestação" };
+    }
+  }
 
   await tx(async () => {
     // Trava o evento: uma entrega repetida espera esta transação e depois não insere nada.
@@ -281,6 +350,10 @@ export async function handleStripeEvent(stripe: Stripe, event: Stripe.Event): Pr
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
         if (sub) await syncSubscription(sub, prices);
+        break;
+      case "charge.refunded":
+      case "charge.dispute.created":
+        if (returned) await onMoneyReturned(returned);
         break;
     }
   });

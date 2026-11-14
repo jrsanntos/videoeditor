@@ -82,6 +82,26 @@ async function debit(userId: string, amount: number, reason: string, actorId?: s
   });
 }
 
+/**
+ * Tira créditos de UM saldo por causa de um estorno ou contestação. Nunca deixa
+ * o saldo negativo (o que já foi usado não volta) e, com a mesma `ref`, não
+ * tira duas vezes. Devolve quanto saiu.
+ */
+export async function revokeCredits(userId: string, amount: number, bucket: CreditBucket, reason: string, ref: string): Promise<number> {
+  if (!(amount > 0)) return 0;
+  return tx(async () => {
+    const u = await lockUser(userId);
+    if (await db.one("SELECT 1 FROM credit_ledger WHERE ref = $1", [ref])) return 0;
+    const have = Math.max(0, bucket === "plan" ? u.credits_plan : u.credits_extra);
+    // Créditos têm uma casa decimal em passos de meio.
+    const taken = Math.min(have, Math.round(amount * 2) / 2);
+    // Linha com delta 0 também entra: marca o estorno como processado.
+    await db.run("INSERT INTO credit_ledger (user_id, delta, bucket, reason, ref) VALUES ($1, $2, $3, $4, $5)", [userId, -taken, bucket, reason, ref]);
+    if (taken > 0) await db.run(`UPDATE users SET ${bucket === "plan" ? "credits_plan = credits_plan" : "credits_extra = credits_extra"} - $2 WHERE id = $1`, [userId, taken]);
+    return taken;
+  });
+}
+
 /** Ajuste manual pelo painel: positivo entra como crédito extra; negativo é debitado como um consumo. */
 export async function adjustCredits(userId: string, delta: number, reason: string, actorId: string) {
   if (delta > 0) await grantCredits(userId, delta, "extra", reason, { actorId });

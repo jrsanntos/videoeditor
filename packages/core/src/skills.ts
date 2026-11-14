@@ -5,7 +5,14 @@ import { mgStats, type MotionGraphic } from "./motion-graphic";
 import { timelineWords } from "./timeline";
 
 /**
- * Skills: os modelos prontos que dirigem o agente. Cada um é uma arquitetura
+ * Skills: os modelos prontos que dirigem o agente.
+ *
+ * Trilha de fundo: nenhum modelo liga a trilha da casa. Ela é um loop curto
+ * sintetizado em código, que repetido o vídeo inteiro soa a edição automática;
+ * fica disponível no painel para quem quiser, e a música do próprio usuário
+ * (music.assetId) continua valendo. Volte a ligar por padrão só com um acervo
+ * de músicas licenciadas.
+ * Cada um é uma arquitetura
  * completa — paleta, tipografia, legenda, ritmo de corte, tratamento de cor,
  * trilha, SFX e cards próprios — com uma parte determinística (aplicada no
  * navegador, 0 créditos) e uma direção em texto que entra no pedido ao agente.
@@ -125,41 +132,41 @@ export const SKILLS: Record<SkillId, Skill> = {
       { op: "remove_silences", mode: "aggressive" },
       { op: "set_captions", enabled: true, style: { preset: "viral_pop", position: "bottom", maxWords: 3, highlightColor: "#FFE14D" } },
       { op: "set_look", look: { grade: "clean_punch", intensity: 0.7, vignette: 0.15, letterbox: 0 } },
-      { op: "set_music", music: { mood: "upbeat", volume: 0.35, duck: true } },
+      { op: "set_music", music: { mood: "none", volume: 0.35, duck: true } },
       { op: "set_format", finish: { cutZoom: true, voice: true }, sfx: { enabled: true } },
     ],
     brand: { primaryColor: "#FFE14D", secondaryColor: "#FF4D6D", backgroundColor: "#0A0A0F", textColor: "#FFFFFF", fontPair: "poppins-playfair" },
-    recipe: { captions: "viral_pop", look: "clean_punch", music: "upbeat", sfx: ["pop", "whoosh_rapido", "riser"], cards: ["depth_hook_title", "stat_counter_card", "social_proof_toast", "kinetic_pivot_card"], speedRamps: false, cutZoom: true },
+    recipe: { captions: "viral_pop", look: "clean_punch", music: "none", sfx: ["pop", "whoosh_rapido", "riser"], cards: ["depth_hook_title", "stat_counter_card", "social_proof_toast", "kinetic_pivot_card"], speedRamps: false, cutZoom: true },
     pacing: { ...DEFAULT_PACING, maxStatic: 6, componentGap: 4, maxPer5s: 3, componentsPerMin: [3, 6], zoomsPerMin: [7, 12], minZoomScale: 1.08 },
     direction: `Modelo "Retenção Viral & Creator Pro" (9:16): o vídeo não pode dar motivo para o dedo rolar.
 - Corte tudo que não empurra o vídeo para a frente: takes ruins que sobraram, enrolação, frases de aquecimento antes do gancho ("oi gente", "então", "hoje eu vou falar"). O vídeo começa na primeira frase que promete algo.
 - Gancho visual nos primeiros 2 s, escolhido pelo quadro: com espaço em volta da pessoa, um card de impacto (depth_hook_title, ou stat_counter_card se a promessa for um número); em close-up, punch-in no rosto e legenda forte, sem título gigante. Sobre a primeira frase, com a promessa em 1 a 3 palavras, mais um add_sfx riser terminando no corte e um pop na entrada do card.
 - Micro-zooms nos cortes: a plataforma já alterna 1,08x a cada corte; acrescente punch-in seco (1.18–1.25x) só nas palavras ditas com mais força, e avanço lento nas explicações.
 - Cards: um por virada de raciocínio — kinetic_pivot_card para problema → solução, comparison_split para antes/depois, stat_counter_card em todo número, social_proof_toast para prova social, step_progress_bar quando houver etapas. A legenda some sozinha enquanto um card está na tela.
-- SFX: whoosh_rapido nas transições de assunto, pop nas entradas de item. A trilha animada já está ligada com ducking: não mexa.
+- SFX: whoosh_rapido nas transições de assunto, pop nas entradas de item. Não ligue trilha de fundo (set_music) por conta própria: só se o usuário pedir.
 - Fechamento: a última frase (conclusão ou chamada para ação) leva punch-in e um card.`,
   },
   acao: {
     id: "acao",
     name: "Ação & Cinematográfico",
-    tagline: "Câmera lenta nos ápices, cor de cinema, impactos e trilha de ação",
+    tagline: "Câmera lenta nos ápices, cor de cinema e impactos no ponto exato",
     audience: "Cenas dinâmicas, esportes, treinos e operações",
     focus: "Cenas visuais com pouca fala",
     genres: ["action_cinematic", "vlog_montage"],
     local: [
       { op: "set_look", look: { grade: "tactical_teal_orange", intensity: 0.9, vignette: 0.55, letterbox: 0.1 } },
-      { op: "set_music", music: { mood: "action", volume: 0.6, duck: true } },
+      { op: "set_music", music: { mood: "none", volume: 0.6, duck: true } },
       { op: "set_captions", enabled: true, style: { preset: "minimal_cinema", position: "bottom", maxWords: 6 } },
       { op: "set_format", finish: { cutZoom: false, voice: true }, sfx: { enabled: true, volume: 1 } },
     ],
     brand: { primaryColor: "#F97316", secondaryColor: "#2DD4BF", backgroundColor: "#05080A", textColor: "#F1F5F9", fontPair: "anton-playfair" },
-    recipe: { captions: "minimal_cinema", look: "tactical_teal_orange", music: "action", sfx: ["impacto_cinematico", "sub_drop", "impacto_grave", "whoosh_rapido", "riser", "zoom_punch"], cards: ["tactical_hud_overlay", "depth_hook_title", "callout_pointer"], speedRamps: true, cutZoom: false },
+    recipe: { captions: "minimal_cinema", look: "tactical_teal_orange", music: "none", sfx: ["impacto_cinematico", "sub_drop", "impacto_grave", "whoosh_rapido", "riser", "zoom_punch"], cards: ["tactical_hud_overlay", "depth_hook_title", "callout_pointer"], speedRamps: true, cutZoom: false },
     pacing: { ...DEFAULT_PACING, maxStatic: 12, componentGap: 5, maxPer5s: 3, componentsPerMin: [1, 3], zoomsPerMin: [2, 6], minZoomScale: 1.1, captions: false },
     direction: `Modelo "Ação & Cinematográfico": a edição segue a IMAGEM e o SOM da cena, não as palavras.
 - NÃO corte pausas por falta de fala e não use remove_silences: silêncio com ação é a cena. Corte só tempo morto de verdade (cut_source), como câmera sendo ajustada antes de começar.
 - Estruture em atos pelo mapa de ação: gancho (o plano mais forte primeiro, nos 2 s iniciais), desenvolvimento (preparo, tensão), clímax (o pico de energia mais forte) e fecho.
 - Rampas de velocidade (speed_ramp, ancoradas com atSource/untilSource), SEMPRE antes de zooms e textos: câmera lenta dramática (rate 0.4–0.6) em 1,5–3 s de bruto ao redor dos picos de energia mais fortes — o preparo e o impacto; aceleração (rate 1.4–2.0) nos deslocamentos e esperas entre um pico e outro. Pelo menos 2 rampas num vídeo de 30 s ou mais; nunca duas câmeras lentas coladas.
-- Som sincronizado: a trilha de ação já está ligada com ducking sob as falas. Em cada pico forte, add_sfx com o pico do som no pico da imagem — impacto_cinematico no clímax (uma vez), impacto_grave nos outros golpes, sub_drop na entrada da câmera lenta, whoosh_rapido nas acelerações e trocas de plano, riser terminando no clímax, zoom_punch nos punch-ins.
+- Som sincronizado: sem trilha de fundo por padrão (só se o usuário pedir ou já tiver posto a dele). Em cada pico forte, add_sfx com o pico do som no pico da imagem — impacto_cinematico no clímax (uma vez), impacto_grave nos outros golpes, sub_drop na entrada da câmera lenta, whoosh_rapido nas acelerações e trocas de plano, riser terminando no clímax, zoom_punch nos punch-ins.
 - Câmera: add_impact (flash/shake) só nos 2–4 picos mais fortes. Zooms com motivo e direcionados ao sujeito (omita x/y: fecham no centro de massa detectado); nada de zoom aleatório no centro. Punch-in seco no impacto; avanço lento na tensão.
 - Tratamento visual: a grade de alto contraste, a vinheta dinâmica e o letterbox já estão aplicados (set_look); ajuste só se o usuário pedir outro clima.
 - Texto: pouco e forte. tactical_hud_overlay (telemetria, timestamp, status) nos trechos de operação; um título cinético de impacto no gancho (depth_hook_title, 1–2 palavras) quando a pessoa está pequena no quadro — em close-up, o impacto vem da câmera e do som; callout_pointer para apontar um detalhe. Nada de lista, contador ou tarja. Legenda discreta na base só onde houver fala.`,
@@ -177,18 +184,18 @@ export const SKILLS: Record<SkillId, Skill> = {
       { op: "remove_silences", mode: "natural" },
       { op: "set_captions", enabled: true, style: { preset: "editorial_clean", position: "bottom", maxWords: 6 } },
       { op: "set_look", look: { grade: "warm_cinematic", intensity: 0.75, vignette: 0.2, letterbox: 0 } },
-      { op: "set_music", music: { mood: "ambient", volume: 0.28, duck: true } },
+      { op: "set_music", music: { mood: "none", volume: 0.28, duck: true } },
       { op: "set_format", finish: { cutZoom: true, voice: true }, sfx: { enabled: true, volume: 0.7 } },
     ],
     brand: { primaryColor: "#D9A441", secondaryColor: "#7BA7BC", backgroundColor: "#14110F", textColor: "#F5EFE6", fontPair: "montserrat-playfair" },
-    recipe: { captions: "editorial_clean", look: "warm_cinematic", music: "ambient", sfx: ["swoosh_texto", "click_suave", "ding"], cards: ["stat_counter_card", "comparison_split", "step_progress_bar", "acronym_list"], speedRamps: false, cutZoom: true },
+    recipe: { captions: "editorial_clean", look: "warm_cinematic", music: "none", sfx: ["swoosh_texto", "click_suave", "ding"], cards: ["stat_counter_card", "comparison_split", "step_progress_bar", "acronym_list"], speedRamps: false, cutZoom: true },
     pacing: { ...DEFAULT_PACING, maxStatic: 10, componentGap: 6, fullscreenGap: 12, maxPer5s: 2, componentsPerMin: [2, 4], zoomsPerMin: [4, 7], minZoomScale: 1.1, maxPunchStreak: 1 },
     direction: `Modelo "Autoridade & Documentário Moderno": sóbrio, mas editado. Sobriedade está na escolha dos movimentos, não na falta deles.
 - Fala: preserve as pausas de raciocínio curtas; corte erros, frases abandonadas e qualquer aquecimento antes da primeira afirmação. Os sons de hesitação já saíram; "né" e "tipo" soltos ficam a seu critério (tire os que atrapalham o ritmo, mantenha os que soam naturais).
 - Gancho (0–3s): a afirmação mais forte do começo ganha um avanço lento de câmera; um cartão que nomeie o assunto só se houver espaço livre no quadro (em close-up, não). Se o contexto disser que a tarja está disponível, apresente quem fala com executive_lower_third uma vez, logo depois do gancho (entre 2 e 6 s, por 4–5 s, sem disputar espaço com o cartão); se estiver indisponível, não use.
 - Câmera suave (Ken Burns): avanço lento (mode creep, 1.12–1.18x, 4–6 s) nas frases que carregam a tese; push-in com ease 0.4–0.5 (ease-out, 1.15–1.2x) nas conclusões. Nada de punch-in seco em sequência, nada de impacto de câmera.
 - Cartões de dados, só onde o conteúdo pede: stat_counter_card para o número que carrega o argumento (um dado, uma porcentagem; contar "3 momentos" não é dado), com a barra de progresso quando for porcentagem; comparison_split para UM antes/depois ou mito/verdade, step_progress_bar no topo quando a explicação tiver etapas, acronym_list para os pontos de um diagnóstico ou estratégia. Textos curtos, sem exclamação.
-- Som: a trilha ambiente sutil já está ligada com ducking; efeitos discretos só nas entradas de cartão.
+- Som: efeitos discretos só nas entradas de cartão. Não ligue trilha de fundo por conta própria.
 - Fechamento: a conclusão ou a orientação final leva avanço lento e, quando houver uma frase-síntese, um cartão.`,
   },
   limpeza: {
@@ -219,6 +226,6 @@ export function skillForGenre(genre: Genre | null): SkillId {
 }
 
 export function skillPrompt(skill: Skill): string {
-  const local = skill.id === "acao" ? "O tratamento de cor, a trilha e as legendas do modelo já foram aplicados; as rampas de velocidade, os sons e os textos são seus." : "Uma limpeza determinística (takes ruins de confiança alta, muletas e silêncios) e o acabamento do modelo (legenda, cor, trilha) já rodaram, mas a limpeza só enxerga repetição literal e pausa: a revisão da fala continua sendo sua.";
+  const local = skill.id === "acao" ? "O tratamento de cor e as legendas do modelo já foram aplicados; as rampas de velocidade, os sons e os textos são seus." : "Uma limpeza determinística (takes ruins de confiança alta, muletas e silêncios) e o acabamento do modelo (legenda, cor) já rodaram, mas a limpeza só enxerga repetição literal e pausa: a revisão da fala continua sendo sua.";
   return `Edite este vídeo com o modelo "${skill.name}", do início ao fim, deixando pronto para publicar.\n\n${skill.direction}\n\n${local}`;
 }
