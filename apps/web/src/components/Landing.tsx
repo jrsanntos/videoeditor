@@ -362,12 +362,18 @@ export function Landing({ loggedIn, google }: { loggedIn: boolean; google: boole
       <footer className={`${wrap} pb-8`}>
         <div className="lp-panel flex flex-col items-center justify-between gap-5 rounded-[20px] px-6 py-6 text-[14.5px] text-haze sm:flex-row">
           <Mark />
-          <nav className="flex gap-7" aria-label="Rodapé">
+          <nav className="flex flex-wrap justify-center gap-x-7 gap-y-2" aria-label="Rodapé">
             <a href="#recursos" className="hover:text-white">
               Recursos
             </a>
             <a href="#planos" className="hover:text-white">
               Planos
+            </a>
+            <a href="/termos" className="hover:text-white">
+              Termos
+            </a>
+            <a href="/privacidade" className="hover:text-white">
+              Privacidade
             </a>
             <a href="/login" className="hover:text-white">
               Entrar

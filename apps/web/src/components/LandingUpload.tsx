@@ -528,6 +528,19 @@ function AuthGate({ google, style, onClose }: { google: boolean; style: SkillId 
                   {busy ? "Aguarde…" : mode === "signup" ? "Criar conta e processar" : "Entrar e processar"}
                 </button>
               </form>
+              {mode === "signup" && (
+                <p className="text-center text-[12px] leading-relaxed text-haze">
+                  Ao criar a conta você concorda com os{" "}
+                  <a href="/termos" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-white">
+                    Termos de Uso
+                  </a>{" "}
+                  e a{" "}
+                  <a href="/privacidade" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-white">
+                    Política de Privacidade
+                  </a>
+                  .
+                </p>
+              )}
             </div>
             <p className="mt-5 text-center text-[14px] text-haze">
               {mode === "signup" ? "Já tem conta? " : "Ainda não tem conta? "}

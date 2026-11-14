@@ -105,6 +105,8 @@ const blobToBase64 = (blob: Blob) =>
   });
 
 /** Quadro reduzido a tons de cinza 48×27: o bastante para medir movimento, barato o bastante para centenas de quadros. */
+/** Teto de medidas do sujeito por vídeo (cada uma é uma segmentação + detecção de rosto). */
+const SUBJECT_SAMPLES = 120;
 const MOTION_W = 48;
 const MOTION_H = 27;
 
@@ -152,7 +154,9 @@ export async function analyzeVideo(file: Blob, assetId: string, samples?: Float3
     const duration = Math.min(v.duration, opts.until ?? Infinity);
     // ~3 amostras por segundo, limitado para vídeos longos não travarem a análise.
     const count = Math.min(opts.maxSamples ?? 200, Math.max(12, Math.round(duration * (opts.perSecond ?? 3))));
-    const segEvery = Math.max(1, Math.round(count / Math.min(10, Math.max(3, Math.round(duration / 6)))));
+    // Posição do sujeito e do rosto: uma medida a cada ~1,5 s (até SUBJECT_SAMPLES). É o que os zooms
+    // seguem; com poucas medidas no vídeo inteiro, o "rastreamento" era só uma linha reta entre dois pontos distantes.
+    const segEvery = Math.max(1, Math.round(count / Math.min(SUBJECT_SAMPLES, Math.max(3, Math.round(duration / 1.5)))));
     const frameAt = new Set([0, Math.floor(count / 2), count - 1].map((i) => Math.min(count - 1, Math.round(i / segEvery) * segEvery)));
     const scale = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight));
     const canvas = document.createElement("canvas");

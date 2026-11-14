@@ -171,7 +171,7 @@ function Working() {
           ))}
         </ol>
         {plan && <p className="mt-3 line-clamp-3 border-t border-line pt-3 text-[12px] leading-relaxed text-zinc-400">{plan.diagnostico}</p>}
-        <p className="mt-3 text-[11px] text-zinc-600">Você pode acompanhar a timeline sendo montada. Não feche esta aba.</p>
+        <p className="mt-3 text-[11px] text-zinc-600">Você pode acompanhar a timeline sendo montada. Mantenha esta aba aberta até o fim.</p>
       </div>
     </div>
   );

@@ -444,14 +444,21 @@ describe("legendas: base do quadro, supressão com cards e desvio do rosto", () 
 });
 
 describe("legenda cabe no tamanho normal", () => {
-  it("frase longa vira duas legendas em vez de uma legenda minúscula", () => {
+  it("frase longa quebra em duas linhas e, passando disso, em outra legenda: nunca uma legenda minúscula", () => {
     const long = "incapacitação neuromuscular também conhecidas popularmente como armas de choque".split(" ");
     const words = long.map((text, i) => ({ id: `w${i}`, text, start: i * 0.35, end: i * 0.35 + 0.3 }));
     let p = addAssetToProject(createProject({ name: "t" }), { id: "a1", kind: "video", name: "v.mp4", duration: 4, hasAudio: true, transcript: { words } });
     p = applyOperations(p, [{ op: "set_captions", enabled: true, style: { preset: "editorial_clean", maxWords: 6 } }]).project;
     const groups = captionGroups(p);
-    expect(groups.length).toBeGreaterThan(long.length / 6);
-    for (const g of groups) expect(g.text.length).toBeLessThanOrEqual(34);
+    expect(groups.length).toBeGreaterThanOrEqual(long.length / 6);
+    // Estilo de frase: até duas linhas de ~34 caracteres por legenda, e nunca mais palavras que o pedido.
+    for (const g of groups) {
+      expect(g.text.length).toBeLessThanOrEqual(68);
+      expect(g.words.length).toBeLessThanOrEqual(6);
+    }
+    // Estilo de impacto continua em uma linha só.
+    const pop = applyOperations(p, [{ op: "set_captions", style: { preset: "viral_pop", maxWords: 3 } }]).project;
+    for (const g of captionGroups(pop)) expect(g.text.length).toBeLessThanOrEqual(34);
   });
 });
 

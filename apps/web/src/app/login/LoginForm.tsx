@@ -98,6 +98,19 @@ export function LoginForm({ notice, warning, initialMode = "login", google = fal
           {busy ? "Aguarde…" : mode === "login" ? "Entrar" : "Criar conta"}
         </button>
         {mode === "signup" && <p className="text-center text-[11px] leading-relaxed text-zinc-500">Enviaremos um link para confirmar seu e-mail antes do primeiro acesso.</p>}
+        {mode === "signup" && (
+          <p className="text-center text-[11px] leading-relaxed text-zinc-500">
+            Ao criar a conta você concorda com os{" "}
+            <a href="/termos" target="_blank" rel="noreferrer" className={link}>
+              Termos de Uso
+            </a>{" "}
+            e a{" "}
+            <a href="/privacidade" target="_blank" rel="noreferrer" className={link}>
+              Política de Privacidade
+            </a>
+            .
+          </p>
+        )}
       </form>
     </AuthShell>
   );

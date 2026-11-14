@@ -763,18 +763,21 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Captura o preview nos instantes pedidos, em tamanho reduzido. Devolve o cursor ao lugar no fim. */
 /**
  * Em aba escondida o navegador congela o vídeo e atrasa os timers: as capturas
- * sairiam erradas. Espera a pessoa voltar (até 10 min) e avisa no caminho.
+ * sairiam erradas. Espera a pessoa voltar por pouco tempo e avisa no caminho;
+ * se ela não voltar, a conferência visual é pulada (a edição já está entregue)
+ * em vez de deixar o editor travado em "ocupado".
  */
+const VISIBLE_WAIT_MS = 30_000;
 async function whenVisible(): Promise<boolean> {
   if (typeof document === "undefined" || !document.hidden) return true;
   const s = useEditor.getState();
   const before = s.busy;
-  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela.");
+  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela (aguardando 30 s).");
   const ok = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => {
       document.removeEventListener("visibilitychange", on);
       resolve(false);
-    }, 10 * 60_000);
+    }, VISIBLE_WAIT_MS);
     const on = () => {
       if (document.hidden) return;
       clearTimeout(timer);
@@ -912,6 +915,11 @@ async function visualReview(firstToken: string) {
     const project = useEditor.getState().project;
     if (!project) return;
     s.setBusy(`O Crítico está conferindo como ficou na tela (${cycle} de ${MAX_CRITIC_CYCLES})…`);
+    // Aba em segundo plano: sem capturas não há o que conferir. Uma espera só; a edição fica como o Editor entregou.
+    if (!(await whenVisible())) {
+      s.pushChat({ role: "assistant", text: "A edição está pronta. Pulei a conferência visual final porque esta aba ficou em segundo plano; assista ao vídeo e peça qualquer ajuste por aqui." });
+      break;
+    }
     const strip = await diagnosticStrip(project);
     const shots = await captureShots(project);
     if (!shots.length) break;

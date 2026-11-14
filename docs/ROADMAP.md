@@ -104,7 +104,11 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [x] Legendas de impacto sem a vírgula e o ponto do transcritor
 - [ ] Subir os limites de duração só depois de testar vídeos longos de ponta a ponta (ingestão e exportação em streaming)
 - [ ] Acervo de músicas licenciadas para religar a trilha por padrão
-- [ ] Termos de Uso e Política de Privacidade (dependem dos dados da empresa)
+- [x] Termos de Uso (`/termos`) e Política de Privacidade (`/privacidade`) escritos a partir do que o código faz, com aviso de minuta enquanto houver placeholder
+- [ ] Preencher os dados da empresa em `apps/web/src/lib/legal.ts` e passar os dois textos por revisão jurídica
+- [x] Legendas de frase em duas linhas equilibradas, em vez de encolher a letra
+- [x] Posição do rosto medida a cada ~1,5 s (até 120 medidas), para os zooms que seguem o sujeito
+- [x] Revisão visual final não trava mais o editor com a aba em segundo plano (espera 30 s e segue)
 - [ ] Antes/depois reais na landing (`landing-demos.ts`), no lugar dos cartões ilustrativos
 - [ ] Ouvir os cortes por palavra em gravações reais com ruído (o ajuste pelo áudio só foi testado com sinal sintético)
 
