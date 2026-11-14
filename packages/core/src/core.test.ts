@@ -704,6 +704,22 @@ describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", (
     expect(buildAgentContext(on)).toContain("Tarja de nome/cargo: disponível");
   });
 
+  it("ajustes parciais só mudam o que foi pedido (o nome da tarja não some ao trocar a cor)", () => {
+    const named = applyOperations(fixture(), [
+      { op: "set_brand", brand: { displayName: "Sgt. Lima", credential: "Instrutor", showLowerThird: true, vocabulary: ["taser"] } },
+      { op: "set_look", look: { grade: "warm_cinematic", vignette: 0.3 } },
+      { op: "set_music", music: { mood: "ambient", volume: 0.2 } },
+    ]).project;
+    const after = applyOperations(named, [
+      { op: "set_brand", brand: { primaryColor: "#D9A441" } },
+      { op: "set_look", look: { intensity: 0.5 } },
+      { op: "set_music", music: { duck: true } },
+    ]).project;
+    expect(after.brand).toMatchObject({ displayName: "Sgt. Lima", credential: "Instrutor", showLowerThird: true, vocabulary: ["taser"], primaryColor: "#D9A441" });
+    expect(after.look).toMatchObject({ grade: "warm_cinematic", vignette: 0.3, intensity: 0.5 });
+    expect(after.music).toMatchObject({ mood: "ambient", volume: 0.2, duck: true });
+  });
+
   it("o nome informado sempre vira tarja, mesmo se a IA esquecer; sem nome ou desligada, nada muda", () => {
     const named = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Sgt. Lima", credential: "Instrutor" } }]).project;
     const tarjas = (p: Project) => p.tracks.flatMap((t) => t.clips).filter((c) => c.type === "component" && c.component === "executive_lower_third");
