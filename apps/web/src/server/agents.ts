@@ -81,8 +81,7 @@ export const PlanSchema = z.object({
       }),
     )
     .max(3)
-    .default([])
-    .describe("SUGESTÕES de imagem ou vídeo gerados por IA, que o usuário aprova uma a uma (não entram sozinhas). Vazio na maioria dos vídeos."),
+    .describe("SUGESTÕES de imagem ou vídeo gerados por IA, que o usuário aprova uma a uma (não entram sozinhas). Obrigatório responder: lista vazia só se nenhum assunto visual concreto é citado."),
 });
 export type EditPlan = z.infer<typeof PlanSchema>;
 
@@ -135,7 +134,8 @@ ${GENRES}
    - Clímax: o ponto mais forte — a virada, o número, o golpe. Recebe os recursos mais fortes.
    - Fecho: conclusão ou chamada para ação, sempre tratada.
    Cada trecho leva energia, velocidade, orçamento de zooms, componentes e sons, e o tratamento em linguagem de leigo.
-4. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
+4. Mídia: liste os objetos, equipamentos, lugares e procedimentos concretos que a fala cita. Para cada um que o espectador ganharia em VER, sugira uma imagem (ou vídeo, se o movimento é o ponto) em "midias", na palavra em que é dito.
+5. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
 
 ## Mídia gerada por IA: você sugere, o usuário decide
 Você pode sugerir em "midias" até 3 imagens ou vídeos curtos gerados por IA. Pense como um editor profissional, não como uma receita:
