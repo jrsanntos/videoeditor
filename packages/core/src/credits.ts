@@ -115,6 +115,22 @@ export function creditCost(action: CreditAction): number {
 }
 
 /**
+ * Edição da IA que parou antes de terminar (teto de custo, limite de etapas ou
+ * falha no meio): cobra-se esta fração do preço. Ver `agentCharge`.
+ */
+export const INTERRUPTED_CHARGE = 0.5;
+
+/**
+ * Quanto cobrar por um pedido ao agente: nada se a timeline não mudou, o preço
+ * cheio se terminou, e a fração de `INTERRUPTED_CHARGE` se foi interrompido
+ * (arredondada para baixo, em passos de meio crédito).
+ */
+export function agentCharge(price: number, o: { changed: boolean; interrupted: boolean }): number {
+  if (!o.changed || price <= 0) return 0;
+  return o.interrupted ? Math.floor(price * INTERRUPTED_CHARGE * 2) / 2 : price;
+}
+
+/**
  * Quantos vídeos curtos (até 1 min) um saldo rende: transcrição + uma edição
  * completa + de 2 a 8 ajustes. Arredondado para baixo, para a promessa da
  * tela de planos nunca ser maior que a entrega (no mínimo 1 quando o saldo

@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import {
+  agentCharge,
   agentTier,
   aiBudgetUSD,
   applyOperations,
@@ -64,11 +65,7 @@ const MAX_TURNS_DIRECTOR = 5;
 const BUDGET_WARN = 0.75;
 /** O Diretor usa no máximo esta fração do teto da edição. */
 const DIRECTOR_SHARE = 0.5;
-/**
- * Edição interrompida antes do fim (teto de custo, limite de etapas ou falha no
- * meio): o usuário é avisado e paga só esta fração do preço.
- */
-const INTERRUPTED_CHARGE = 0.5;
+/** Edição interrompida antes do fim: o usuário é avisado e paga só uma fração do preço (agentCharge, no core). */
 const INTERRUPTED_NOTE = "Atenção: a edição foi interrompida antes de terminar o plano, e por isso cobramos metade do preço. O que já foi aplicado ficou na timeline; peça os ajustes que faltarem ou desfaça com Ctrl+Z.";
 /** Abaixo disto (US$) não vale abrir mais uma conferência visual. */
 const MIN_REVIEW_USD = 0.012;
@@ -237,9 +234,7 @@ export async function POST(req: Request) {
     /** Registra o custo real e cobra os créditos. Só cobra quando a timeline realmente mudou. */
     const settle = async () => {
       // Administradores não consomem créditos: o custo real é registrado, o débito é zero.
-      // Créditos têm uma casa decimal em passos de meio: a metade é arredondada para baixo.
-      const due = interrupted ? Math.floor(price * INTERRUPTED_CHARGE * 2) / 2 : price;
-      const credits = log.length && user.role !== "admin" ? due : 0;
+      const credits = user.role === "admin" ? 0 : agentCharge(price, { changed: log.length > 0, interrupted });
       let first = true;
       for (const [model, tokens] of usageBy) {
         // O custo por modelo é a soma do custo de cada volta (a faixa de preço do Haiku é por requisição).

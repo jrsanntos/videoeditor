@@ -1653,3 +1653,52 @@ describe("fronteiras de palavra conferidas no áudio (cortes sem comer consoante
     expect(snapWordOnsets(marked, samples, RATE)[1]!.start).toBe(0.88);
   });
 });
+
+import { agentCharge, creditCost as cost } from "./credits";
+import { concatFloat32, createResampler } from "./resample";
+
+describe("cobrança de um pedido ao agente", () => {
+  it("cheio se terminou, metade se foi interrompido, nada se a timeline não mudou", () => {
+    const price = cost({ type: "agent", tier: "full", durationSec: 60 });
+    expect(agentCharge(price, { changed: true, interrupted: false })).toBe(13);
+    expect(agentCharge(price, { changed: true, interrupted: true })).toBe(6.5);
+    expect(agentCharge(price, { changed: false, interrupted: true })).toBe(0);
+    // Ajuste de 1 crédito interrompido: meio crédito, nunca uma fração que o saldo não representa.
+    expect(agentCharge(1, { changed: true, interrupted: true })).toBe(0.5);
+    expect(agentCharge(16, { changed: true, interrupted: true }) * 2).toBe(16);
+  });
+});
+
+describe("reamostragem em streaming (áudio de arquivos grandes, pedaço a pedaço)", () => {
+  const tone = (hz: number, rate: number, sec: number) => Float32Array.from({ length: Math.round(rate * sec) }, (_, i) => Math.sin((2 * Math.PI * hz * i) / rate) * 0.5);
+  const rms = (x: Float32Array, from = 0, to = x.length) => Math.sqrt(x.slice(from, to).reduce((s, v) => s + v * v, 0) / (to - from));
+  const run = (input: Float32Array, inRate: number, outRate: number, chunk: number) => {
+    const r = createResampler(inRate, outRate);
+    const parts: Float32Array[] = [];
+    for (let i = 0; i < input.length; i += chunk) parts.push(r.push(input.subarray(i, i + chunk)));
+    parts.push(r.flush());
+    return concatFloat32(parts);
+  };
+
+  it("48 kHz → 16 kHz: a voz passa inteira, o que viraria chiado é barrado, a duração bate", () => {
+    const voice = run(tone(1000, 48000, 1), 48000, 16000, 4096);
+    expect(voice.length).toBe(16000);
+    // Fora das bordas, a amplitude do tom de 1 kHz é a mesma (0,5 de pico = 0,354 RMS).
+    expect(rms(voice, 2000, 14000)).toBeCloseTo(0.3536, 2);
+    // 11 kHz está acima da metade da taxa nova: sem filtro voltaria como um tom de 5 kHz.
+    const hiss = run(tone(11000, 48000, 1), 48000, 16000, 4096);
+    expect(rms(hiss, 2000, 14000)).toBeLessThan(0.005);
+  });
+
+  it("o resultado não depende do tamanho dos pedaços, e taxas não inteiras funcionam", () => {
+    const input = tone(440, 44100, 0.5);
+    const a = run(input, 44100, 16000, 1024);
+    const b = run(input, 44100, 16000, 7);
+    expect(a.length).toBe(b.length);
+    expect(Math.abs(a.length - 8000)).toBeLessThanOrEqual(1);
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff = Math.max(diff, Math.abs(a[i]! - b[i]!));
+    expect(diff).toBeLessThan(1e-6);
+    expect(rms(a, 1000, 7000)).toBeCloseTo(0.3536, 2);
+  });
+});

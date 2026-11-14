@@ -30,6 +30,18 @@ Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Plano de execução em
 | `apps/web` | Next.js: editor (player, timeline, chat, inspetor), exportação local via WebCodecs, contas, painel de administração (`/admin`) e planos e créditos (`/planos`) e as rotas `/api/agent`, `/api/transcribe`, `/api/auth/*`, `/api/billing/*`, `/api/stripe/webhook` e `/api/admin/*`. |
 | `apps/web/src/server` | Camada de servidor: banco Postgres (migrações em `schema.ts`), sessões, recuperação de senha, limite de requisições, ledger de créditos, cobrança pelo Stripe, custo de IA, configurações cifradas e modelos de edição. |
 
+## Testes
+
+```bash
+pnpm test
+```
+
+Os testes do núcleo e do renderizador rodam sem nada. Os de servidor (créditos, projetos salvos, estorno do Stripe) precisam de um Postgres descartável e são pulados sem ele:
+
+```bash
+TEST_DATABASE_URL=postgres://videoeditor:videoeditor@localhost:5432/videoeditor_test pnpm test
+```
+
 ## Rodando
 
 Requer Node 22+, pnpm 10+ e um Postgres 14+ (o `docker-compose.yml` sobe um local).

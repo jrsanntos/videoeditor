@@ -102,6 +102,11 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [x] Cortes por palavra com a fronteira conferida no áudio (`snapWordOnsets`)
 - [x] Trilha da casa (loop sintetizado) desligada por padrão em todos os modelos
 - [x] Legendas de impacto sem a vírgula e o ponto do transcritor
+- [x] Testes de integração do servidor (créditos, projetos, estorno e contestação do Stripe) contra Postgres: `TEST_DATABASE_URL=… pnpm test`
+- [x] Regra de cobrança do agente (`agentCharge`) no core, com teste
+- [x] Leitura do áudio em streaming para arquivos acima de 300 MB (ingestão, transcrição, medição de pausas), sem carregar o arquivo na memória
+- [ ] Exportação: o áudio ainda é decodificado com o arquivo inteiro na memória e o MP4 é montado em memória
+- [ ] Teste da rota do agente com o modelo simulado (plano, execução, interrupção)
 - [ ] Subir os limites de duração só depois de testar vídeos longos de ponta a ponta (ingestão e exportação em streaming)
 - [ ] Acervo de músicas licenciadas para religar a trilha por padrão
 - [x] Termos de Uso (`/termos`) e Política de Privacidade (`/privacidade`) escritos a partir do que o código faz, com aviso de minuta enquanto houver placeholder
