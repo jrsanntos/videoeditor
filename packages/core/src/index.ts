@@ -18,3 +18,4 @@ export * from "./lower-third";
 export * from "./disfluency";
 export * from "./onsets";
 export * from "./resample";
+export * from "./hook";

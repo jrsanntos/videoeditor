@@ -1702,3 +1702,83 @@ describe("reamostragem em streaming (áudio de arquivos grandes, pedaço a peda�
     expect(rms(a, 1000, 7000)).toBeCloseTo(0.3536, 2);
   });
 });
+
+import { ensureHook } from "./hook";
+import { SLIVER_MAX } from "./ops";
+
+describe("sobras de corte (caso do vídeo real: pausa cortada + muleta cortada deixavam 0,15 s soltos)", () => {
+  const spoken = (): Project => {
+    const w = (id: string, text: string, start: number, end: number) => ({ id, text, start, end });
+    return addAssetToProject(createProject({ name: "t" }), {
+      id: "a1",
+      kind: "video",
+      name: "v.mp4",
+      duration: 12,
+      hasAudio: true,
+      transcript: { words: [w("w0", "para", 1, 1.4), w("w1", "a", 1.4, 1.5), w("w2", "guarnição.", 1.5, 2.5), w("w3", "É,", 3.02, 3.69), w("w4", "evitando", 3.69, 4.3), w("w5", "confronto", 4.3, 5)] },
+    });
+  };
+
+  it("o pedaço sem fala isolado entre dois cortes sai junto, e o log avisa", () => {
+    // A pausa depois de "guarnição." foi cortada até 150 ms antes do "É,"…
+    const paused = applyOperations(spoken(), [{ op: "remove_ranges", ranges: [{ start: 2.5, end: 2.87 }] }]).project;
+    // …e depois o "É," sai como muleta: sobrariam 0,15 s de ambiente entre os dois cortes.
+    const { project, log } = applyOperations(paused, [{ op: "cut_words", cuts: [{ from: "w3", to: "w3" }] }]);
+    const clips = mainClips(project);
+    expect(clips).toHaveLength(2);
+    expect(Math.min(...clips.map((c) => c.duration))).toBeGreaterThanOrEqual(SLIVER_MAX);
+    expect(log[0]).toContain("sobra(s) de corte");
+    // Nenhuma palavra que ficou foi perdida.
+    expect(timelineWords(project).map((x) => x.text)).toEqual(["para", "a", "guarnição.", "evitando", "confronto"]);
+  });
+
+  it("pedaço curto COM fala fica; clip curto dividido à mão (sem corte em volta) fica", () => {
+    // Corta tudo em volta de "a" (0,1 s de fala): é curto, mas é palavra.
+    const { project } = applyOperations(spoken(), [{ op: "cut_words", cuts: [{ from: "w0", to: "w0" }, { from: "w2", to: "w3" }] }]);
+    expect(timelineWords(project).map((x) => x.text)).toContain("a");
+    // Duas divisões manuais a 0,1 s uma da outra, num trecho sem fala, e depois um corte longe dali.
+    const split = applyOperations(spoken(), [{ op: "split", time: 8 }, { op: "split", time: 8.1 }, { op: "cut_words", cuts: [{ from: "w3", to: "w3" }] }]).project;
+    expect(mainClips(split).some((c) => Math.abs(c.duration - 0.1) < 0.01)).toBe(true);
+  });
+});
+
+describe("gancho garantido (o vídeo real abriu parado: o título foi recusado no close-up e nada entrou no lugar)", () => {
+  it("começo sem nenhum movimento ganha um punch-in na primeira palavra; nos modelos sóbrios, um avanço lento", () => {
+    const viral = ensureHook(fixture(), SKILLS.viral.pacing);
+    const zoom = getTrack(viral.project, "fx").clips.find((c) => c.type === "zoom")!;
+    expect(zoom.start).toBeLessThan(2);
+    expect(zoom).toMatchObject({ mode: "hold" });
+    expect(zoom.scale).toBeGreaterThanOrEqual(1.2);
+    expect(viral.log[0]).toContain("gancho");
+    const sober = ensureHook(fixture(), SKILLS.autoridade.pacing);
+    expect(getTrack(sober.project, "fx").clips.find((c) => c.type === "zoom")).toMatchObject({ mode: "creep" });
+  });
+
+  it("não mexe quando a IA já tratou o começo, nem no modelo que é só limpeza", () => {
+    const edited = applyOperations(fixture(), [{ op: "add_zoom", start: 0.5, duration: 1, scale: 1.2 }]).project;
+    expect(ensureHook(edited, SKILLS.viral.pacing).log).toEqual([]);
+    expect(ensureHook(fixture(), SKILLS.limpeza.pacing).log).toEqual([]);
+  });
+
+  it("com uma subida de tensão (riser) apontando para o começo, o movimento entra no pico dela", () => {
+    const withRiser = applyOperations(fixture(), [{ op: "add_sfx", sfx: "riser", start: 0.6 }]).project;
+    const { project } = ensureHook(withRiser, SKILLS.viral.pacing);
+    expect(getTrack(project, "fx").clips.find((c) => c.type === "zoom")!.start).toBeCloseTo(0.6, 2);
+  });
+});
+
+import { keepLocalMeasurements as keepLocal } from "./timeline";
+
+describe("medidas do vídeo que chegam durante um pedido à IA", () => {
+  it("a leitura completa (mais medidas) não é trocada pela leitura rápida que o servidor devolve", () => {
+    const at = (t: number) => ({ t, x: 0.3, y: 0.1, w: 0.4, h: 0.9, faceX: 0.5, faceY: 0.4 });
+    const sent = fixture();
+    sent.assets.a1!.subject = [at(1), at(5)];
+    const current = structuredClone(sent);
+    current.assets.a1!.subject = [at(1), at(2), at(3), at(4), at(5)];
+    const incoming = structuredClone(sent);
+    expect(keepLocal(incoming, current, sent).assets.a1!.subject).toHaveLength(5);
+    // Sem novidade local, a resposta fica como veio.
+    expect(keepLocal(incoming, sent, sent)).toBe(incoming);
+  });
+});

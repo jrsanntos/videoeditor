@@ -106,6 +106,13 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [x] Regra de cobrança do agente (`agentCharge`) no core, com teste
 - [x] Leitura do áudio em streaming para arquivos acima de 300 MB (ingestão, transcrição, medição de pausas), sem carregar o arquivo na memória
 - [x] Exportação sem carregar o vídeo na memória: áudio mixado em trechos de 30 s (lendo do arquivo só o que cada trecho usa) e arquivo final gravado em disco pelo navegador (OPFS), com o índice do MP4 no fim
+- [x] Jornada real rodada de ponta a ponta (landing → cadastro → edição completa pela IA → exportação) com o vídeo de teste, duas vezes; defeitos achados e corrigidos:
+  - painel de progresso preso na última etapa desde os 12 s
+  - IA editando sem quadros e sem a posição do rosto quando a análise do vídeo demora (agora há uma leitura rápida, em segundos, antes da completa)
+  - sobras de 0,15 s sem fala entre dois cortes vizinhos (`dropSlivers`)
+  - vídeo abrindo parado quando o título de gancho é recusado no close-up (`ensureHook`)
+  - rastreamento denso do rosto apagado pela resposta do servidor
+- [ ] Medir o tempo de exportação em máquina com GPU (no navegador sem GPU do ambiente de teste, 62 s de vídeo levaram 8 min)
 - [ ] Exportar um vídeo longo de verdade (15–30 min, arquivo de celular) antes de subir os limites dos planos
 - [ ] Teste da rota do agente com o modelo simulado (plano, execução, interrupção)
 - [ ] Subir os limites de duração só depois de testar vídeos longos de ponta a ponta (ingestão e exportação em streaming)

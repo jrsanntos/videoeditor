@@ -482,7 +482,7 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       return `${ranges.length} corte(s), ${fmt(total)} removidos`;
     }
     case "cut_words":
-      return cutWords(p, op.cuts);
+      return cutWords(p, op.cuts) + dropSlivers(p);
     case "remove_retakes": {
       const words = timelineWords(p);
       if (!words.length) {
@@ -492,7 +492,7 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       }
       const takes = findRetakes(words).filter((r) => op.minConfidence === "media" || r.confidence === "alta");
       if (!takes.length) return "nenhum take ruim encontrado";
-      return cutWords(p, takes).replace("corte(s)", "take(s) ruim(ns) cortado(s)");
+      return cutWords(p, takes).replace("corte(s)", "take(s) ruim(ns) cortado(s)") + dropSlivers(p);
     }
     case "remove_fillers": {
       const words = timelineWords(p);
@@ -502,7 +502,7 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       }
       const fillers = fillersFor(words, op.level, op.minConfidence);
       if (!fillers.length) return "nenhuma muleta encontrada";
-      return cutWords(p, fillers).replace(/^\d+ corte\(s\)/, `${fillers.length} muleta(s) removida(s)`);
+      return cutWords(p, fillers).replace(/^\d+ corte\(s\)/, `${fillers.length} muleta(s) removida(s)`) + dropSlivers(p);
     }
     case "remove_silences": {
       const words = timelineWords(p);
@@ -528,7 +528,7 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       if (!ranges.length) return "nenhum silêncio acima do limite encontrado";
       removeRanges(p, ranges);
       const total = ranges.reduce((s, r) => s + r.end - r.start, 0);
-      return `${ranges.length} silêncio(s) removidos, ${fmt(total)} a menos (${SILENCE_MODES[op.mode ?? "aggressive"].name})`;
+      return `${ranges.length} silêncio(s) removidos, ${fmt(total)} a menos (${SILENCE_MODES[op.mode ?? "aggressive"].name})` + dropSlivers(p);
     }
     case "split": {
       if (!splitMainAt(p, op.time)) throw new Error(`não há clip para dividir em ${fmt(op.time)}`);
@@ -861,6 +861,47 @@ function applyOne(p: Project, op: Operation, ctx: ApplyContext): string {
       throw new Error(`palavra ${op.wordId} não encontrada`);
     }
   }
+}
+
+/** Um pedaço de vídeo menor que isto, isolado entre dois cortes e sem nenhuma palavra, é sobra de corte. */
+export const SLIVER_MAX = 0.3;
+
+/**
+ * Tira as sobras de corte: pedaços de fração de segundo, sem fala, que ficam
+ * entre dois cortes vizinhos feitos por regras diferentes (o fim de uma pausa
+ * cortada e o começo de uma muleta cortada, por exemplo). Na tela são dois
+ * saltos colados, um piscar; no som, um estalo de ambiente. Cada limpeza
+ * (silêncios, muletas, erros) respeita as próprias margens, mas só olhando o
+ * resultado junto dá para ver a sobra. Devolve o trecho de log (ou "").
+ */
+function dropSlivers(p: Project): string {
+  let removed = 0;
+  // Tirar uma sobra pode encostar duas outras: repete até não haver mais (com teto, por segurança).
+  for (let pass = 0; pass < 8; pass++) {
+    const clips = [...mainClips(p)].sort((a, b) => a.start - b.start);
+    const jump = (a: MediaClip | undefined, b: MediaClip | undefined) => !a || !b || a.assetId !== b.assetId || Math.abs(sourceEnd(a) - b.sourceStart) > 0.04 || Math.abs(clipEnd(a) - b.start) > 0.04;
+    const ranges: TimeRange[] = [];
+    clips.forEach((c, i) => {
+      if (c.duration >= SLIVER_MAX - 1e-6 || hasSpeedClip(c)) return;
+      const prev = clips[i - 1];
+      const next = clips[i + 1];
+      // Só o que está ISOLADO por cortes dos dois lados; um clip curto que o usuário dividiu à mão continua colado ao vizinho.
+      if ((prev && !jump(prev, c)) || (next && !jump(c, next)) || (!prev && !next)) return;
+      const words = p.assets[c.assetId]?.transcript?.words;
+      // Sem transcrição não dá para saber se há fala ali: fica.
+      if (!words) return;
+      const from = c.sourceStart;
+      const to = sourceEnd(c);
+      const spoken = words.some((w) => !w.disfluency && w.text.trim() && (w.start + w.end) / 2 >= from && (w.start + w.end) / 2 <= to);
+      // Palavra que atravessa o pedaço inteiro (começa antes e termina depois) também é fala.
+      const through = words.some((w) => !w.disfluency && w.text.trim() && w.start <= from && w.end >= to);
+      if (!spoken && !through) ranges.push({ start: c.start, end: clipEnd(c) });
+    });
+    if (!ranges.length) break;
+    removeRanges(p, ranges);
+    removed += ranges.length;
+  }
+  return removed ? `; ${removed} sobra(s) de corte sem fala removida(s)` : "";
 }
 
 /** Corta faixas de palavras: traduz para tempo de origem e daí para a timeline atual. */

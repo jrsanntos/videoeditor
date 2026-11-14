@@ -140,19 +140,29 @@ function Choose() {
   );
 }
 
-const STAGES: { match: RegExp; label: string }[] = [
-  { match: /áudio|Transcrev/i, label: "Ouvindo e transcrevendo a fala" },
-  { match: /Analisando|Assistindo|Lendo/i, label: "Assistindo ao vídeo inteiro" },
-  { match: /Planejando|Conferindo a transcrição/i, label: "Planejando o ritmo da edição" },
-  { match: /Montando|Aplicando|Continuando|removid|corte|zoom|componente/i, label: "Montando cortes, zooms e animações" },
-  { match: /Revisando|Conferindo/i, label: "Revisando o resultado na tela" },
-];
+const STAGES = ["Ouvindo e transcrevendo a fala", "Assistindo ao vídeo inteiro", "Planejando o ritmo da edição", "Montando cortes, zooms e animações", "Revisando o resultado na tela"];
+
+/**
+ * Etapa a que um aviso de andamento pertence (ou -1: não muda a etapa). A
+ * ordem das regras importa: "Conferindo hesitações" é da transcrição e
+ * "Conferindo a transcrição" acontece em várias etapas, então nenhuma das duas
+ * pode cair na revisão final só por conter "Conferindo".
+ */
+function stageOf(busy: string): number {
+  if (/hesitações|áudio|Transcrev/i.test(busy)) return 0;
+  if (/conferindo como ficou na tela|quadros do vídeo editado|corrigindo o que viu|Volte para esta aba/i.test(busy)) return 4;
+  if (/Analisando|assistindo ao vídeo|Lendo o vídeo/i.test(busy)) return 1;
+  if (/Planejando/i.test(busy)) return 2;
+  if (/Conferindo a transcrição/i.test(busy)) return -1;
+  if (/Editor|Montando|Aplicando|Continuando|Crítico|Corrigindo|modelo reserva/i.test(busy)) return 3;
+  return -1;
+}
 
 function Working() {
   const busy = useEditor((s) => s.busy);
   const plan = useEditor((s) => [...s.chat].reverse().find((m) => m.plan)?.plan);
   const [stage, setStage] = useState(0);
-  const now = busy ? STAGES.findIndex((s) => s.match.test(busy)) : -1;
+  const now = busy ? stageOf(busy) : -1;
   // As etapas só avançam: uma mensagem intermediária não faz a lista voltar.
   if (now > stage) setStage(now);
 
@@ -163,10 +173,10 @@ function Working() {
           <span className="h-2 w-2 animate-ping rounded-full bg-brand-400" /> A IA está editando o seu vídeo
         </p>
         <ol className="mt-3 space-y-1.5">
-          {STAGES.map((s, i) => (
-            <li key={s.label} className={`flex items-center gap-2 text-[12.5px] ${i < stage ? "text-zinc-500" : i === stage ? "font-medium text-white" : "text-zinc-600"}`}>
+          {STAGES.map((label, i) => (
+            <li key={label} className={`flex items-center gap-2 text-[12.5px] ${i < stage ? "text-zinc-500" : i === stage ? "font-medium text-white" : "text-zinc-600"}`}>
               <span className={`flex h-4 w-4 items-center justify-center rounded-full ${i < stage ? "bg-brand-500 text-white" : i === stage ? "border-2 border-brand-400" : "border border-zinc-700"}`}>{i < stage && <Icon.check size={10} />}</span>
-              {s.label}
+              {label}
             </li>
           ))}
         </ol>

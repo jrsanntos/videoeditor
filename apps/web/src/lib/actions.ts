@@ -55,53 +55,95 @@ import { dropForeignProject, markSaved, saveNow, TOUR_KEY, useEditor, type ChatM
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
 const analyses = new Map<string, Promise<VideoAnalysis | null>>();
+// Primeira leitura (rápida) de cada asset: o bastante para a IA começar a editar.
+const quickAnalyses = new Map<string, Promise<VideoAnalysis | null>>();
+/** Quadros medidos na leitura rápida: o suficiente para saber onde o rosto está e se é close-up. */
+const QUICK_SAMPLES = 9;
 
 /**
  * Mede onde o apresentador está no quadro e separa alguns quadros para o
  * agente ver o vídeo. Roda no navegador; o resultado entra no projeto sem
  * criar ponto de desfazer.
+ *
+ * Em duas fases. A leitura RÁPIDA (poucos quadros, alguns segundos) já dá o
+ * enquadramento, a posição do rosto e os quadros que a IA recebe: é o que uma
+ * edição precisa para começar. A leitura COMPLETA (centenas de quadros: mapa
+ * de movimento, cortes de cena, rosto a cada ~1,5 s) leva de dezenas de
+ * segundos a mais de um minuto em máquinas modestas e substitui a rápida
+ * quando termina. Antes havia só a completa, e a IA esperava no máximo 60 s
+ * por ela: numa máquina lenta, editava às cegas (sem quadros e sem rosto).
  */
 export function analyzeAsset(assetId: string): Promise<VideoAnalysis | null> {
   let p = analyses.get(assetId);
   if (!p) {
-    p = (async () => {
-      const blob = mediaBlob(assetId);
+    const blob = mediaBlob(assetId);
+    const apply = (result: Pick<VideoAnalysis, "subject" | "analysis">, replace: boolean) => {
+      const current = useEditor.getState().project;
+      const asset = current?.assets[assetId];
+      if (!current || !asset) return;
+      const next = structuredClone(current);
+      const target = next.assets[assetId]!;
+      if (result.subject.length && (replace || !asset.subject)) target.subject = result.subject;
+      if (result.analysis && (replace || !asset.analysis)) target.analysis = result.analysis;
+      // Sem ponto de desfazer: medir o vídeo não é uma edição.
+      useEditor.setState({ project: next });
+      reclassify(assetId);
+    };
+    const hash = () => useEditor.getState().project?.assets[assetId]?.hash;
+    const fromCache = (async () => {
       if (!blob) return null;
-      const apply = (result: Pick<VideoAnalysis, "subject" | "analysis">) => {
-        const current = useEditor.getState().project;
-        const asset = current?.assets[assetId];
-        if (!current || !asset) return;
-        const next = structuredClone(current);
-        const target = next.assets[assetId]!;
-        if (result.subject.length && !asset.subject) target.subject = result.subject;
-        if (result.analysis && !asset.analysis) target.analysis = result.analysis;
-        // Sem ponto de desfazer: medir o vídeo não é uma edição.
-        useEditor.setState({ project: next });
-        reclassify(assetId);
-      };
+      // Mesmo arquivo já analisado (em qualquer projeto): vem do cache, sem reprocessar.
+      const cached = await cacheGet(hash());
+      if (!cached?.analysis || !cached.frames?.length) return null;
+      const result = { subject: cached.subject ?? [], frames: cached.frames, analysis: cached.analysis };
+      apply(result, true);
+      return result;
+    })().catch(() => null);
+    const samples = fromCache.then((hit) => (hit || !blob ? null : decodeMono(assetId).catch(() => null)));
+    const words = () => useEditor.getState().project?.assets[assetId]?.transcript?.words.length;
+    const quick = fromCache.then(async (hit) => {
+      if (hit || !blob) return hit;
       try {
-        // Mesmo arquivo já analisado (em qualquer projeto): vem do cache, sem reprocessar.
-        const hash = useEditor.getState().project?.assets[assetId]?.hash;
-        const cached = await cacheGet(hash);
-        if (cached?.analysis && cached.frames?.length) {
-          const result = { subject: cached.subject ?? [], frames: cached.frames, analysis: cached.analysis };
-          apply(result);
-          return result;
-        }
-        const samples = await decodeMono(assetId).catch(() => null);
-        const words = useEditor.getState().project?.assets[assetId]?.transcript?.words.length;
-        const result = await analyzeVideo(blob, assetId, samples, SPEECH_RATE, words);
-        apply(result);
-        void cachePut(hash, { analysis: result.analysis ?? undefined, subject: result.subject, frames: result.frames });
+        const result = await analyzeVideo(blob, `${assetId}:quick`, await samples, SPEECH_RATE, words(), { maxSamples: QUICK_SAMPLES });
+        // Só o enquadramento entra no projeto: com 9 quadros o mapa de movimento e o gênero seriam chute,
+        // e um gênero errado muda a edição inteira (vídeo de ação não tem as pausas cortadas).
+        apply({ subject: result.subject, analysis: null }, false);
         return result;
       } catch (e) {
-        console.warn("análise do vídeo indisponível", e);
+        console.warn("leitura rápida do vídeo indisponível", e);
         return null;
       }
-    })();
+    });
+    quickAnalyses.set(assetId, quick);
+    p = quick.then(async (first) => {
+      const hit = await fromCache;
+      if (hit || !blob) return hit;
+      try {
+        const result = await analyzeVideo(blob, assetId, await samples, SPEECH_RATE, words());
+        apply(result, true);
+        // Os quadros da leitura rápida servem se a completa não capturou nenhum.
+        const frames = result.frames.length ? result.frames : (first?.frames ?? []);
+        void cachePut(hash(), { analysis: result.analysis ?? undefined, subject: result.subject, frames });
+        return { ...result, frames };
+      } catch (e) {
+        console.warn("análise do vídeo indisponível", e);
+        return first;
+      }
+    });
     analyses.set(assetId, p);
   }
   return p;
+}
+
+/**
+ * O que a IA precisa para começar: a análise completa se ela chegar em
+ * `fullWaitMs`; senão a leitura rápida, que fica pronta em segundos.
+ */
+async function analysisForAgent(assetId: string, fullWaitMs = 15_000): Promise<VideoAnalysis | null> {
+  const full = analyzeAsset(assetId);
+  const done = await withTimeout(full, fullWaitMs);
+  if (done) return done;
+  return (await withTimeout(quickAnalyses.get(assetId) ?? full, 60_000)) ?? null;
 }
 
 /**
@@ -171,6 +213,7 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
     clearBroll();
     thumbs.clear();
     analyses.clear();
+    quickAnalyses.clear();
     await storeMedia(asset.id, file);
     const project = createProject({
       name: file.name.replace(/\.[^.]+$/, ""),
@@ -203,6 +246,7 @@ export async function startEmptyProject() {
   clearBroll();
   thumbs.clear();
   analyses.clear();
+  quickAnalyses.clear();
   useEditor.setState({ chat: [], time: 0, range: null, assistant: null });
   useEditor.getState().setProject(createEmptyProject({ brand: useEditor.getState().brands[0]?.brand }));
 }
@@ -587,7 +631,7 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   // Sem o enquadramento a IA não sabe se é close-up nem onde está o rosto: vale esperar mais por ele
   // (a edição completa leva minutos; a análise, segundos a mais).
   const assetId = primaryAssetId(project);
-  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 60_000) : null;
+  const analysis = full && assetId ? await analysisForAgent(assetId) : null;
   const frames = analysis?.frames ?? [];
   if (full && opts.confirm !== false) {
     // Fase 1 — Diretor: só o plano. Nada é editado nem cobrado até o usuário confirmar.
@@ -1088,6 +1132,7 @@ export async function closeProject() {
   clearBroll();
   thumbs.clear();
   analyses.clear();
+  quickAnalyses.clear();
   useEditor.setState({ chat: [], time: 0, range: null, playing: false, missingMedia: [], assistant: null });
   useEditor.getState().setProject(null);
   markSaved(null);
@@ -1134,6 +1179,7 @@ export async function openProject(id: string) {
     clearBroll();
     thumbs.clear();
     analyses.clear();
+    quickAnalyses.clear();
     useEditor.setState({ chat: [], time: 0, range: null, playing: false, assistant: null, tour: null });
     markSaved(parsed.data);
     s.setProject(parsed.data);

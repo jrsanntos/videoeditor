@@ -489,7 +489,9 @@ export function keepLocalMeasurements(incoming: Project, current: Project | null
   for (const [id, asset] of Object.entries(incoming.assets)) {
     const local = current.assets[id];
     if (!local) continue;
-    if (!asset.subject?.length && local.subject?.length) own().assets[id]!.subject = local.subject;
+    // Mais medidas do que o servidor recebeu = a leitura completa do vídeo terminou durante o pedido
+    // (o pedido saiu só com a leitura rápida): as medidas locais são as boas.
+    if ((local.subject?.length ?? 0) > (asset.subject?.length ?? 0)) own().assets[id]!.subject = local.subject;
     if (!asset.analysis && local.analysis) own().assets[id]!.analysis = local.analysis;
   }
   const untouched = sent && incoming.framing.x === sent.framing.x && incoming.framing.y === sent.framing.y;

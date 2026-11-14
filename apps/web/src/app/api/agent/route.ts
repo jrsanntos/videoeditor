@@ -12,6 +12,7 @@ import {
   critiqueReport,
   DEFAULT_PACING,
   enforcePacing,
+  ensureHook,
   ensureLowerThird,
   framingObjections,
   mainClips,
@@ -552,8 +553,10 @@ export async function POST(req: Request) {
       if (log.length) {
         const pruned = enforcePacing(working, profile);
         // O nome informado pela pessoa aparece sempre: a tarja não depende de o modelo lembrar.
-        const named = ensureLowerThird(pruned.project);
-        const fixed = [...pruned.log, ...named.log];
+        // O gancho também não depende de o modelo lembrar: se o começo ficou parado, entra um movimento de câmera.
+        const hooked = ensureHook(pruned.project, profile);
+        const named = ensureLowerThird(hooked.project);
+        const fixed = [...pruned.log, ...hooked.log, ...named.log];
         if (fixed.length) {
           working = named.project;
           log.push(...fixed);

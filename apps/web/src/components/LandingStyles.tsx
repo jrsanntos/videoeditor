@@ -10,7 +10,7 @@ const IDS = Object.keys(SKILLS) as SkillId[];
 const MOVES: Record<SkillId, string[]> = {
   viral: [
     "O vídeo começa na primeira frase que promete algo; o aquecimento sai.",
-    "Título de gancho nos três primeiros segundos, com punch-in seco.",
+    "Gancho nos primeiros segundos: título de impacto quando há espaço no quadro; em close, punch-in no rosto e legenda forte.",
     "Uma peça de motion a cada virada de raciocínio, entrando na palavra em que é dita.",
   ],
   autoridade: [
