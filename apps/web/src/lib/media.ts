@@ -1,5 +1,7 @@
 "use client";
 
+import { concatFloat32, createResampler } from "@videoeditor/core";
+
 /**
  * Mídia local. No MVP o arquivo bruto nunca sai do navegador: fica em
  * IndexedDB e é lido por object URL. Só o áudio comprimido (16 kHz mono)
@@ -53,13 +55,28 @@ export async function loadMedia(assetIds: string[]): Promise<string[]> {
   return missing;
 }
 
-export async function clearMedia() {
+/**
+ * Solta a mídia da memória (ao trocar de projeto) sem apagar do navegador: o
+ * projeto continua salvo na conta e reabre com os mesmos arquivos.
+ */
+export function releaseMedia() {
   for (const { url } of urls.values()) URL.revokeObjectURL(url);
   urls.clear();
-  try {
-    await idb("readwrite", (s) => s.clear());
-  } catch {
-    // nada a limpar
+  monoCache.clear();
+}
+
+/** Apaga do navegador os arquivos de um projeto excluído. */
+export async function deleteMedia(assetIds: string[]) {
+  for (const id of assetIds) {
+    const entry = urls.get(id);
+    if (entry) URL.revokeObjectURL(entry.url);
+    urls.delete(id);
+    monoCache.delete(id);
+    try {
+      await idb("readwrite", (s) => s.delete(id));
+    } catch {
+      // nada a apagar
+    }
   }
 }
 
@@ -125,26 +142,92 @@ const monoCache = new Map<string, Promise<Float32Array>>();
 export const SPEECH_RATE = 16000;
 
 /**
+ * Acima deste tamanho o arquivo não é carregado inteiro na memória para ler o
+ * áudio: ele é decodificado pedaço a pedaço (ver `decodeBlobMonoStreaming`).
+ * NEXT_PUBLIC_STREAM_AUDIO_ABOVE_MB ajusta o limite (0 = sempre em streaming).
+ */
+const streamAboveMb = Number(process.env.NEXT_PUBLIC_STREAM_AUDIO_ABOVE_MB || NaN);
+const STREAM_ABOVE_BYTES = (Number.isFinite(streamAboveMb) && streamAboveMb >= 0 ? streamAboveMb : 300) * 1024 * 1024;
+
+/**
  * Decodifica o áudio de qualquer arquivo de vídeo em mono 16 kHz.
  *
- * A decodificação já sai na taxa final: decodeAudioData reamostra com filtro
- * de qualidade. Decodificar na taxa do aparelho (44,1 kHz em muitos) e tocar
- * num contexto de outra taxa usa interpolação linear, que espelha a voz em
- * ruído agudo (o "chiado" medido no vídeo de teste).
+ * Arquivo pequeno: decodeAudioData já entrega na taxa final, reamostrando com
+ * filtro de qualidade (decodificar na taxa do aparelho e tocar num contexto de
+ * outra taxa usa interpolação linear, que espelha a voz em ruído agudo, o
+ * "chiado" medido no vídeo de teste). Mas isso exige o arquivo INTEIRO na
+ * memória: uma gravação longa de celular passa de 1 GB e derruba a aba.
+ * Arquivo grande, ou quando o caminho rápido falha: streaming.
  */
 export async function decodeBlobMono(blob: Blob): Promise<Float32Array> {
-  try {
-    const decoded = await new OfflineAudioContext(1, 1, SPEECH_RATE).decodeAudioData(await blob.arrayBuffer());
-    if (decoded.numberOfChannels === 1) return decoded.getChannelData(0);
-    // Mono: média dos canais.
-    const out = new Float32Array(decoded.length);
-    for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-      const data = decoded.getChannelData(ch);
-      for (let i = 0; i < out.length; i++) out[i] = out[i]! + data[i]! / decoded.numberOfChannels;
+  if (blob.size <= STREAM_ABOVE_BYTES) {
+    try {
+      const decoded = await new OfflineAudioContext(1, 1, SPEECH_RATE).decodeAudioData(await blob.arrayBuffer());
+      if (decoded.numberOfChannels === 1) return decoded.getChannelData(0);
+      // Mono: média dos canais.
+      const out = new Float32Array(decoded.length);
+      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+        const data = decoded.getChannelData(ch);
+        for (let i = 0; i < out.length; i++) out[i] = out[i]! + data[i]! / decoded.numberOfChannels;
+      }
+      return out;
+    } catch {
+      // Formato que o decodeAudioData não lê (ou falta de memória): tenta pedaço a pedaço.
     }
-    return out;
-  } catch {
+  }
+  try {
+    return await decodeBlobMonoStreaming(blob);
+  } catch (e) {
+    console.warn("áudio ilegível", e);
     throw new Error("Este vídeo não tem uma faixa de áudio legível.");
+  }
+}
+
+/**
+ * O mesmo resultado sem carregar o arquivo: o leitor busca só os pacotes de
+ * áudio, o navegador decodifica um pedaço por vez e cada pedaço já sai em mono
+ * na taxa da fala. A memória usada é a do resultado (1 h ≈ 230 MB), não a do arquivo.
+ */
+export async function decodeBlobMonoStreaming(blob: Blob): Promise<Float32Array> {
+  const { ALL_FORMATS, AudioSampleSink, BlobSource, Input } = await import("mediabunny");
+  const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryAudioTrack();
+    if (!track) throw new Error("sem faixa de áudio");
+    if (!(await track.canDecode())) throw new Error(`codec de áudio ${track.codec ?? "desconhecido"} não suportado`);
+    const sink = new AudioSampleSink(track);
+    const chunks: Float32Array[] = [];
+    let resampler: ReturnType<typeof createResampler> | null = null;
+    let rate = 0;
+    let plane = new Float32Array(0);
+    for await (const sample of sink.samples()) {
+      try {
+        const frames = sample.numberOfFrames;
+        const channels = sample.numberOfChannels;
+        if (!frames || !channels) continue;
+        // A taxa pode mudar no meio de arquivos colados: fecha o trecho anterior e recomeça.
+        if (!resampler || sample.sampleRate !== rate) {
+          if (resampler) chunks.push(resampler.flush());
+          rate = sample.sampleRate;
+          resampler = createResampler(rate, SPEECH_RATE);
+        }
+        const mono = new Float32Array(frames);
+        if (plane.length < frames) plane = new Float32Array(frames);
+        for (let ch = 0; ch < channels; ch++) {
+          sample.copyTo(plane, { planeIndex: ch, format: "f32-planar", frameCount: frames });
+          for (let i = 0; i < frames; i++) mono[i] = mono[i]! + plane[i]! / channels;
+        }
+        chunks.push(resampler.push(mono));
+      } finally {
+        sample.close();
+      }
+    }
+    if (resampler) chunks.push(resampler.flush());
+    const out = concatFloat32(chunks);
+    if (!out.length) throw new Error("faixa de áudio vazia");
+    return out;
+  } finally {
+    input.dispose();
   }
 }
 

@@ -46,22 +46,29 @@ export function musicGainAt(project: Project, env: GainPoint[], t: number, durat
   return project.music.volume * gainAt(env, t) * Math.max(0, edge);
 }
 
-/** Agenda a trilha inteira num contexto offline (exportação), com o ducking como automação de ganho. */
-export async function scheduleMusic(ctx: OfflineAudioContext, project: Project, duration: number) {
+/**
+ * Agenda a trilha num contexto offline (exportação), com o ducking como
+ * automação de ganho. `window` limita a um trecho da timeline: o tempo 0 do
+ * contexto é `window.base`, e o loop entra na fase em que estaria ali.
+ */
+export async function scheduleMusic(ctx: OfflineAudioContext, project: Project, duration: number, window?: { base: number; end: number }) {
   const buffer = await musicBuffer(ctx, project);
   if (!buffer) return;
+  const base = window?.base ?? 0;
+  const end = Math.min(duration, window?.end ?? duration);
+  if (end <= base) return;
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   src.loop = true;
   const gain = ctx.createGain();
   const env = duckingEnvelope(project);
   // Pontos do envelope + bordas dos fades: rampas lineares entre eles.
-  const times = [...new Set([0, FADE_IN, ...env.map((p) => p.t), Math.max(0, duration - FADE_OUT), duration])].filter((t) => t >= 0 && t <= duration).sort((a, b) => a - b);
-  gain.gain.setValueAtTime(musicGainAt(project, env, 0, duration), 0);
-  for (const t of times.slice(1)) gain.gain.linearRampToValueAtTime(musicGainAt(project, env, t, duration), t);
+  const times = [...new Set([FADE_IN, ...env.map((p) => p.t), Math.max(0, duration - FADE_OUT), end])].filter((t) => t > base && t <= end).sort((a, b) => a - b);
+  gain.gain.setValueAtTime(musicGainAt(project, env, base, duration), 0);
+  for (const t of times) gain.gain.linearRampToValueAtTime(musicGainAt(project, env, t, duration), t - base);
   src.connect(gain).connect(ctx.destination);
-  src.start(0);
-  src.stop(duration);
+  src.start(0, base % buffer.duration);
+  src.stop(end - base);
 }
 
 /** Tocador do preview: chame `sync` a cada quadro. */

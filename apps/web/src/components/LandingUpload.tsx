@@ -173,7 +173,7 @@ export function LandingUpload({ loggedIn, google }: { loggedIn: boolean; google:
             <ol className="space-y-4 text-[15.5px] text-haze">
               {[
                 ["Você vê o seu vídeo no estilo escolhido", "na hora, aqui mesmo"],
-                ["Encontramos as pausas e os erros", "análise grátis, no seu navegador"],
+                ["Encontramos as pausas", "análise grátis, no seu navegador"],
                 ["A IA edita tudo", `com os ${SIGNUP_CREDITS} créditos grátis da sua conta`],
               ].map(([title, sub], i) => (
                 <li key={title} className="flex gap-4">
@@ -528,6 +528,19 @@ function AuthGate({ google, style, onClose }: { google: boolean; style: SkillId 
                   {busy ? "Aguarde…" : mode === "signup" ? "Criar conta e processar" : "Entrar e processar"}
                 </button>
               </form>
+              {mode === "signup" && (
+                <p className="text-center text-[12px] leading-relaxed text-haze">
+                  Ao criar a conta você concorda com os{" "}
+                  <a href="/termos" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-white">
+                    Termos de Uso
+                  </a>{" "}
+                  e a{" "}
+                  <a href="/privacidade" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-white">
+                    Política de Privacidade
+                  </a>
+                  .
+                </p>
+              )}
             </div>
             <p className="mt-5 text-center text-[14px] text-haze">
               {mode === "signup" ? "Já tem conta? " : "Ainda não tem conta? "}

@@ -72,13 +72,15 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [x] Ledger de créditos no servidor, custo real de IA por chamada
 - [x] Painel de administração: usuários (créditos, plano, papel, banimento), financeiro (receitas, despesas, custo de IA), chaves de API cifradas, auditoria
 - [x] Modelos de edição extraídos de vídeos de exemplo e reaplicáveis por todos os usuários
-- [ ] Projetos na nuvem (JSON da edição no banco; storage S3-compatível para brutos)
+- [x] Projetos na conta: JSON da edição no banco, salvamento automático, lista de projetos e religação do arquivo bruto pelo hash em outro aparelho
+- [ ] Storage S3-compatível para os brutos (hoje o vídeo fica no navegador de quem enviou)
 - [x] Cobrança automática pelo Stripe: assinaturas Creator/Pro, pacote avulso de créditos, Portal do Cliente, receitas lançadas pelo webhook
 - [x] Renovação mensal dos créditos do plano (pela fatura paga para assinantes; sob demanda para o Free), sem acúmulo; créditos extras preservados
 - [x] Recuperação de senha por e-mail
 - [x] Limite de requisições no login, no cadastro e na recuperação de senha
-- [ ] Verificação de e-mail no cadastro
-- [ ] Estorno e contestação no Stripe (hoje não removem créditos); validade de 90 dias dos pacotes avulsos
+- [x] Verificação de e-mail no cadastro
+- [x] Estorno e contestação no Stripe: abatem a receita e removem os créditos comprados (até onde ainda existirem). Pacotes avulsos não expiram
+- [ ] Testar o webhook de estorno/contestação contra o Stripe em modo de teste (escrito e tipado, ainda sem execução real)
 - [x] Travas do plano Free: 3 min de upload, marca d'água, 720p (no navegador; a transcrição também recusa no servidor)
 - [ ] Storage lifecycle: exclusão automática dos brutos após 15/30 dias de inatividade, mantendo o JSON; armazenamento prolongado como add-on
 - [ ] Limite de requisições nas rotas de IA e teto de gasto de IA por usuário
@@ -92,6 +94,36 @@ Objetivo: o prompt inicial "edite meu vídeo" produzir um corte que o público-a
 - [ ] Render turbo na nuvem (mesmo `renderFrame` em workers) para 4K e máquinas fracas
 - [ ] Exportação `.xml` para Premiere/DaVinci (plano Pro)
 - [ ] Modo "componente inédito": o modelo mais caro gera um componente novo em sandbox quando nada do catálogo serve
+
+## Pré-lançamento (auditoria)
+
+- [x] Planos só prometem o que o código entrega: exportação até 1080p; vídeos de até 15 min (Creator) e 30 min (Pro)
+- [x] Edição interrompida (teto de custo, limite de etapas, falha no meio): o usuário é avisado e paga metade
+- [x] Cortes por palavra com a fronteira conferida no áudio (`snapWordOnsets`)
+- [x] Trilha da casa (loop sintetizado) desligada por padrão em todos os modelos
+- [x] Legendas de impacto sem a vírgula e o ponto do transcritor
+- [x] Testes de integração do servidor (créditos, projetos, estorno e contestação do Stripe) contra Postgres: `TEST_DATABASE_URL=… pnpm test`
+- [x] Regra de cobrança do agente (`agentCharge`) no core, com teste
+- [x] Leitura do áudio em streaming para arquivos acima de 300 MB (ingestão, transcrição, medição de pausas), sem carregar o arquivo na memória
+- [x] Exportação sem carregar o vídeo na memória: áudio mixado em trechos de 30 s (lendo do arquivo só o que cada trecho usa) e arquivo final gravado em disco pelo navegador (OPFS), com o índice do MP4 no fim
+- [x] Jornada real rodada de ponta a ponta (landing → cadastro → edição completa pela IA → exportação) com o vídeo de teste, duas vezes; defeitos achados e corrigidos:
+  - painel de progresso preso na última etapa desde os 12 s
+  - IA editando sem quadros e sem a posição do rosto quando a análise do vídeo demora (agora há uma leitura rápida, em segundos, antes da completa)
+  - sobras de 0,15 s sem fala entre dois cortes vizinhos (`dropSlivers`)
+  - vídeo abrindo parado quando o título de gancho é recusado no close-up (`ensureHook`)
+  - rastreamento denso do rosto apagado pela resposta do servidor
+- [ ] Medir o tempo de exportação em máquina com GPU (no navegador sem GPU do ambiente de teste, 62 s de vídeo levaram 8 min)
+- [ ] Exportar um vídeo longo de verdade (15–30 min, arquivo de celular) antes de subir os limites dos planos
+- [ ] Teste da rota do agente com o modelo simulado (plano, execução, interrupção)
+- [ ] Subir os limites de duração só depois de testar vídeos longos de ponta a ponta (ingestão e exportação em streaming)
+- [ ] Acervo de músicas licenciadas para religar a trilha por padrão
+- [x] Termos de Uso (`/termos`) e Política de Privacidade (`/privacidade`) escritos a partir do que o código faz, com aviso de minuta enquanto houver placeholder
+- [ ] Preencher os dados da empresa em `apps/web/src/lib/legal.ts` e passar os dois textos por revisão jurídica
+- [x] Legendas de frase em duas linhas equilibradas, em vez de encolher a letra
+- [x] Posição do rosto medida a cada ~1,5 s (até 120 medidas), para os zooms que seguem o sujeito
+- [x] Revisão visual final não trava mais o editor com a aba em segundo plano (espera 30 s e segue)
+- [ ] Antes/depois reais na landing (`landing-demos.ts`), no lugar dos cartões ilustrativos
+- [ ] Ouvir os cortes por palavra em gravações reais com ruído (o ajuste pelo áudio só foi testado com sinal sintético)
 
 ## Decisões em aberto
 

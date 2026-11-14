@@ -18,10 +18,12 @@ import {
   MAX_CRITIC_CYCLES,
   newId,
   PLANS,
+  ProjectSchema,
   projectDuration,
   projectGenre,
   SILENCE_MODES,
   silencesFromAudio,
+  snapWordOnsets,
   SKILLS,
   skillOperations,
   skillPrompt,
@@ -48,58 +50,100 @@ import { refineDisfluencies } from "./disfluency";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
-import { assertDecodable, clearMedia, decodeBlobMono, decodeMono, encodeSpeech, mediaBlob, probeVideo, SPEECH_RATE, storeMedia } from "./media";
-import { TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
+import { assertDecodable, decodeBlobMono, decodeMono, deleteMedia, encodeSpeech, loadMedia, mediaBlob, probeVideo, releaseMedia, SPEECH_RATE, storeMedia } from "./media";
+import { dropForeignProject, markSaved, saveNow, TOUR_KEY, useEditor, type ChatMessage, type EditPlan, type PendingPlan, type SavedBrand, type SessionUser } from "./store";
 
 // Análise visual por asset: roda em segundo plano logo após o envio do vídeo.
 const analyses = new Map<string, Promise<VideoAnalysis | null>>();
+// Primeira leitura (rápida) de cada asset: o bastante para a IA começar a editar.
+const quickAnalyses = new Map<string, Promise<VideoAnalysis | null>>();
+/** Quadros medidos na leitura rápida: o suficiente para saber onde o rosto está e se é close-up. */
+const QUICK_SAMPLES = 9;
 
 /**
  * Mede onde o apresentador está no quadro e separa alguns quadros para o
  * agente ver o vídeo. Roda no navegador; o resultado entra no projeto sem
  * criar ponto de desfazer.
+ *
+ * Em duas fases. A leitura RÁPIDA (poucos quadros, alguns segundos) já dá o
+ * enquadramento, a posição do rosto e os quadros que a IA recebe: é o que uma
+ * edição precisa para começar. A leitura COMPLETA (centenas de quadros: mapa
+ * de movimento, cortes de cena, rosto a cada ~1,5 s) leva de dezenas de
+ * segundos a mais de um minuto em máquinas modestas e substitui a rápida
+ * quando termina. Antes havia só a completa, e a IA esperava no máximo 60 s
+ * por ela: numa máquina lenta, editava às cegas (sem quadros e sem rosto).
  */
 export function analyzeAsset(assetId: string): Promise<VideoAnalysis | null> {
   let p = analyses.get(assetId);
   if (!p) {
-    p = (async () => {
-      const blob = mediaBlob(assetId);
+    const blob = mediaBlob(assetId);
+    const apply = (result: Pick<VideoAnalysis, "subject" | "analysis">, replace: boolean) => {
+      const current = useEditor.getState().project;
+      const asset = current?.assets[assetId];
+      if (!current || !asset) return;
+      const next = structuredClone(current);
+      const target = next.assets[assetId]!;
+      if (result.subject.length && (replace || !asset.subject)) target.subject = result.subject;
+      if (result.analysis && (replace || !asset.analysis)) target.analysis = result.analysis;
+      // Sem ponto de desfazer: medir o vídeo não é uma edição.
+      useEditor.setState({ project: next });
+      reclassify(assetId);
+    };
+    const hash = () => useEditor.getState().project?.assets[assetId]?.hash;
+    const fromCache = (async () => {
       if (!blob) return null;
-      const apply = (result: Pick<VideoAnalysis, "subject" | "analysis">) => {
-        const current = useEditor.getState().project;
-        const asset = current?.assets[assetId];
-        if (!current || !asset) return;
-        const next = structuredClone(current);
-        const target = next.assets[assetId]!;
-        if (result.subject.length && !asset.subject) target.subject = result.subject;
-        if (result.analysis && !asset.analysis) target.analysis = result.analysis;
-        // Sem ponto de desfazer: medir o vídeo não é uma edição.
-        useEditor.setState({ project: next });
-        reclassify(assetId);
-      };
+      // Mesmo arquivo já analisado (em qualquer projeto): vem do cache, sem reprocessar.
+      const cached = await cacheGet(hash());
+      if (!cached?.analysis || !cached.frames?.length) return null;
+      const result = { subject: cached.subject ?? [], frames: cached.frames, analysis: cached.analysis };
+      apply(result, true);
+      return result;
+    })().catch(() => null);
+    const samples = fromCache.then((hit) => (hit || !blob ? null : decodeMono(assetId).catch(() => null)));
+    const words = () => useEditor.getState().project?.assets[assetId]?.transcript?.words.length;
+    const quick = fromCache.then(async (hit) => {
+      if (hit || !blob) return hit;
       try {
-        // Mesmo arquivo já analisado (em qualquer projeto): vem do cache, sem reprocessar.
-        const hash = useEditor.getState().project?.assets[assetId]?.hash;
-        const cached = await cacheGet(hash);
-        if (cached?.analysis && cached.frames?.length) {
-          const result = { subject: cached.subject ?? [], frames: cached.frames, analysis: cached.analysis };
-          apply(result);
-          return result;
-        }
-        const samples = await decodeMono(assetId).catch(() => null);
-        const words = useEditor.getState().project?.assets[assetId]?.transcript?.words.length;
-        const result = await analyzeVideo(blob, assetId, samples, SPEECH_RATE, words);
-        apply(result);
-        void cachePut(hash, { analysis: result.analysis ?? undefined, subject: result.subject, frames: result.frames });
+        const result = await analyzeVideo(blob, `${assetId}:quick`, await samples, SPEECH_RATE, words(), { maxSamples: QUICK_SAMPLES });
+        // Só o enquadramento entra no projeto: com 9 quadros o mapa de movimento e o gênero seriam chute,
+        // e um gênero errado muda a edição inteira (vídeo de ação não tem as pausas cortadas).
+        apply({ subject: result.subject, analysis: null }, false);
         return result;
       } catch (e) {
-        console.warn("análise do vídeo indisponível", e);
+        console.warn("leitura rápida do vídeo indisponível", e);
         return null;
       }
-    })();
+    });
+    quickAnalyses.set(assetId, quick);
+    p = quick.then(async (first) => {
+      const hit = await fromCache;
+      if (hit || !blob) return hit;
+      try {
+        const result = await analyzeVideo(blob, assetId, await samples, SPEECH_RATE, words());
+        apply(result, true);
+        // Os quadros da leitura rápida servem se a completa não capturou nenhum.
+        const frames = result.frames.length ? result.frames : (first?.frames ?? []);
+        void cachePut(hash(), { analysis: result.analysis ?? undefined, subject: result.subject, frames });
+        return { ...result, frames };
+      } catch (e) {
+        console.warn("análise do vídeo indisponível", e);
+        return first;
+      }
+    });
     analyses.set(assetId, p);
   }
   return p;
+}
+
+/**
+ * O que a IA precisa para começar: a análise completa se ela chegar em
+ * `fullWaitMs`; senão a leitura rápida, que fica pronta em segundos.
+ */
+async function analysisForAgent(assetId: string, fullWaitMs = 15_000): Promise<VideoAnalysis | null> {
+  const full = analyzeAsset(assetId);
+  const done = await withTimeout(full, fullWaitMs);
+  if (done) return done;
+  return (await withTimeout(quickAnalyses.get(assetId) ?? full, 60_000)) ?? null;
 }
 
 /**
@@ -164,10 +208,12 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
   setBusy("Lendo o vídeo…");
   try {
     const asset = await ingest(file);
-    await clearMedia();
+    // O projeto anterior continua salvo na conta (e os arquivos dele, neste navegador).
+    await leaveProject();
     clearBroll();
     thumbs.clear();
     analyses.clear();
+    quickAnalyses.clear();
     await storeMedia(asset.id, file);
     const project = createProject({
       name: file.name.replace(/\.[^.]+$/, ""),
@@ -196,10 +242,11 @@ export async function importVideo(file: File, opts: { referenceUrl?: string } = 
  * cards, sons e banco de imagens também valem.
  */
 export async function startEmptyProject() {
-  await clearMedia();
+  await leaveProject();
   clearBroll();
   thumbs.clear();
   analyses.clear();
+  quickAnalyses.clear();
   useEditor.setState({ chat: [], time: 0, range: null, assistant: null });
   useEditor.getState().setProject(createEmptyProject({ brand: useEditor.getState().brands[0]?.brand }));
 }
@@ -433,7 +480,9 @@ async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolea
     // Hesitações que o transcritor esconde dentro de palavras esticadas ("hum", tentativa e repetição).
     setBusy("Conferindo hesitações…");
     const refined = await refineDisfluencies(data.transcript, samples, SPEECH_RATE);
-    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, refined.words) };
+    // Fronteiras de palavra conferidas no áudio: é onde os cortes por palavra vão cair.
+    const snapped = snapWordOnsets(refined.words, samples, SPEECH_RATE);
+    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, snapped) };
     next.assets[assetId]!.transcript = transcript;
     const spoken = transcript.words.length > 0;
     if (opts.captions !== false && spoken) next.captions.enabled = true;
@@ -507,10 +556,14 @@ export async function refreshMe() {
     return;
   }
   const data = (await res.json()) as { user?: SessionUser; credits?: number; unlimited?: boolean; brands?: SavedBrand[]; brandLimit?: number };
+  if (data.user) dropForeignProject(data.user.id);
   if (data.user) useEditor.setState({ user: data.user, credits: data.credits ?? 0, unlimited: !!data.unlimited, brands: data.brands ?? [], brandLimit: data.brandLimit ?? 1 });
 }
 
 export async function logout() {
+  // O projeto sobe antes de a sessão acabar e sai deste navegador: a próxima conta não o vê.
+  await saveNow();
+  useEditor.getState().setProject(null);
   await fetch("/api/auth/logout", { method: "POST" });
   window.location.href = "/";
 }
@@ -534,7 +587,7 @@ type AgentEvent =
   | { type: "status"; text: string }
   | { type: "plan"; plan: EditPlan; planToken?: string }
   | { type: "ops"; project: Project; log: string[] }
-  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean }
+  | { type: "done"; message: string; project: Project; log: string[]; credits: number; balance: number; reviewToken?: string; awaitingConfirmation?: boolean; interrupted?: boolean }
   | { type: "error"; error: string };
 
 /**
@@ -578,7 +631,7 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   // Sem o enquadramento a IA não sabe se é close-up nem onde está o rosto: vale esperar mais por ele
   // (a edição completa leva minutos; a análise, segundos a mais).
   const assetId = primaryAssetId(project);
-  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 60_000) : null;
+  const analysis = full && assetId ? await analysisForAgent(assetId) : null;
   const frames = analysis?.frames ?? [];
   if (full && opts.confirm !== false) {
     // Fase 1 — Diretor: só o plano. Nada é editado nem cobrado até o usuário confirmar.
@@ -707,7 +760,7 @@ async function executeAgent(req: { message: string; history: { role: string; tex
       } else if (e.type === "done") {
         s.setCredits(e.balance);
         reviewToken = e.reviewToken;
-        s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits });
+        s.pushChat({ role: "assistant", text: e.message, log: e.log, credits: e.credits, ...(e.interrupted ? { interrupted: true } : {}) });
       } else {
         void refreshMe();
         s.pushChat({ role: "assistant", text: applied ? `${e.error} As etapas já aplicadas foram mantidas (Ctrl+Z desfaz).` : e.error, log: log.length ? log : undefined, error: true });
@@ -754,18 +807,21 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Captura o preview nos instantes pedidos, em tamanho reduzido. Devolve o cursor ao lugar no fim. */
 /**
  * Em aba escondida o navegador congela o vídeo e atrasa os timers: as capturas
- * sairiam erradas. Espera a pessoa voltar (até 10 min) e avisa no caminho.
+ * sairiam erradas. Espera a pessoa voltar por pouco tempo e avisa no caminho;
+ * se ela não voltar, a conferência visual é pulada (a edição já está entregue)
+ * em vez de deixar o editor travado em "ocupado".
  */
+const VISIBLE_WAIT_MS = 30_000;
 async function whenVisible(): Promise<boolean> {
   if (typeof document === "undefined" || !document.hidden) return true;
   const s = useEditor.getState();
   const before = s.busy;
-  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela.");
+  s.setBusy("Volte para esta aba: a revisão final confere o vídeo na tela (aguardando 30 s).");
   const ok = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => {
       document.removeEventListener("visibilitychange", on);
       resolve(false);
-    }, 10 * 60_000);
+    }, VISIBLE_WAIT_MS);
     const on = () => {
       if (document.hidden) return;
       clearTimeout(timer);
@@ -903,6 +959,11 @@ async function visualReview(firstToken: string) {
     const project = useEditor.getState().project;
     if (!project) return;
     s.setBusy(`O Crítico está conferindo como ficou na tela (${cycle} de ${MAX_CRITIC_CYCLES})…`);
+    // Aba em segundo plano: sem capturas não há o que conferir. Uma espera só; a edição fica como o Editor entregou.
+    if (!(await whenVisible())) {
+      s.pushChat({ role: "assistant", text: "A edição está pronta. Pulei a conferência visual final porque esta aba ficou em segundo plano; assista ao vídeo e peça qualquer ajuste por aqui." });
+      break;
+    }
     const strip = await diagnosticStrip(project);
     const shots = await captureShots(project);
     if (!shots.length) break;
@@ -1011,7 +1072,10 @@ export async function autoEdit(id: SkillId) {
   const reply = s.chat.slice(before).filter((m) => m.role === "assistant" && !m.plan);
   const ok = reply.length > 0 && !reply[reply.length - 1]!.error;
   // Se algo falhou, o motivo já está no aviso ou no chat: o assistente só sai da frente.
-  useEditor.setState({ assistant: ok ? "done" : null });
+  // Edição interrompida não é "vídeo pronto": a pessoa vai para o chat, onde está o aviso.
+  const partial = reply.some((m) => m.interrupted);
+  useEditor.setState({ assistant: ok && !partial ? "done" : null });
+  if (partial) s.setNotice("A edição foi interrompida antes de terminar e cobramos metade do preço. Veja o que foi feito no chat e peça o que faltar.");
 }
 
 /** Só a limpeza, pelo assistente. */
@@ -1062,13 +1126,108 @@ export async function deleteBrand(id: string): Promise<string | null> {
   return null;
 }
 
+/** Fecha o projeto aberto e volta para a lista. Nada é apagado: ele fica salvo na conta. */
 export async function closeProject() {
-  await clearMedia();
+  await leaveProject();
   clearBroll();
   thumbs.clear();
   analyses.clear();
-  useEditor.setState({ chat: [], time: 0, range: null, playing: false });
+  quickAnalyses.clear();
+  useEditor.setState({ chat: [], time: 0, range: null, playing: false, missingMedia: [], assistant: null });
   useEditor.getState().setProject(null);
+  markSaved(null);
+}
+
+/** Antes de trocar de projeto: garante o salvamento do atual e solta os arquivos dele da memória. */
+async function leaveProject() {
+  await saveNow();
+  releaseMedia();
+}
+
+// ---------- Projetos salvos na conta ----------
+
+export type ProjectSummary = { id: string; name: string; duration: number; updatedAt: string; createdAt: string };
+
+export async function listProjects(): Promise<ProjectSummary[] | null> {
+  const res = await fetch("/api/projects").catch(() => null);
+  const data = res?.ok ? ((await res.json().catch(() => null)) as { projects?: ProjectSummary[] } | null) : null;
+  return data?.projects ?? null;
+}
+
+/** Arquivos que a timeline usa (vídeo principal e mídias por cima). */
+const usedAssets = (project: Project) => [...new Set(project.tracks.flatMap((t) => t.clips).flatMap((c) => (c.type === "media" || c.type === "broll" ? [c.assetId] : [])))];
+
+/**
+ * Confere quais arquivos do projeto estão neste navegador. Os que faltam e são
+ * usados na timeline vão para `missingMedia`: o editor pede para religá-los.
+ */
+export async function checkMedia(project: Project) {
+  const missing = new Set(await loadMedia(Object.keys(project.assets)));
+  useEditor.setState({ missingMedia: usedAssets(project).filter((id) => missing.has(id)) });
+}
+
+/** Abre um projeto salvo na conta. Em outro aparelho, os arquivos de vídeo precisam ser religados. */
+export async function openProject(id: string) {
+  const s = useEditor.getState();
+  s.setBusy("Abrindo o projeto…");
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+    const data = (await res.json().catch(() => null)) as { project?: unknown; error?: string } | null;
+    const parsed = ProjectSchema.safeParse(data?.project);
+    if (!res.ok || !parsed.success) throw new Error(data?.error ?? "Não foi possível abrir este projeto.");
+    await leaveProject();
+    clearBroll();
+    thumbs.clear();
+    analyses.clear();
+    quickAnalyses.clear();
+    useEditor.setState({ chat: [], time: 0, range: null, playing: false, assistant: null, tour: null });
+    markSaved(parsed.data);
+    s.setProject(parsed.data);
+    await checkMedia(parsed.data);
+  } catch (e) {
+    s.setNotice((e as Error).message);
+  } finally {
+    s.setBusy(null);
+  }
+}
+
+/** Apaga um projeto da conta e os arquivos dele deste navegador. Devolve a mensagem de erro, ou null. */
+export async function deleteSavedProject(id: string): Promise<string | null> {
+  // Os ids dos arquivos estão no próprio projeto: lê antes de apagar.
+  const got = await fetch(`/api/projects/${encodeURIComponent(id)}`).catch(() => null);
+  const parsed = ProjectSchema.safeParse(got?.ok ? ((await got.json().catch(() => null)) as { project?: unknown } | null)?.project : null);
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => null);
+  if (!res?.ok) return "Não foi possível apagar o projeto. Tente de novo.";
+  if (parsed.success) await deleteMedia(Object.keys(parsed.data.assets));
+  return null;
+}
+
+/**
+ * Religa um arquivo que falta (projeto aberto em outro aparelho, ou navegador
+ * limpo). Precisa ser o MESMO arquivo: confere pelo hash guardado no projeto
+ * e, sem hash, pela duração. Devolve a mensagem de erro, ou null.
+ */
+export async function relinkMedia(assetId: string, file: File): Promise<string | null> {
+  const project = useEditor.getState().project;
+  const asset = project?.assets[assetId];
+  if (!project || !asset) return "Projeto fechado.";
+  try {
+    const hash = asset.hash ? await fileHash(file) : null;
+    if (asset.hash && hash && hash !== asset.hash) return `Este não é o arquivo original de "${asset.name}". Escolha o mesmo vídeo que você enviou quando criou o projeto.`;
+    if (!asset.hash || !hash) {
+      if (asset.kind === "video") {
+        const meta = await probeVideo(file);
+        if (Math.abs(meta.duration - asset.duration) > 0.5) return `Este vídeo tem outra duração. Escolha o arquivo original de "${asset.name}".`;
+      }
+    }
+    if (asset.kind === "video") await assertDecodable(file);
+    await storeMedia(assetId, file);
+    useEditor.setState((st) => ({ missingMedia: st.missingMedia.filter((m) => m !== assetId) }));
+    if (!useEditor.getState().missingMedia.length && asset.role !== "context") void analyzeAsset(assetId);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 // ---------- Mídia de contexto (b-roll) ----------

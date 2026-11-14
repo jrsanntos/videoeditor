@@ -214,4 +214,22 @@ ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 ALTER TABLE users ADD COLUMN google_sub text UNIQUE;
 `,
   },
+  {
+    // Projetos na conta: o JSON da edição (timeline, transcrição, medições). O vídeo bruto continua
+    // no navegador de quem enviou; em outro aparelho, o arquivo é religado pelo hash.
+    id: "007_projects",
+    sql: `
+CREATE TABLE projects (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id text NOT NULL,
+  name text NOT NULL,
+  duration double precision NOT NULL DEFAULT 0,
+  data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id)
+);
+CREATE INDEX projects_user_updated_idx ON projects (user_id, updated_at DESC);
+`,
+  },
 ];

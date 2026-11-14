@@ -827,7 +827,8 @@ describe("2. gênero, playbook de ação e crítico", () => {
     const base = applyOperations(actionVideo(), local).project;
     expect(base.look).toMatchObject({ grade: "tactical_teal_orange", vignette: 0.55 });
     expect(base.look.letterbox).toBeGreaterThan(0);
-    expect(base.music).toMatchObject({ mood: "action", duck: true });
+    // Nenhum modelo liga a trilha da casa (loop sintético): fica desligada, com o ducking pronto.
+    expect(base.music).toMatchObject({ mood: "none", duck: true });
     expect(base.captions.style).toMatchObject({ preset: "minimal_cinema", position: "bottom" });
 
     // O plano que o Editor executa, só com o vocabulário do agente (âncoras por tempo do bruto).
@@ -884,7 +885,8 @@ describe("2. gênero, playbook de ação e crítico", () => {
     const codes = critiqueEdit(project, { skill: SKILLS.acao }).map((i) => i.code);
     expect(codes).toContain("zoom_sem_motivo");
     expect(codes).toContain("acao_sem_tratamento");
-    expect(codes).toContain("som_incompleto");
+    // Falta de trilha de fundo não é defeito: nenhum modelo a inclui.
+    expect(critiqueEdit(project, { skill: SKILLS.acao }).some((i) => /trilha de fundo/.test(i.message))).toBe(false);
   });
 
   it("o Crítico acusa texto na tela repetindo a fala", () => {
@@ -1314,7 +1316,8 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     expect(SKILLS.acao.name).toBe("Ação & Cinematográfico");
     expect(SKILLS.autoridade.name).toBe("Autoridade & Documentário Moderno");
     const recipes = TEMPLATE_SKILLS.map((id) => SKILLS[id].recipe);
-    for (const key of ["captions", "look", "music"] as const) expect(new Set(recipes.map((r) => r[key])).size).toBe(3);
+    for (const key of ["captions", "look"] as const) expect(new Set(recipes.map((r) => r[key])).size).toBe(3);
+    for (const r of recipes) expect(r.music).toBe("none");
     expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.fontPair)).size).toBe(3);
     expect(new Set(TEMPLATE_SKILLS.map((id) => SKILLS[id].brand.primaryColor)).size).toBe(3);
 
@@ -1322,12 +1325,12 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
     expect(SKILLS.viral.recipe.sfx).toEqual(expect.arrayContaining(["pop", "whoosh_rapido", "riser"]));
     expect(SKILLS.viral.direction).toContain("2 s");
 
-    expect(SKILLS.acao.recipe).toMatchObject({ captions: "minimal_cinema", speedRamps: true, music: "action" });
+    expect(SKILLS.acao.recipe).toMatchObject({ captions: "minimal_cinema", speedRamps: true, music: "none" });
     expect(SKILLS.acao.recipe.sfx).toEqual(expect.arrayContaining(["impacto_cinematico", "sub_drop"]));
     expect(SKILLS.acao.recipe.cards).toContain("tactical_hud_overlay");
     expect(SKILLS.acao.local.some((o) => o.op === "remove_silences")).toBe(false);
 
-    expect(SKILLS.autoridade.recipe).toMatchObject({ captions: "editorial_clean", look: "warm_cinematic", music: "ambient" });
+    expect(SKILLS.autoridade.recipe).toMatchObject({ captions: "editorial_clean", look: "warm_cinematic", music: "none" });
     expect(SKILLS.autoridade.recipe.cards).toEqual(expect.arrayContaining(["stat_counter_card", "comparison_split"]));
     // A tarja de cargo é opcional e fica desligada: nenhum modelo a liga sozinho.
     for (const id of TEMPLATE_SKILLS) expect(JSON.stringify(SKILLS[id].local)).not.toContain("showLowerThird");
@@ -1363,7 +1366,7 @@ describe("6. motion generativo e os 3 modelos prontos", () => {
       expect(templatePrompt(t.data)).toContain(t.data.name);
     }
     const action = BUILTIN_TEMPLATES[1]!.data;
-    expect(action).toMatchObject({ speedRamps: true, music: "action", silence: { remove: false } });
+    expect(action).toMatchObject({ speedRamps: true, music: "none", silence: { remove: false } });
     expect(templatePrompt(action)).toContain("Rampas de velocidade");
   });
 });
@@ -1595,5 +1598,187 @@ describe("economia: lucro real depois de taxas, impostos e despesas", () => {
   it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {
     const sec = PLANS.free.maxUploadMinutes * 60;
     expect(SIGNUP_CREDITS).toBeGreaterThanOrEqual(creditCost({ type: "ingest", durationSec: sec }) + creditCost({ type: "agent", tier: "full", durationSec: sec }));
+  });
+});
+
+import { snapWordOnsets } from "./onsets";
+
+describe("fronteiras de palavra conferidas no áudio (cortes sem comer consoante)", () => {
+  const RATE = 16000;
+  /** Voz sintética: tom nos trechos indicados, ruído baixo no resto. */
+  const audio = (total: number, voiced: [number, number][]) => {
+    const s = new Float32Array(Math.round(total * RATE));
+    let seed = 7;
+    for (let i = 0; i < s.length; i++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      const t = i / RATE;
+      const on = voiced.some(([a, b]) => t >= a && t < b);
+      s[i] = (seed / 2147483648 - 1) * 0.002 + (on ? Math.sin(2 * Math.PI * 180 * t) * 0.3 : 0);
+    }
+    return s;
+  };
+  const word = (id: string, start: number, end: number) => ({ id, text: id, start, end });
+
+  it("com pausa antes: o início recua até onde a voz começa, sem invadir a palavra anterior", () => {
+    // A voz de "b" começa em 0,80 s; o transcritor disse 0,88 s.
+    const samples = audio(2, [[0, 0.5], [0.8, 1.4], [1.7, 2]]);
+    const out = snapWordOnsets([word("a", 0, 0.5), word("b", 0.88, 1.4), word("c", 1.7, 2)], samples, RATE);
+    expect(out[1]!.start).toBeGreaterThan(0.74);
+    expect(out[1]!.start).toBeLessThanOrEqual(0.8);
+    expect(out[0]!.end).toBe(0.5);
+    // Início já em silêncio (folga de sobra) fica como veio.
+    const early = snapWordOnsets([word("a", 0, 0.5), word("b", 0.7, 1.4), word("c", 1.7, 2)], samples, RATE);
+    expect(early[1]!.start).toBe(0.7);
+  });
+
+  it("palavras coladas: a fronteira vai para o vale de energia; fala contínua não muda", () => {
+    // Micro-pausa real entre 0,50 e 0,54 s; o transcritor pôs a fronteira em 0,60 s.
+    const samples = audio(2, [[0, 0.5], [0.54, 1.2], [1.6, 2]]);
+    const out = snapWordOnsets([word("a", 0, 0.6), word("b", 0.6, 1.2), word("c", 1.6, 2)], samples, RATE);
+    expect(out[1]!.start).toBeGreaterThan(0.5);
+    expect(out[1]!.start).toBeLessThanOrEqual(0.54);
+    expect(out[0]!.end).toBe(out[1]!.start);
+    const flat = audio(2, [[0, 1.2], [1.6, 2]]);
+    const same = snapWordOnsets([word("a", 0, 0.6), word("b", 0.6, 1.2), word("c", 1.6, 2)], flat, RATE);
+    expect(same[1]!.start).toBe(0.6);
+    expect(same[0]!.end).toBe(0.6);
+  });
+
+  it("áudio sem contraste e marcas de hesitação ficam intactos", () => {
+    const loud = audio(2, [[0, 2]]);
+    const words = [word("a", 0, 0.6), word("b", 0.9, 1.2)];
+    expect(snapWordOnsets(words, loud, RATE)).toEqual(words);
+    const samples = audio(2, [[0, 0.5], [0.8, 1.4]]);
+    const marked = [word("a", 0, 0.5), { ...word("b", 0.88, 1.4), disfluency: "hesitation" as const }];
+    expect(snapWordOnsets(marked, samples, RATE)[1]!.start).toBe(0.88);
+  });
+});
+
+import { agentCharge, creditCost as cost } from "./credits";
+import { concatFloat32, createResampler } from "./resample";
+
+describe("cobrança de um pedido ao agente", () => {
+  it("cheio se terminou, metade se foi interrompido, nada se a timeline não mudou", () => {
+    const price = cost({ type: "agent", tier: "full", durationSec: 60 });
+    expect(agentCharge(price, { changed: true, interrupted: false })).toBe(13);
+    expect(agentCharge(price, { changed: true, interrupted: true })).toBe(6.5);
+    expect(agentCharge(price, { changed: false, interrupted: true })).toBe(0);
+    // Ajuste de 1 crédito interrompido: meio crédito, nunca uma fração que o saldo não representa.
+    expect(agentCharge(1, { changed: true, interrupted: true })).toBe(0.5);
+    expect(agentCharge(16, { changed: true, interrupted: true }) * 2).toBe(16);
+  });
+});
+
+describe("reamostragem em streaming (áudio de arquivos grandes, pedaço a pedaço)", () => {
+  const tone = (hz: number, rate: number, sec: number) => Float32Array.from({ length: Math.round(rate * sec) }, (_, i) => Math.sin((2 * Math.PI * hz * i) / rate) * 0.5);
+  const rms = (x: Float32Array, from = 0, to = x.length) => Math.sqrt(x.slice(from, to).reduce((s, v) => s + v * v, 0) / (to - from));
+  const run = (input: Float32Array, inRate: number, outRate: number, chunk: number) => {
+    const r = createResampler(inRate, outRate);
+    const parts: Float32Array[] = [];
+    for (let i = 0; i < input.length; i += chunk) parts.push(r.push(input.subarray(i, i + chunk)));
+    parts.push(r.flush());
+    return concatFloat32(parts);
+  };
+
+  it("48 kHz → 16 kHz: a voz passa inteira, o que viraria chiado é barrado, a duração bate", () => {
+    const voice = run(tone(1000, 48000, 1), 48000, 16000, 4096);
+    expect(voice.length).toBe(16000);
+    // Fora das bordas, a amplitude do tom de 1 kHz é a mesma (0,5 de pico = 0,354 RMS).
+    expect(rms(voice, 2000, 14000)).toBeCloseTo(0.3536, 2);
+    // 11 kHz está acima da metade da taxa nova: sem filtro voltaria como um tom de 5 kHz.
+    const hiss = run(tone(11000, 48000, 1), 48000, 16000, 4096);
+    expect(rms(hiss, 2000, 14000)).toBeLessThan(0.005);
+  });
+
+  it("o resultado não depende do tamanho dos pedaços, e taxas não inteiras funcionam", () => {
+    const input = tone(440, 44100, 0.5);
+    const a = run(input, 44100, 16000, 1024);
+    const b = run(input, 44100, 16000, 7);
+    expect(a.length).toBe(b.length);
+    expect(Math.abs(a.length - 8000)).toBeLessThanOrEqual(1);
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff = Math.max(diff, Math.abs(a[i]! - b[i]!));
+    expect(diff).toBeLessThan(1e-6);
+    expect(rms(a, 1000, 7000)).toBeCloseTo(0.3536, 2);
+  });
+});
+
+import { ensureHook } from "./hook";
+import { SLIVER_MAX } from "./ops";
+
+describe("sobras de corte (caso do vídeo real: pausa cortada + muleta cortada deixavam 0,15 s soltos)", () => {
+  const spoken = (): Project => {
+    const w = (id: string, text: string, start: number, end: number) => ({ id, text, start, end });
+    return addAssetToProject(createProject({ name: "t" }), {
+      id: "a1",
+      kind: "video",
+      name: "v.mp4",
+      duration: 12,
+      hasAudio: true,
+      transcript: { words: [w("w0", "para", 1, 1.4), w("w1", "a", 1.4, 1.5), w("w2", "guarnição.", 1.5, 2.5), w("w3", "É,", 3.02, 3.69), w("w4", "evitando", 3.69, 4.3), w("w5", "confronto", 4.3, 5)] },
+    });
+  };
+
+  it("o pedaço sem fala isolado entre dois cortes sai junto, e o log avisa", () => {
+    // A pausa depois de "guarnição." foi cortada até 150 ms antes do "É,"…
+    const paused = applyOperations(spoken(), [{ op: "remove_ranges", ranges: [{ start: 2.5, end: 2.87 }] }]).project;
+    // …e depois o "É," sai como muleta: sobrariam 0,15 s de ambiente entre os dois cortes.
+    const { project, log } = applyOperations(paused, [{ op: "cut_words", cuts: [{ from: "w3", to: "w3" }] }]);
+    const clips = mainClips(project);
+    expect(clips).toHaveLength(2);
+    expect(Math.min(...clips.map((c) => c.duration))).toBeGreaterThanOrEqual(SLIVER_MAX);
+    expect(log[0]).toContain("sobra(s) de corte");
+    // Nenhuma palavra que ficou foi perdida.
+    expect(timelineWords(project).map((x) => x.text)).toEqual(["para", "a", "guarnição.", "evitando", "confronto"]);
+  });
+
+  it("pedaço curto COM fala fica; clip curto dividido à mão (sem corte em volta) fica", () => {
+    // Corta tudo em volta de "a" (0,1 s de fala): é curto, mas é palavra.
+    const { project } = applyOperations(spoken(), [{ op: "cut_words", cuts: [{ from: "w0", to: "w0" }, { from: "w2", to: "w3" }] }]);
+    expect(timelineWords(project).map((x) => x.text)).toContain("a");
+    // Duas divisões manuais a 0,1 s uma da outra, num trecho sem fala, e depois um corte longe dali.
+    const split = applyOperations(spoken(), [{ op: "split", time: 8 }, { op: "split", time: 8.1 }, { op: "cut_words", cuts: [{ from: "w3", to: "w3" }] }]).project;
+    expect(mainClips(split).some((c) => Math.abs(c.duration - 0.1) < 0.01)).toBe(true);
+  });
+});
+
+describe("gancho garantido (o vídeo real abriu parado: o título foi recusado no close-up e nada entrou no lugar)", () => {
+  it("começo sem nenhum movimento ganha um punch-in na primeira palavra; nos modelos sóbrios, um avanço lento", () => {
+    const viral = ensureHook(fixture(), SKILLS.viral.pacing);
+    const zoom = getTrack(viral.project, "fx").clips.find((c) => c.type === "zoom")!;
+    expect(zoom.start).toBeLessThan(2);
+    expect(zoom).toMatchObject({ mode: "hold" });
+    expect(zoom.scale).toBeGreaterThanOrEqual(1.2);
+    expect(viral.log[0]).toContain("gancho");
+    const sober = ensureHook(fixture(), SKILLS.autoridade.pacing);
+    expect(getTrack(sober.project, "fx").clips.find((c) => c.type === "zoom")).toMatchObject({ mode: "creep" });
+  });
+
+  it("não mexe quando a IA já tratou o começo, nem no modelo que é só limpeza", () => {
+    const edited = applyOperations(fixture(), [{ op: "add_zoom", start: 0.5, duration: 1, scale: 1.2 }]).project;
+    expect(ensureHook(edited, SKILLS.viral.pacing).log).toEqual([]);
+    expect(ensureHook(fixture(), SKILLS.limpeza.pacing).log).toEqual([]);
+  });
+
+  it("com uma subida de tensão (riser) apontando para o começo, o movimento entra no pico dela", () => {
+    const withRiser = applyOperations(fixture(), [{ op: "add_sfx", sfx: "riser", start: 0.6 }]).project;
+    const { project } = ensureHook(withRiser, SKILLS.viral.pacing);
+    expect(getTrack(project, "fx").clips.find((c) => c.type === "zoom")!.start).toBeCloseTo(0.6, 2);
+  });
+});
+
+import { keepLocalMeasurements as keepLocal } from "./timeline";
+
+describe("medidas do vídeo que chegam durante um pedido à IA", () => {
+  it("a leitura completa (mais medidas) não é trocada pela leitura rápida que o servidor devolve", () => {
+    const at = (t: number) => ({ t, x: 0.3, y: 0.1, w: 0.4, h: 0.9, faceX: 0.5, faceY: 0.4 });
+    const sent = fixture();
+    sent.assets.a1!.subject = [at(1), at(5)];
+    const current = structuredClone(sent);
+    current.assets.a1!.subject = [at(1), at(2), at(3), at(4), at(5)];
+    const incoming = structuredClone(sent);
+    expect(keepLocal(incoming, current, sent).assets.a1!.subject).toHaveLength(5);
+    // Sem novidade local, a resposta fica como veio.
+    expect(keepLocal(incoming, sent, sent)).toBe(incoming);
   });
 });

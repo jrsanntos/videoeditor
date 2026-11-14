@@ -115,6 +115,22 @@ export function creditCost(action: CreditAction): number {
 }
 
 /**
+ * Edição da IA que parou antes de terminar (teto de custo, limite de etapas ou
+ * falha no meio): cobra-se esta fração do preço. Ver `agentCharge`.
+ */
+export const INTERRUPTED_CHARGE = 0.5;
+
+/**
+ * Quanto cobrar por um pedido ao agente: nada se a timeline não mudou, o preço
+ * cheio se terminou, e a fração de `INTERRUPTED_CHARGE` se foi interrompido
+ * (arredondada para baixo, em passos de meio crédito).
+ */
+export function agentCharge(price: number, o: { changed: boolean; interrupted: boolean }): number {
+  if (!o.changed || price <= 0) return 0;
+  return o.interrupted ? Math.floor(price * INTERRUPTED_CHARGE * 2) / 2 : price;
+}
+
+/**
  * Quantos vídeos curtos (até 1 min) um saldo rende: transcrição + uma edição
  * completa + de 2 a 8 ajustes. Arredondado para baixo, para a promessa da
  * tela de planos nunca ser maior que a entrega (no mínimo 1 quando o saldo
@@ -168,14 +184,21 @@ export const PLANS: Record<
     priceBRL: number;
     /** Créditos do plano por ciclo; não acumulam. */
     monthlyCredits: number;
+    /**
+     * Duração máxima do vídeo enviado. Só vale prometer o que o fluxo inteiro
+     * aguenta: o arquivo é lido e exportado na memória do navegador e a edição
+     * pela IA tem tempo limite no servidor. Suba estes números só depois de
+     * testar vídeos reais dessa duração de ponta a ponta.
+     */
     maxUploadMinutes: number;
-    /** Lado menor máximo do vídeo exportado (720 = HD, 1080 = Full HD, 2160 = 4K). */
+    /**
+     * Lado menor máximo do vídeo exportado (720 = HD, 1080 = Full HD). O quadro do
+     * projeto é 1080×1920 ou 1920×1080: nenhum plano promete mais do que isso.
+     */
     maxExportHeight: number;
     watermark: boolean;
-    rawRetentionDays: number;
     /** Quantos Brand Kits a conta pode salvar (um por cliente, para quem edita para terceiros). */
     brandKits: number;
-    xmlExport: boolean;
   }
 > = {
   free: {
@@ -185,35 +208,30 @@ export const PLANS: Record<
     maxUploadMinutes: 2,
     maxExportHeight: 720,
     watermark: true,
-    rawRetentionDays: 3,
     brandKits: 1,
-    xmlExport: false,
   },
   creator: {
     name: "Creator",
     priceBRL: 127,
     monthlyCredits: 330,
-    maxUploadMinutes: 60,
+    maxUploadMinutes: 15,
     maxExportHeight: 1080,
     watermark: false,
-    rawRetentionDays: 15,
     brandKits: 1,
-    xmlExport: false,
   },
   pro: {
     name: "Pro / Studio",
     priceBRL: 347,
     monthlyCredits: 1000,
-    maxUploadMinutes: 180,
-    maxExportHeight: 2160,
+    maxUploadMinutes: 30,
+    maxExportHeight: 1080,
     watermark: false,
-    rawRetentionDays: 30,
     brandKits: 10,
-    xmlExport: true,
   },
 };
 
-export const TOPUPS = [{ credits: 180, priceBRL: 79, expiresInDays: 90 }] as const;
+/** Pacote avulso: os créditos entram no saldo extra e não expiram. */
+export const TOPUPS = [{ credits: 180, priceBRL: 79 }] as const;
 
 /** Menor receita por crédito entre tudo que se vende (plano mais barato por crédito ou pacote). */
 export function minRevenuePerCreditBRL(): number {

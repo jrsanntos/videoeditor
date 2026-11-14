@@ -49,6 +49,8 @@ export type ChatMessage = {
   log?: string[];
   credits?: number;
   error?: boolean;
+  /** A edição parou antes de terminar o plano (teto de custo ou de etapas): foi cobrada pela metade. */
+  interrupted?: boolean;
   /** Sugestão de mídia gerada por IA, com o estado da decisão do usuário. */
   media?: MediaSuggestion & { status: "idle" | "busy" | "done" | "dismissed"; note?: string };
 };
@@ -92,6 +94,10 @@ type State = {
   notice: string | null;
   /** Registro da última edição manual aplicada (ex.: "encaixado na lacuna", "ajustado à lacuna"). */
   lastLog: string[];
+  /** Salvamento do projeto na conta: saving = enviando; saved = guardado; error = só neste navegador por enquanto. */
+  sync: "idle" | "saving" | "saved" | "error";
+  /** Arquivos usados na timeline que não estão neste navegador (projeto aberto em outro aparelho): precisam ser religados. */
+  missingMedia: string[];
 
   /** history: true empilha o estado atual para desfazer; "keep" troca o projeto sem mexer no histórico (atualizações ao vivo do agente). */
   setProject: (p: Project | null, opts?: { history?: boolean | "keep" }) => void;
@@ -121,6 +127,8 @@ type State = {
 
 const HISTORY_LIMIT = 100;
 const PROJECT_KEY = "ve:project";
+/** De quem é o projeto guardado neste navegador: outra conta que entre aqui não o herda. */
+const OWNER_KEY = "ve:project-owner";
 const LAYOUT_KEY = "ve:layout";
 export const TOUR_KEY = "ve:tour-done";
 
@@ -158,6 +166,8 @@ export const useEditor = create<State>((set, get) => ({
   guides: false,
   notice: null,
   lastLog: [],
+  sync: "idle",
+  missingMedia: [],
 
   setProject: (project, opts) =>
     set((s) => {
@@ -274,15 +284,96 @@ export function hydrateEditor() {
     // layout salvo inválido: usa o padrão
   }
   let lastProject = useEditor.getState().project;
+  // Projeto que só existia neste navegador (antes do salvamento na conta): sobe agora.
+  if (lastProject) scheduleSave();
   return useEditor.subscribe((s) => {
+    if (s.project === lastProject) return;
+    lastProject = s.project;
     try {
-      if (s.project !== lastProject) {
-        lastProject = s.project;
-        if (s.project) localStorage.setItem(PROJECT_KEY, JSON.stringify(s.project));
-        else localStorage.removeItem(PROJECT_KEY);
-      }
+      if (s.project) localStorage.setItem(PROJECT_KEY, JSON.stringify(s.project));
+      else localStorage.removeItem(PROJECT_KEY);
     } catch {
       // cota do localStorage excedida: segue só em memória
     }
+    if (s.project) scheduleSave();
   });
+}
+
+/**
+ * Salvamento automático na conta. O JSON da edição sobe alguns segundos depois
+ * da última mudança (arrastar um texto ou a IA montando a timeline gera dezenas
+ * de estados: só o último importa). Uma falha não trava nada: o projeto segue
+ * salvo neste navegador e a próxima mudança tenta de novo.
+ */
+const SAVE_DELAY_MS = 2500;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saving: Promise<void> | null = null;
+let savedProject: Project | null = null;
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void saveNow(), SAVE_DELAY_MS);
+}
+
+/** Salva já o projeto aberto (se mudou desde o último salvamento) e espera terminar. */
+export async function saveNow(): Promise<void> {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  // Um salvamento por vez: o seguinte leva o estado mais novo.
+  if (saving) await saving;
+  const { project, user } = useEditor.getState();
+  if (!project || project === savedProject) return;
+  // A conta ainda não carregou: sem saber de quem é o projeto, não sobe nada. Tenta de novo em seguida.
+  if (!user) return scheduleSave();
+  useEditor.setState({ sync: "saving" });
+  saving = (async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(project) });
+      if (!res.ok) throw new Error(String(res.status));
+      savedProject = project;
+      try {
+        localStorage.setItem(OWNER_KEY, user.id);
+      } catch {
+        // sem armazenamento: nada a marcar
+      }
+      // Mudou enquanto salvava: o estado mostrado continua "salvando" até o próximo envio.
+      if (useEditor.getState().project === project) useEditor.setState({ sync: "saved" });
+    } catch {
+      useEditor.setState({ sync: "error" });
+    } finally {
+      saving = null;
+    }
+  })();
+  await saving;
+}
+
+/**
+ * Chamado quando a conta carrega: se o projeto guardado neste navegador é de
+ * OUTRA conta (alguém saiu e outra pessoa entrou), ele é descartado daqui, sem
+ * ser mostrado nem salvo na conta errada. Continua salvo na conta de quem o fez.
+ */
+export function dropForeignProject(userId: string) {
+  let owner: string | null = null;
+  try {
+    owner = localStorage.getItem(OWNER_KEY);
+  } catch {
+    return;
+  }
+  if (!owner || owner === userId || !useEditor.getState().project) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  savedProject = null;
+  useEditor.setState({ chat: [], missingMedia: [], sync: "idle", assistant: null });
+  useEditor.getState().setProject(null);
+  try {
+    localStorage.removeItem(OWNER_KEY);
+  } catch {
+    // nada a limpar
+  }
+}
+
+/** Marca um projeto recém-aberto da conta como já salvo (abrir não é uma mudança). */
+export function markSaved(project: Project | null) {
+  savedProject = project;
+  useEditor.setState({ sync: project ? "saved" : "idle" });
 }

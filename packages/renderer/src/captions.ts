@@ -56,6 +56,28 @@ export const CAPTION_PRESETS: Record<CaptionPreset, PresetSpec> = {
 
 const SPACING: Partial<Record<CaptionPreset, number>> = { viral_pop: 3, comic_bounce: 2.4, karaoke_pill: 1.6, neon_subtitle: 1.3 };
 
+/**
+ * Estilos de frase (sem teto próprio de palavras) quebram em duas linhas, como
+ * legenda de TV e de cinema; os de impacto ficam em uma, com poucas palavras.
+ */
+const maxLines = (preset: CaptionPreset) => (CAPTION_PRESETS[preset].maxWords ? 1 : 2);
+
+/** Melhor ponto para quebrar em duas linhas: o que deixa as duas mais parecidas. Devolve o índice da primeira palavra da 2ª linha. */
+function balancedBreak(widths: number[], space: number): number {
+  let best = 1;
+  let bestMax = Infinity;
+  for (let k = 1; k < widths.length; k++) {
+    const a = widths.slice(0, k).reduce((x, y) => x + y, 0) + space * (k - 1);
+    const b = widths.slice(k).reduce((x, y) => x + y, 0) + space * (widths.length - k - 1);
+    // Empate: a linha de baixo mais longa lê melhor.
+    if (Math.max(a, b) < bestMax - 0.5 || (Math.abs(Math.max(a, b) - bestMax) <= 0.5 && b >= a)) {
+      best = k;
+      bestMax = Math.max(a, b);
+    }
+  }
+  return best;
+}
+
 const groupCache = new WeakMap<Project, CaptionGroup[]>();
 
 /**
@@ -73,7 +95,7 @@ export function captionGroups(project: Project): CaptionGroup[] {
   const safe = safeArea(project);
   const u = Math.min(project.width, project.height) / 1080;
   const charW = spec.size * u * project.captions.style.fontScale * (spec.upper ? 0.66 : 0.56) * (spec.weight >= 800 ? 1.08 : 1);
-  const maxChars = Math.max(8, Math.floor(((project.width - safe.left - safe.right) * spec.maxWidth) / charW));
+  const maxChars = Math.max(8, Math.floor(((project.width - safe.left - safe.right) * spec.maxWidth) / charW)) * maxLines(project.captions.style.preset);
   const chars = (list: TimelineWord[]) => list.reduce((n, w) => n + w.text.trim().length, 0) + Math.max(0, list.length - 1) * ((SPACING[project.captions.style.preset] ?? 1) > 1.5 ? 2 : 1);
   const groups: CaptionGroup[] = [];
   let cur: TimelineWord[] = [];
@@ -145,7 +167,8 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
   const spec = CAPTION_PRESETS[style.preset];
   const { width, height } = project;
   let size = spec.size * u * style.fontScale;
-  const texts = group.words.map((w) => (spec.upper ? w.text.toUpperCase() : w.text));
+  // Estilos de impacto (caixa alta): vírgula e ponto do transcritor saem; "?" e "!" ficam, porque mudam a leitura.
+  const texts = group.words.map((w) => (spec.upper ? w.text.toUpperCase().replace(/[.,;:]+$/u, "") || w.text.toUpperCase() : w.text));
 
   const measure = () => {
     ctx.font = font(spec.weight, size);
@@ -157,11 +180,19 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
   let m = measure();
   // As legendas ficam dentro da área segura: nada sob os botões e a descrição do app.
   const maxWidth = (width - safe.left - safe.right) * spec.maxWidth;
-  if (m.total > maxWidth) {
-    size *= maxWidth / m.total;
+  // Frase que não cabe numa linha: duas linhas equilibradas (nos estilos de frase) antes de encolher a letra.
+  const breakAt = m.total > maxWidth && texts.length > 1 && maxLines(style.preset) > 1 ? balancedBreak(m.widths, m.space) : 0;
+  const lineWidth = (mm: typeof m, from: number, to: number) => mm.widths.slice(from, to).reduce((a, b) => a + b, 0) + mm.space * Math.max(0, to - from - 1);
+  const blockWidth = (mm: typeof m) => (breakAt ? Math.max(lineWidth(mm, 0, breakAt), lineWidth(mm, breakAt, texts.length)) : mm.total);
+  if (blockWidth(m) > maxWidth) {
+    size *= maxWidth / blockWidth(m);
     m = measure();
   }
-  const half = size * 0.85;
+  // Daqui em diante `total` é a largura do bloco (a maior linha).
+  m = { ...m, total: blockWidth(m) };
+  const lineHeight = size * 1.25;
+  const rows = breakAt ? 2 : 1;
+  const half = (rows * lineHeight) / 2 + size * 0.225;
   const padX = size * 0.5;
   const cx = safe.left + (width - safe.left - safe.right) / 2;
   const bars = o.letterbox ?? 0;
@@ -213,13 +244,21 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
   ctx.lineJoin = "round";
   ctx.font = font(spec.weight, size);
 
-  // Posição (centro) de cada palavra na linha.
+  // Posição (centro) de cada palavra: x dentro da linha dela (cada linha centralizada) e y da linha.
   const centers: number[] = [];
-  let x = -m.total / 2;
-  group.words.forEach((_, i) => {
-    centers.push(x + m.widths[i]! / 2);
-    x += m.widths[i]! + m.space;
-  });
+  const rowY: number[] = [];
+  const layLine = (from: number, to: number, y: number) => {
+    let x = -lineWidth(m, from, to) / 2;
+    for (let i = from; i < to; i++) {
+      centers.push(x + m.widths[i]! / 2);
+      rowY.push(y);
+      x += m.widths[i]! + m.space;
+    }
+  };
+  if (breakAt) {
+    layLine(0, breakAt, -lineHeight / 2);
+    layLine(breakAt, texts.length, lineHeight / 2);
+  } else layLine(0, texts.length, 0);
   const activeIndex = group.words.findIndex((w) => t >= w.start && t < w.end + 0.05);
   const lastSpoken = group.words.reduce((k, w, i) => (t >= w.start ? i : k), -1);
 
@@ -257,7 +296,7 @@ export function drawCaptions(ctx: Ctx2D, project: Project, t: number, u: number,
     const active = i === activeIndex;
     const spoken = t >= w.start;
     ctx.save();
-    ctx.translate(centers[i]!, 0);
+    ctx.translate(centers[i]!, rowY[i]!);
     switch (preset) {
       case "viral_pop": {
         // Palavra ativa cresce com mola até 1,18x, com rotação sutil alternada.

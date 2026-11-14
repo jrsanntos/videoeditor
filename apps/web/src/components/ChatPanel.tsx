@@ -232,7 +232,14 @@ function MediaCard({ message }: { message: ChatMessage }) {
               Agora não
             </button>
           )}
-          {!enough && <span className="text-[11px] text-amber-200">Créditos insuficientes.</span>}
+          {!enough && (
+            <span className="text-[11px] text-amber-200">
+              Faltam créditos para esta mídia.{" "}
+              <a href="/planos" className="font-medium underline underline-offset-2">
+                Ver planos
+              </a>
+            </span>
+          )}
         </div>
       )}
     </div>
