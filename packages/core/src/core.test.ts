@@ -1583,6 +1583,9 @@ describe("economia: lucro real depois de taxas, impostos e despesas", () => {
     expect(at("full")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.fullEditShort);
     expect(at("sweep")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.sweepShort);
     expect(at("adjust")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.adjust);
+    // Mídia gerada por IA: o preço em créditos cobre o custo do Gemini com a mesma margem.
+    expect(aiBudgetUSD(creditCost({ type: "generative_image", images: 1 }))).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.image);
+    expect(aiBudgetUSD(creditCost({ type: "generative", clips: 1 }))).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.videoClip5s);
   });
 
   it("o Diretor cabe na metade do teto da edição completa (o maior gasto medido dele foi US$ 0,087)", () => {

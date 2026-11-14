@@ -70,6 +70,19 @@ export const PlanSchema = z.object({
     .min(2)
     .max(12)
     .describe("O vídeo do início ao fim, em ordem, sem pular trechos, agrupado nos quatro atos: gancho, desenvolvimento, clímax e fecho."),
+  midias: z
+    .array(
+      z.object({
+        atWord: z.string().describe("id da palavra em que a mídia entra (quando o assunto é dito)"),
+        tipo: z.enum(["imagem", "video"]).describe("imagem por padrão; video só quando o MOVIMENTO é o que ensina"),
+        descricao: z.string().min(20).max(500).describe("o que gerar, como direção de fotografia: assunto, enquadramento, fundo, luz, estilo. Sem texto na imagem, sem pessoas reais identificáveis, sem violência explícita."),
+        motivo: z.string().max(140).describe("para o usuário, em uma frase simples: o que a mídia mostra e por que ajuda (ex.: 'mostrar como é uma taser enquanto você explica o que ela é')"),
+        duracao: z.number().min(1.5).max(5).default(2.5).describe("segundos na tela"),
+      }),
+    )
+    .max(3)
+    .default([])
+    .describe("SUGESTÕES de imagem ou vídeo gerados por IA, que o usuário aprova uma a uma (não entram sozinhas). Vazio na maioria dos vídeos."),
 });
 export type EditPlan = z.infer<typeof PlanSchema>;
 
@@ -123,6 +136,15 @@ ${GENRES}
    - Fecho: conclusão ou chamada para ação, sempre tratada.
    Cada trecho leva energia, velocidade, orçamento de zooms, componentes e sons, e o tratamento em linguagem de leigo.
 4. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
+
+## Mídia gerada por IA: você sugere, o usuário decide
+Você pode sugerir em "midias" até 3 imagens ou vídeos curtos gerados por IA. Pense como um editor profissional, não como uma receita:
+- Sugira só quando a imagem ENSINA algo que a fala sozinha não mostra: um objeto que o espectador talvez nunca tenha visto, um procedimento, um lugar, um antes e depois. Se um cartão de texto ou nada resolvem, não sugira.
+- Imagem é o padrão (aparece 2–3 s, com fade). Vídeo só quando o movimento é o ponto (como algo funciona, uma ação). Vídeo custa 10× mais: sugira raramente.
+- Nunca: pessoas reais identificáveis, o próprio apresentador, violência explícita, marcas e logotipos, nem algo que só repita o que já está escrito na tela.
+- No momento exato em que o assunto é dito (atWord), longe de outro cartão, nunca no gancho de um vídeo falado.
+- Um vídeo explicativo curto costuma ter 0 ou 1 sugestão. Vazio é uma resposta válida e frequente.
+O usuário vê cada sugestão com o motivo e escolhe se quer gerar. Não cite as sugestões no resumo nem no tratamento dos trechos.
 
 Regras do plano:
 - Cortes conservadores: o que sai é o que é erro com certeza. A transcrição pode ter perdido a última palavra de uma frase (sobretudo no fim do arquivo): nunca planeje cortar um final "solto" nem o fim do vídeo. Repetição com informação nova é conteúdo.

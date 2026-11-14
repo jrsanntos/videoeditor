@@ -24,7 +24,7 @@ export const CREDIT_PRICE_BRL = 0.385;
  * precisa cobrir para a IA não ser interrompida no caso comum (com folga: o
  * maior valor medido foi US$ 0,107). Remedir ao trocar modelo ou prompt.
  */
-export const MEASURED_AI_COST_USD = { fullEditShort: 0.12, sweepShort: 0.12, adjust: 0.01 } as const;
+export const MEASURED_AI_COST_USD = { fullEditShort: 0.12, sweepShort: 0.12, adjust: 0.01, image: 0.04, videoClip5s: 0.35 } as const;
 
 export const PRICING = {
   /** Upload + transcrição: por minuto de vídeo, arredondado para cima. */
@@ -38,8 +38,10 @@ export const PRICING = {
   sweepPerMinute: 2,
   /** Ajuste pontual no chat (um trecho selecionado ou um comando simples). */
   adjust: 1,
-  /** Clipe generativo (b-roll/áudio IA) de ~5s. */
+  /** Vídeo gerado por IA (Gemini Omni), até 5 s: ~US$ 0,07 por segundo. */
   generativeClip: 40,
+  /** Imagem gerada por IA (Gemini): ~US$ 0,04 por imagem. */
+  generativeImage: 4,
   /** Render na nuvem, por minuto exportado. */
   cloudExportPerMinute: 5,
   /** Edição manual na timeline e export local via WebCodecs. */
@@ -83,6 +85,7 @@ export type CreditAction =
   | { type: "ingest"; durationSec: number }
   | { type: "agent"; tier: AgentTier; durationSec: number }
   | { type: "generative"; clips: number }
+  | { type: "generative_image"; images: number }
   | { type: "cloud_export"; durationSec: number }
   | { type: "browser_export" }
   | { type: "manual" };
@@ -101,6 +104,8 @@ export function creditCost(action: CreditAction): number {
           : PRICING.adjust;
     case "generative":
       return action.clips * PRICING.generativeClip;
+    case "generative_image":
+      return action.images * PRICING.generativeImage;
     case "cloud_export":
       return minutes(action.durationSec) * PRICING.cloudExportPerMinute;
     case "browser_export":

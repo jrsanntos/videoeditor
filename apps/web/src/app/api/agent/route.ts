@@ -525,7 +525,7 @@ export async function POST(req: Request) {
               ...stills,
               {
                 type: "text",
-                text: `${context(project)}\n\n${budget}\n\n<pedido>\n${message}\n</pedido>\n\n<plano_do_diretor>\n${JSON.stringify(plan)}\n</plano_do_diretor>\n\n<conferencia_do_plano>\n${notes}\n</conferencia_do_plano>\n\nExecute o plano em etapas com edit_timeline: (a) cortes, (b) velocidade, (c) câmera, (d) motion e legendas, (e) imagem e som.`,
+                text: `${context(project)}\n\n${budget}\n\n<pedido>\n${message}\n</pedido>\n\n<plano_do_diretor>\n${JSON.stringify({ ...plan, midias: undefined })}\n</plano_do_diretor>\n\n<conferencia_do_plano>\n${notes}\n</conferencia_do_plano>\n\nExecute o plano em etapas com edit_timeline: (a) cortes, (b) velocidade, (c) câmera, (d) motion e legendas, (e) imagem e som.`,
               },
             ],
           },
@@ -669,6 +669,8 @@ function reviewPlan(project: Project, plan: EditPlan, profile: PacingProfile): s
     prevEnd = s.end;
   });
   if (duration - prevEnd > 3) notes.push(`Os últimos ${Math.round(duration - prevEnd)}s não estão em nenhum trecho.`);
+  const ids = new Set(words.map((w) => w.id));
+  for (const m of plan.midias ?? []) if (!ids.has(m.atWord)) notes.push(`A sugestão de mídia em "${m.atWord}" não aponta para uma palavra que continua no vídeo: use o id de uma palavra que fica.`);
   for (const act of ["gancho", "climax", "fecho"] as const) if (!plan.capitulos.some((c) => c.ato === act)) notes.push(`O plano não tem ${ACT_NAMES[act].toLowerCase()}: todo vídeo tem gancho, desenvolvimento, clímax e fecho.`);
   const check = (n: number, [min, max]: [number, number], what: string) => {
     const lo = Math.floor(min * minutes);

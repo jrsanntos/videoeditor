@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { agentTier, creditCost, formatCredits, PRICING, projectDuration, SKILLS, TIER_NAMES, type AgentTier, type SkillId } from "@videoeditor/core";
-import { askAgent, classifyRequest, confirmPlan, discardPlan, revisePlan, runSkill } from "@/lib/actions";
+import { acceptMediaSuggestion, askAgent, classifyRequest, confirmPlan, discardPlan, dismissMediaSuggestion, revisePlan, runSkill } from "@/lib/actions";
 import { useEditor, type ChatMessage, type EditPlan } from "@/lib/store";
 import { formatTime } from "./Player";
 import { Icon } from "./ui";
@@ -125,6 +125,8 @@ export function ChatPanel({ fluid = false }: { fluid?: boolean } = {}) {
           <div key={m.id} className={m.role === "user" ? "flex justify-end" : ""}>
             {m.plan ? (
               <PlanCard message={m} />
+            ) : m.media ? (
+              <MediaCard message={m} />
             ) : (
               <div
                 className={`max-w-[92%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ${
@@ -194,6 +196,46 @@ export function ChatPanel({ fluid = false }: { fluid?: boolean } = {}) {
         </button>
       </form>
     </aside>
+  );
+}
+
+/**
+ * O Diretor como consultor: "aqui ficaria bom mostrar uma imagem de…".
+ * Nada é gerado nem cobrado sem o sim do usuário, sugestão por sugestão.
+ */
+function MediaCard({ message }: { message: ChatMessage }) {
+  const media = message.media!;
+  const busy = useEditor((s) => s.busy);
+  const credits = useEditor((s) => s.credits);
+  const unlimited = useEditor((s) => s.unlimited);
+  const cost = media.tipo === "video" ? creditCost({ type: "generative", clips: 1 }) : creditCost({ type: "generative_image", images: 1 });
+  const enough = unlimited || credits >= cost;
+  const what = media.tipo === "video" ? "vídeo" : "imagem";
+  return (
+    <div className="w-full rounded-2xl border border-line bg-ink-850 p-3.5" data-testid="media-suggestion">
+      <p className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-brand-300">
+        <Icon.sparkles size={12} /> Sugestão do Diretor · {what} gerada por IA
+      </p>
+      <p className="mt-2 text-[13px] leading-snug text-zinc-100">{media.motivo}</p>
+      <details className="mt-1.5">
+        <summary className="cursor-pointer text-[11px] text-zinc-500 hover:text-zinc-300">O que seria gerado</summary>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-zinc-400">{media.descricao}</p>
+      </details>
+      {media.note && <p className={`mt-2 text-[11.5px] ${media.status === "done" ? "text-emerald-300" : media.status === "busy" ? "text-zinc-300" : "text-amber-200"}`}>{media.note}</p>}
+      {(media.status === "idle" || media.status === "busy") && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button onClick={() => void acceptMediaSuggestion(message.id)} disabled={media.status === "busy" || !!busy || !enough} className="btn-brand flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-50" data-testid="media-accept">
+            <Icon.sparkles size={13} /> {media.status === "busy" ? "Gerando…" : `Gerar e inserir · ${formatCredits(cost)} créditos`}
+          </button>
+          {media.status === "idle" && (
+            <button onClick={() => dismissMediaSuggestion(message.id)} className="rounded-lg px-3 py-2 text-xs text-zinc-400 hover:bg-white/5 hover:text-zinc-200" data-testid="media-dismiss">
+              Agora não
+            </button>
+          )}
+          {!enough && <span className="text-[11px] text-amber-200">Créditos insuficientes.</span>}
+        </div>
+      )}
+    </div>
   );
 }
 
