@@ -70,6 +70,17 @@ const atWord = z.string().describe("id da palavra em que começa (ex.: w42)");
  */
 const atSource = z.number().min(0).describe("instante no vídeo BRUTO (s) em que começa; para trechos sem fala. Alternativa a atWord");
 const untilSource = z.number().min(0).describe("instante no vídeo BRUTO (s) em que termina; alternativa a duration/untilWord");
+/**
+ * Patch de um objeto: só o que veio. No Zod 4, `.partial()` ainda preenche o
+ * padrão dos campos com `.default()`, então um `set_brand` só com a cor zerava
+ * o nome, a credencial e a tarja. Aqui o padrão sai: campo ausente continua
+ * ausente e o valor atual do projeto fica.
+ */
+function patchOf<S extends z.ZodObject>(schema: S): ReturnType<S["partial"]> {
+  const shape = Object.fromEntries(Object.entries(schema.shape).map(([k, v]) => [k, (v instanceof z.ZodDefault ? (v.unwrap() as z.ZodType) : (v as z.ZodType)).optional()]));
+  return z.object(shape) as unknown as ReturnType<S["partial"]>;
+}
+
 const anchor = {
   start: z.number().min(0).optional().describe("início em tempo de timeline; alternativa a atWord/atSource"),
   atWord: atWord.optional(),
@@ -182,10 +193,10 @@ const AddImpact = z
   })
   .describe("Impacto de câmera (flash branco e/ou tremida curta) num golpe, corte ou batida. No máximo um a cada 4 s.");
 const SetLook = z
-  .object({ op: z.literal("set_look"), look: LookSchema.partial() })
+  .object({ op: z.literal("set_look"), look: patchOf(LookSchema) })
   .describe("Tratamento visual do vídeo inteiro: grade de cor (LUT), intensidade, vinheta dinâmica e barras cinemáticas (letterbox).");
 const SetMusic = z
-  .object({ op: z.literal("set_music"), music: MusicSchema.partial() })
+  .object({ op: z.literal("set_music"), music: patchOf(MusicSchema) })
   .describe("Trilha de fundo: clima (action, ambient, upbeat ou none), volume e auto-ducking sob a voz.");
 const AddMarker = z.object({ op: z.literal("add_marker"), time: z.number().min(0), label: z.string().max(40).optional() }).describe("Marcador na timeline (ponto de snapping).");
 const RemoveMarker = z.object({ op: z.literal("remove_marker"), markerId: z.string() }).describe("Remove um marcador.");
@@ -310,7 +321,7 @@ const SetCaptions = z
   .object({
     op: z.literal("set_captions"),
     enabled: z.boolean().optional(),
-    style: CaptionStyleSchema.partial().optional(),
+    style: patchOf(CaptionStyleSchema).optional(),
   })
   .describe("Liga/desliga e estiliza as legendas automáticas (geradas a partir da transcrição).");
 const EditWord = z
@@ -333,7 +344,7 @@ const EditCaption = z
   })
   .describe("Edita uma legenda na timeline: reescreve, esconde ou desloca no tempo.");
 const SetBrand = z
-  .object({ op: z.literal("set_brand"), brand: BrandKitSchema.partial() })
+  .object({ op: z.literal("set_brand"), brand: patchOf(BrandKitSchema) })
   .describe("Altera o Brand Kit do projeto (cores, par de fontes, nome e credencial).");
 
 const SetFormat = z

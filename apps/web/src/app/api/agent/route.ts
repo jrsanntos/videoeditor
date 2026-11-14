@@ -11,6 +11,8 @@ import {
   critiqueReport,
   DEFAULT_PACING,
   enforcePacing,
+  ensureLowerThird,
+  framingObjections,
   mainClips,
   MAX_CRITIC_CYCLES,
   pacingReport,
@@ -25,6 +27,7 @@ import {
   wordLines,
   wordsBetween,
   type AgentTier,
+  type ComponentClip,
   type OperationInput,
   type PacingProfile,
   type Project,
@@ -65,6 +68,13 @@ const DIRECTOR_SHARE = 0.5;
 const MIN_REVIEW_USD = 0.012;
 /** Passada no vídeo todo: uma tarefa, várias chamadas possíveis (vídeos longos). */
 const MAX_TURNS_SWEEP = 12;
+/**
+ * Limite de saída por volta (streaming). Com raciocínio ligado, o Editor no Haiku
+ * chegou a 16 mil tokens só pensando no vídeo de teste e terminou sem editar;
+ * a saída do Haiku custa US$ 0,50 por milhão, então folga aqui é barata.
+ */
+const MAX_OUTPUT_TOKENS = 48_000;
+
 /** Modelos que aceitam fallback de recusa no servidor. */
 const supportsFallback = (model: string) => /^claude-(sonnet-5-5|opus-5|fable-5-[12])/.test(model);
 
@@ -197,7 +207,15 @@ export async function POST(req: Request) {
     const log: string[] = [];
     // Uso por modelo (cada um tem o seu preço).
     const usageBy = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
-    const apply = (ops: OperationInput[]) => applyOperations(working, ops, { validateComponent, validateSfx });
+    /** Aplica as operações do agente; o que não cabe no quadro volta como erro, com o porquê. */
+    const apply = (ops: OperationInput[]) => {
+      const result = applyOperations(working, ops, { validateComponent, validateSfx });
+      const before = new Set(working.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+      const added = result.project.tracks.flatMap((t) => t.clips).filter((c): c is ComponentClip => c.type === "component" && !before.has(c.id));
+      const objections = framingObjections(result.project, added);
+      if (objections.length) throw new Error(objections.map((o) => o.message).join("\n"));
+      return result;
+    };
     /** Laudo determinístico do Crítico: ritmo + direção de arte + colisões medidas no quadro. */
     const critique = () => critiqueEdit(working, { skill, screen: screenTexts(working) });
 
@@ -241,7 +259,7 @@ export async function POST(req: Request) {
       }
       // Modelo reserva: mesma conversa, mesmas ferramentas, mesmo teto de custo.
       send({ type: "status", role, text: status(role === "director" ? "plan_edit" : "edit_timeline") });
-      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: 16000, signal: req.signal });
+      const { message, model } = await geminiTurn({ system, tools, messages, maxTokens: MAX_OUTPUT_TOKENS, effort: effortFor(role), signal: req.signal });
       const turn = { input: message.usage.input_tokens, output: message.usage.output_tokens, cacheRead: message.usage.cache_read_input_tokens ?? 0, cacheWrite: 0 };
       const cost = await geminiCostUSD(turn);
       account(model, turn, cost, role);
@@ -262,7 +280,7 @@ export async function POST(req: Request) {
       const stream = anthropic.beta.messages.stream(
         {
           model,
-          max_tokens: 16000,
+          max_tokens: MAX_OUTPUT_TOKENS,
           system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
           ...(effortFor(role) ? { thinking: { type: "adaptive" as const }, output_config: { effort: effortFor(role)! } } : {}),
           tools,
@@ -320,6 +338,7 @@ export async function POST(req: Request) {
           }
           try {
             accepted = { plan: plan.data, notes: reviewPlan(working, plan.data, profile) };
+            if (process.env.NODE_ENV !== "production") console.info("diretor: sugestões de mídia", JSON.stringify(plan.data.midias ?? []));
             results.push({ type: "tool_result", tool_use_id: block.id, content: accepted.notes });
           } catch (e) {
             results.push({ type: "tool_result", tool_use_id: block.id, is_error: true, content: `${(e as Error).message}\nCorrija as âncoras e envie o plano de novo.` });
@@ -337,6 +356,7 @@ export async function POST(req: Request) {
       let cycles = 0;
       const maxTurns = full ? MAX_TURNS_EDITOR : tier === "sweep" ? MAX_TURNS_SWEEP : MAX_TURNS;
       let warned = false;
+      let retriedLong = false;
       for (let turn = 0; turn < maxTurns; turn++) {
         // Teto de custo: no fim do orçamento a edição para com o que já foi aplicado (cada etapa
         // já está na timeline). Antes disso, o agente é avisado para fechar com o que importa.
@@ -355,7 +375,17 @@ export async function POST(req: Request) {
         );
         finalText = textOf(response);
         if (response.stop_reason === "refusal") return "Não posso ajudar com esse pedido. Tente descrever a edição de outra forma.";
-        if (response.stop_reason === "max_tokens") return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
+        if (response.stop_reason === "max_tokens" && !response.content.some((b) => b.type === "tool_use")) {
+          // Raciocinou demais e não chegou a editar: uma nova chance, indo direto à ferramenta.
+          if (!retriedLong) {
+            retriedLong = true;
+            const last = messages[messages.length - 1];
+            if (last?.role === "user" && Array.isArray(last.content))
+              last.content.push({ type: "text", text: "Aviso do sistema: a resposta anterior passou do limite antes de editar. Não planeje de novo: chame edit_timeline agora com a próxima etapa." });
+            continue;
+          }
+          return finalText || "A resposta ficou longa demais e foi interrompida. Tente dividir o pedido em partes.";
+        }
         if (response.stop_reason !== "tool_use") {
           // Crítico determinístico: a montagem pronta é auditada e o laudo volta ao Editor antes da entrega (até 3 ciclos).
           if (role === "editor" && full && log.length && cycles < MAX_CRITIC_CYCLES && turn < maxTurns - 1 && spent < capUSD * BUDGET_WARN) {
@@ -496,7 +526,7 @@ export async function POST(req: Request) {
               ...stills,
               {
                 type: "text",
-                text: `${context(project)}\n\n${budget}\n\n<pedido>\n${message}\n</pedido>\n\n<plano_do_diretor>\n${JSON.stringify(plan)}\n</plano_do_diretor>\n\n<conferencia_do_plano>\n${notes}\n</conferencia_do_plano>\n\nExecute o plano em etapas com edit_timeline: (a) cortes, (b) velocidade, (c) câmera, (d) motion e legendas, (e) imagem e som.`,
+                text: `${context(project)}\n\n${budget}\n\n<pedido>\n${message}\n</pedido>\n\n<plano_do_diretor>\n${JSON.stringify({ ...plan, midias: undefined })}\n</plano_do_diretor>\n\n<conferencia_do_plano>\n${notes}\n</conferencia_do_plano>\n\nExecute o plano em etapas com edit_timeline: (a) cortes, (b) velocidade, (c) câmera, (d) motion e legendas, (e) imagem e som.`,
               },
             ],
           },
@@ -506,10 +536,13 @@ export async function POST(req: Request) {
       // O que ainda colide depois da revisão é podado de forma determinística.
       if (log.length) {
         const pruned = enforcePacing(working, profile);
-        if (pruned.log.length) {
-          working = pruned.project;
-          log.push(...pruned.log);
-          send({ type: "ops", project: working, log: pruned.log });
+        // O nome informado pela pessoa aparece sempre: a tarja não depende de o modelo lembrar.
+        const named = ensureLowerThird(pruned.project);
+        const fixed = [...pruned.log, ...named.log];
+        if (fixed.length) {
+          working = named.project;
+          log.push(...fixed);
+          send({ type: "ops", project: working, log: fixed });
         }
       }
       const bill = await settle();
@@ -637,6 +670,8 @@ function reviewPlan(project: Project, plan: EditPlan, profile: PacingProfile): s
     prevEnd = s.end;
   });
   if (duration - prevEnd > 3) notes.push(`Os últimos ${Math.round(duration - prevEnd)}s não estão em nenhum trecho.`);
+  const ids = new Set(words.map((w) => w.id));
+  for (const m of plan.midias ?? []) if (!ids.has(m.atWord)) notes.push(`A sugestão de mídia em "${m.atWord}" não aponta para uma palavra que continua no vídeo: use o id de uma palavra que fica.`);
   for (const act of ["gancho", "climax", "fecho"] as const) if (!plan.capitulos.some((c) => c.ato === act)) notes.push(`O plano não tem ${ACT_NAMES[act].toLowerCase()}: todo vídeo tem gancho, desenvolvimento, clímax e fecho.`);
   const check = (n: number, [min, max]: [number, number], what: string) => {
     const lo = Math.floor(min * minutes);

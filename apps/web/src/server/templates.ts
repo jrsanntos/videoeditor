@@ -6,7 +6,7 @@ import { z } from "zod";
 import { BUILTIN_TEMPLATES, CAPTION_PRESET_IDS, EditTemplateSchema, type EditTemplate, type Transcript } from "@videoeditor/core";
 import { catalogForAgent, COMPONENTS } from "@videoeditor/renderer";
 import { db } from "./db";
-import { agentModel, anthropicClient, anthropicError, transcribeAudio } from "./ai";
+import { agentModel, anthropicClient, anthropicError, transcribeAudio, WHISPER_VERBATIM } from "./ai";
 import { anthropicCostUSD, groqCostUSD, recordUsage } from "./billing";
 import { HttpError } from "./errors";
 
@@ -164,7 +164,7 @@ export async function extractTemplate(input: ExtractionInput, actorId: string): 
       userId: actorId,
       kind: "template_extract",
       provider: "groq",
-      model: "whisper-large-v3-turbo",
+      model: WHISPER_VERBATIM,
       audioSeconds: t.seconds,
       costUSD: groqCostUSD(t.seconds),
       credits: 0,

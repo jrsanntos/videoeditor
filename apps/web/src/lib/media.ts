@@ -124,21 +124,27 @@ export async function assertDecodable(file: Blob): Promise<void> {
 const monoCache = new Map<string, Promise<Float32Array>>();
 export const SPEECH_RATE = 16000;
 
-/** Decodifica o áudio de qualquer arquivo de vídeo em mono 16 kHz. */
+/**
+ * Decodifica o áudio de qualquer arquivo de vídeo em mono 16 kHz.
+ *
+ * A decodificação já sai na taxa final: decodeAudioData reamostra com filtro
+ * de qualidade. Decodificar na taxa do aparelho (44,1 kHz em muitos) e tocar
+ * num contexto de outra taxa usa interpolação linear, que espelha a voz em
+ * ruído agudo (o "chiado" medido no vídeo de teste).
+ */
 export async function decodeBlobMono(blob: Blob): Promise<Float32Array> {
-  const ac = new AudioContext();
   try {
-    const decoded = await ac.decodeAudioData(await blob.arrayBuffer());
-    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * SPEECH_RATE), SPEECH_RATE);
-    const src = off.createBufferSource();
-    src.buffer = decoded;
-    src.connect(off.destination);
-    src.start();
-    return (await off.startRendering()).getChannelData(0);
+    const decoded = await new OfflineAudioContext(1, 1, SPEECH_RATE).decodeAudioData(await blob.arrayBuffer());
+    if (decoded.numberOfChannels === 1) return decoded.getChannelData(0);
+    // Mono: média dos canais.
+    const out = new Float32Array(decoded.length);
+    for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+      const data = decoded.getChannelData(ch);
+      for (let i = 0; i < out.length; i++) out[i] = out[i]! + data[i]! / decoded.numberOfChannels;
+    }
+    return out;
   } catch {
     throw new Error("Este vídeo não tem uma faixa de áudio legível.");
-  } finally {
-    void ac.close();
   }
 }
 

@@ -133,7 +133,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     pacing: { ...DEFAULT_PACING, maxStatic: 6, componentGap: 4, maxPer5s: 3, componentsPerMin: [3, 6], zoomsPerMin: [7, 12], minZoomScale: 1.08 },
     direction: `Modelo "Retenção Viral & Creator Pro" (9:16): o vídeo não pode dar motivo para o dedo rolar.
 - Corte tudo que não empurra o vídeo para a frente: takes ruins que sobraram, enrolação, frases de aquecimento antes do gancho ("oi gente", "então", "hoje eu vou falar"). O vídeo começa na primeira frase que promete algo.
-- Gancho visual nos primeiros 2 s: um card de impacto (depth_hook_title, ou stat_counter_card se a promessa for um número) sobre a primeira frase, com a promessa em 1 a 3 palavras, mais um add_sfx riser terminando no corte e um pop na entrada do card.
+- Gancho visual nos primeiros 2 s, escolhido pelo quadro: com espaço em volta da pessoa, um card de impacto (depth_hook_title, ou stat_counter_card se a promessa for um número); em close-up, punch-in no rosto e legenda forte, sem título gigante. Sobre a primeira frase, com a promessa em 1 a 3 palavras, mais um add_sfx riser terminando no corte e um pop na entrada do card.
 - Micro-zooms nos cortes: a plataforma já alterna 1,08x a cada corte; acrescente punch-in seco (1.18–1.25x) só nas palavras ditas com mais força, e avanço lento nas explicações.
 - Cards: um por virada de raciocínio — kinetic_pivot_card para problema → solução, comparison_split para antes/depois, stat_counter_card em todo número, social_proof_toast para prova social, step_progress_bar quando houver etapas. A legenda some sozinha enquanto um card está na tela.
 - SFX: whoosh_rapido nas transições de assunto, pop nas entradas de item. A trilha animada já está ligada com ducking: não mexa.
@@ -162,7 +162,7 @@ export const SKILLS: Record<SkillId, Skill> = {
 - Som sincronizado: a trilha de ação já está ligada com ducking sob as falas. Em cada pico forte, add_sfx com o pico do som no pico da imagem — impacto_cinematico no clímax (uma vez), impacto_grave nos outros golpes, sub_drop na entrada da câmera lenta, whoosh_rapido nas acelerações e trocas de plano, riser terminando no clímax, zoom_punch nos punch-ins.
 - Câmera: add_impact (flash/shake) só nos 2–4 picos mais fortes. Zooms com motivo e direcionados ao sujeito (omita x/y: fecham no centro de massa detectado); nada de zoom aleatório no centro. Punch-in seco no impacto; avanço lento na tensão.
 - Tratamento visual: a grade de alto contraste, a vinheta dinâmica e o letterbox já estão aplicados (set_look); ajuste só se o usuário pedir outro clima.
-- Texto: pouco e forte. tactical_hud_overlay (telemetria, timestamp, status) nos trechos de operação; um título cinético de impacto no gancho (depth_hook_title, 1–2 palavras); callout_pointer para apontar um detalhe. Nada de lista, contador ou tarja. Legenda discreta na base só onde houver fala.`,
+- Texto: pouco e forte. tactical_hud_overlay (telemetria, timestamp, status) nos trechos de operação; um título cinético de impacto no gancho (depth_hook_title, 1–2 palavras) quando a pessoa está pequena no quadro — em close-up, o impacto vem da câmera e do som; callout_pointer para apontar um detalhe. Nada de lista, contador ou tarja. Legenda discreta na base só onde houver fala.`,
   },
   autoridade: {
     id: "autoridade",
@@ -185,9 +185,9 @@ export const SKILLS: Record<SkillId, Skill> = {
     pacing: { ...DEFAULT_PACING, maxStatic: 10, componentGap: 6, fullscreenGap: 12, maxPer5s: 2, componentsPerMin: [2, 4], zoomsPerMin: [4, 7], minZoomScale: 1.1, maxPunchStreak: 1 },
     direction: `Modelo "Autoridade & Documentário Moderno": sóbrio, mas editado. Sobriedade está na escolha dos movimentos, não na falta deles.
 - Fala: preserve as pausas de raciocínio curtas; corte erros, frases abandonadas e qualquer aquecimento antes da primeira afirmação. Os sons de hesitação já saíram; "né" e "tipo" soltos ficam a seu critério (tire os que atrapalham o ritmo, mantenha os que soam naturais).
-- Gancho (0–3s): a afirmação mais forte do começo ganha um avanço lento de câmera e um cartão que nomeie o assunto. Se o contexto disser que a tarja está disponível, apresente quem fala com executive_lower_third uma vez, logo depois do gancho (entre 2 e 6 s, por 4–5 s, sem disputar espaço com o cartão); se estiver indisponível, não use.
+- Gancho (0–3s): a afirmação mais forte do começo ganha um avanço lento de câmera; um cartão que nomeie o assunto só se houver espaço livre no quadro (em close-up, não). Se o contexto disser que a tarja está disponível, apresente quem fala com executive_lower_third uma vez, logo depois do gancho (entre 2 e 6 s, por 4–5 s, sem disputar espaço com o cartão); se estiver indisponível, não use.
 - Câmera suave (Ken Burns): avanço lento (mode creep, 1.12–1.18x, 4–6 s) nas frases que carregam a tese; push-in com ease 0.4–0.5 (ease-out, 1.15–1.2x) nas conclusões. Nada de punch-in seco em sequência, nada de impacto de câmera.
-- Cartões de dados: stat_counter_card para todo número relevante (com a barra de progresso quando for porcentagem), comparison_split para UM antes/depois ou mito/verdade, step_progress_bar no topo quando a explicação tiver etapas, acronym_list para os pontos de um diagnóstico ou estratégia. Textos curtos, sem exclamação.
+- Cartões de dados, só onde o conteúdo pede: stat_counter_card para o número que carrega o argumento (um dado, uma porcentagem; contar "3 momentos" não é dado), com a barra de progresso quando for porcentagem; comparison_split para UM antes/depois ou mito/verdade, step_progress_bar no topo quando a explicação tiver etapas, acronym_list para os pontos de um diagnóstico ou estratégia. Textos curtos, sem exclamação.
 - Som: a trilha ambiente sutil já está ligada com ducking; efeitos discretos só nas entradas de cartão.
 - Fechamento: a conclusão ou a orientação final leva avanço lento e, quando houver uma frase-síntese, um cartão.`,
   },

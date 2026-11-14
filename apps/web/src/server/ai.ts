@@ -19,8 +19,10 @@ export const fastAgentModel = async () => (await getSetting("AGENT_MODEL_FAST"))
 export const editorAgentModel = async () => (await getSetting("AGENT_MODEL_EDITOR")) || EDITOR_DEFAULT;
 /** Crítico visual: confere quadros e corrige defeitos pontuais. */
 export const criticAgentModel = async () => (await getSetting("AGENT_MODEL_CRITIC")) || CRITIC_DEFAULT;
-const EDITOR_DEFAULT = "claude-sonnet-5-5";
-const CRITIC_DEFAULT = "claude-sonnet-5-5";
+// Editor e Crítico executam e conferem o plano do Diretor: no Haiku, a mesma edição sai ~4× mais
+// barata (medido no vídeo real: US$ 0,07–0,11 contra 0,28–0,48 com Sonnet nos três papéis).
+const EDITOR_DEFAULT = "claude-haiku-5-5";
+const CRITIC_DEFAULT = "claude-haiku-5-5";
 
 /** Cliente Anthropic com a chave do painel (ou do ambiente). */
 export async function anthropicClient(): Promise<Anthropic> {
@@ -83,7 +85,7 @@ type GroqVerbose = {
  * de muletas precisa para enxergar o que cortar.
  */
 const VERBATIM_HINT: Record<string, string> = {
-  pt: "Hum, é... então, tipo, eu, eu acho que, ahn, a gente precisa, né, vender mais. O o segredo é, é consistência.",
+  pt: "Hum, é... então, tipo, eu, eu acho que, ahn, a gente precisa, né, vender mais. O o segredo é, eeh, é consistência. Hummm, estão, estão causando.",
   en: "Um, uh... so, like, I, I think that, uh, we need to, you know, sell more. The the secret is, is consistency.",
   es: "Eh, este... o sea, yo, yo creo que, eh, tenemos que, ¿sabes?, vender más. El el secreto es, es constancia.",
 };
@@ -106,13 +108,21 @@ export function wordConfidence(words: { start: number; end: number }[], segments
   });
 }
 
-type Pass = { language?: string; prompt?: string };
+type Pass = { language?: string; prompt?: string; model?: string };
+
+/**
+ * Modelos de transcrição. O turbo só detecta o idioma; o passe literal usa o
+ * large-v3 completo, que escreve hesitações ("hum", "é...") que o turbo engole
+ * na duração da palavra vizinha (medido no vídeo real de teste).
+ */
+export const WHISPER_FAST = "whisper-large-v3-turbo";
+export const WHISPER_VERBATIM = "whisper-large-v3";
 
 async function whisper(key: string, file: Blob, pass: Pass): Promise<GroqVerbose> {
   const body = new FormData();
   // O provedor identifica o formato pela extensão do nome.
   body.append("file", file, file.type.includes("webm") ? "audio.webm" : "audio.wav");
-  body.append("model", "whisper-large-v3-turbo");
+  body.append("model", pass.model ?? WHISPER_FAST);
   body.append("response_format", "verbose_json");
   body.append("timestamp_granularities[]", "word");
   body.append("timestamp_granularities[]", "segment");
@@ -133,6 +143,30 @@ async function whisper(key: string, file: Blob, pass: Pass): Promise<GroqVerbose
     throw new HttpError(502, "O serviço de transcrição falhou. Tente novamente.");
   }
   return (await res.json()) as GroqVerbose;
+}
+
+/** Dica para reouvir um trecho curto: só o que foi dito, inclusive os sons de hesitação. */
+const SPAN_HINT: Record<string, string> = {
+  pt: "Transcrição literal, palavra por palavra, com hesitações e sons: hum, hummm, ahn, é..., eeh, ééé.",
+  en: "Verbatim, word by word, with hesitations and sounds: um, umm, uh, er, ah.",
+  es: "Transcripción literal, palabra por palabra, con vacilaciones y sonidos: eh, ehh, mmm, este.",
+};
+
+/**
+ * Reouve trechos curtos (WAV de poucos segundos) onde uma palavra durou demais
+ * para o ritmo da pessoa: é onde o transcritor esconde um "hum" ou um "é...".
+ * Devolve as palavras de cada trecho, com tempos relativos ao trecho.
+ */
+export async function transcribeSpans(spans: Blob[], language: string): Promise<{ words: { text: string; start: number; end: number }[] }[]> {
+  const key = await getSetting("GROQ_API_KEY");
+  if (!key) throw new HttpError(503, "A transcrição não está configurada.");
+  const lang = TRANSCRIBE_LANGUAGES.includes(language) ? language : "pt";
+  return Promise.all(
+    spans.map(async (file) => {
+      const data = await whisper(key, file, { language: lang, model: WHISPER_VERBATIM, prompt: SPAN_HINT[lang] }).catch(() => null);
+      return { words: (data?.words ?? []).filter((w) => /[\p{L}\p{N}]/u.test(w.word)).map((w) => ({ text: w.word.trim(), start: w.start, end: w.end })) };
+    }),
+  );
 }
 
 /** Nome de idioma devolvido pelo transcritor ("Portuguese") → código ("pt"). */
@@ -170,7 +204,7 @@ export async function transcribeAudio(file: Blob, opts: { language?: string; voc
     // Vocabulário do usuário entra na dica: nomes e termos saem escritos do jeito certo.
     // O transcritor só lê o fim de uma dica longa, então ela é curta.
     const vocabulary = (opts.vocabulary ?? []).map((v) => v.trim()).filter(Boolean).join(", ").slice(0, 500);
-    const verbatim = await whisper(key, file, { language, prompt: vocabulary ? `${VERBATIM_HINT[language]} ${vocabulary}.` : VERBATIM_HINT[language] }).catch((e: unknown) => {
+    const verbatim = await whisper(key, file, { language, model: WHISPER_VERBATIM, prompt: vocabulary ? `${VERBATIM_HINT[language]} ${vocabulary}.` : VERBATIM_HINT[language] }).catch((e: unknown) => {
       // O primeiro passe já serve: a dica é uma melhoria, não um requisito.
       if (data) return data;
       throw e;

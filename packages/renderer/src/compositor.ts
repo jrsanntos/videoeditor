@@ -1,4 +1,5 @@
 import {
+  avoidFaces,
   depthPlacement,
   faceBox,
   FONT_PAIRS,
@@ -11,12 +12,15 @@ import {
   type BrollClip,
   type MediaClip,
   type Project,
+  type ComponentClip,
+  type Nudge,
   type SafeArea,
 } from "@videoeditor/core";
+import { createProbeContext } from "./probe-context";
 import { backdropBlur, drawLetterbox, drawVignette, letterboxHeight } from "./background";
 import { cameraAt, drawVideo, impactAt, type Rect } from "./camera";
 import { drawCaptions, type CaptionBox } from "./captions";
-import { COMPONENTS } from "./components/library";
+import { COMPONENTS, type ComponentDef } from "./components/library";
 import { brandFonts, clamp01, type Ctx2D, drawLookLayers, EASE, lookFilter, roundRect, setActiveFonts, setUnit, stage } from "./draw";
 
 export type FrameSource = { image: CanvasImageSource; width: number; height: number };
@@ -66,6 +70,21 @@ function scratchFor(width: number, height: number) {
 }
 
 /**
+ * Componentes que já sabem onde está o rosto (ou que vivem na faixa de baixo):
+ * o desvio automático não mexe neles.
+ */
+const FACE_AWARE = new Set(["depth_hook_title", "tactical_hud_overlay", "callout_pointer", "executive_lower_third", "lower_third"]);
+
+// Caixa ocupada por cada componente (medida uma vez, no contexto de sonda) e o desvio já calculado.
+const layoutCache = new Map<string, { x: number; y: number; w: number; h: number } | null>();
+const nudgeCache = new Map<string, Nudge>();
+const remember = <V>(m: Map<string, V>, k: string, v: V) => {
+  if (m.size > 400) m.delete(m.keys().next().value as string);
+  m.set(k, v);
+  return v;
+};
+
+/**
  * O renderizador único: desenha o quadro do projeto no instante `t`.
  * Função pura de (estado, tempo, frame de origem) → pixels. É chamada a cada
  * requestAnimationFrame no preview e quadro a quadro na exportação.
@@ -100,6 +119,56 @@ export function renderFrame(
   }
   const subject = subjectAt(project, t);
   const safeFrac = { top: safe.top / height, right: safe.right / width, bottom: safe.bottom / height, left: safe.left / width };
+
+  const layoutKey = (c: ComponentClip) => `${c.component}|${c.duration}|${width}x${height}|${project.brand.fontPair}|${JSON.stringify(c.params)}`;
+  /** Caixa que o componente ocupa, já com todos os itens na tela (pouco antes de sair). */
+  const measure = (c: ComponentClip, def: ComponentDef, params: Record<string, unknown>) => {
+    const key = layoutKey(c);
+    if (layoutCache.has(key)) return layoutCache.get(key)!;
+    const probe = createProbeContext(width, height);
+    const boxes: { x: number; y: number; w: number; h: number }[] = [];
+    def.draw({
+      ctx: probe,
+      params: params as never,
+      t: Math.max(0, c.duration - 0.35),
+      duration: c.duration,
+      width,
+      height,
+      u,
+      brand: project.brand,
+      subject,
+      safe,
+      vertical,
+      hasPerson: false,
+      depth: depthPlacement(subject, false, safeFrac, width / height),
+      region: (_key, x, y, w, h) => {
+        const m = probe.getTransform();
+        boxes.push({ x: m.a * x + m.e, y: m.d * y + m.f, w: w * m.a, h: h * m.d });
+      },
+      backdropBlur: () => {},
+      drawPerson: () => {},
+    });
+    if (!boxes.length) return remember(layoutCache, key, null);
+    const x0 = Math.min(...boxes.map((b) => b.x));
+    const y0 = Math.min(...boxes.map((b) => b.y));
+    return remember(layoutCache, key, { x: x0, y: y0, w: Math.max(...boxes.map((b) => b.x + b.w)) - x0, h: Math.max(...boxes.map((b) => b.y + b.h)) - y0 });
+  };
+  /** Desvio estável durante o clip inteiro: considera o rosto no começo, no meio e no fim (a câmera se move). */
+  const faceNudge = (c: ComponentClip, def: ComponentDef, params: Record<string, unknown>, src: FrameSource): Nudge => {
+    const none: Nudge = { dx: 0, dy: 0, scale: 1 };
+    const box = measure(c, def, params);
+    if (!box) return none;
+    const faces = [c.start + 0.05, c.start + c.duration / 2, c.start + c.duration - 0.05].flatMap((tt) => {
+      const s = subjectAt(project, tt);
+      return s ? [faceOnScreen(project, s, cameraAt(project, tt, src.width, src.height), src)] : [];
+    });
+    if (!faces.length) return none;
+    const key = `${layoutKey(c)}|${faces.map((f) => [f.x, f.y, f.w, f.h].map(Math.round).join(",")).join(";")}`;
+    const hit = nudgeCache.get(key);
+    if (hit) return hit;
+    const bounds = { x: safe.left, y: safe.top, w: width - safe.left - safe.right, h: height - safe.top - safe.bottom };
+    return remember(nudgeCache, key, avoidFaces(box, faces, bounds, 16 * u));
+  };
 
   // Recorte do apresentador, montado no máximo uma vez por quadro e só se alguém pedir.
   let person: OffscreenCanvas | null | undefined;
@@ -184,10 +253,22 @@ export function renderFrame(
       const regions: EditRegion[] = [];
       ctx.save();
       // Posição e tamanho escolhidos pelo usuário; cenas de tela cheia ficam onde estão.
-      if (st && !isFullscreen(c) && (st.dx || st.dy || st.scale !== 1)) {
+      const placedByUser = !!st && (st.dx !== 0 || st.dy !== 0 || st.scale !== 1);
+      if (st && !isFullscreen(c) && placedByUser) {
         ctx.translate(width / 2 + st.dx * width, height / 2 + st.dy * height);
         ctx.scale(st.scale, st.scale);
         ctx.translate(-width / 2, -height / 2);
+      } else if (frame && !isFullscreen(c) && !FACE_AWARE.has(c.component)) {
+        // Nenhum texto na frente do rosto: o bloco inteiro vai para a área livre mais próxima.
+        const n = faceNudge(c, def, parsed.data as Record<string, unknown>, frame);
+        if (n.dx || n.dy || n.scale !== 1) {
+          const box = layoutCache.get(layoutKey(c))!;
+          const cx = box.x + box.w / 2;
+          const cy = box.y + box.h / 2;
+          ctx.translate(cx + n.dx, cy + n.dy);
+          ctx.scale(n.scale, n.scale);
+          ctx.translate(-cx, -cy);
+        }
       }
       def.draw({
         region: (key, x, y, w, h) => {

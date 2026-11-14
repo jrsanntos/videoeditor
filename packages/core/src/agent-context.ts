@@ -247,7 +247,12 @@ function framingLines(project: Project): string[] {
         : `Lado mais livre: ${left > right ? "esquerda" : "direita"} — é onde componentes laterais atrapalham menos.`
     } Zooms sem x/y já fecham no rosto.`,
     ...(at.some((b) => isCloseUp(b))
-      ? ["CLOSE-UP: o rosto ocupa mais de 35% da altura do quadro (ou está cortado na borda). Texto atrás da cabeça fica ilegível: a plataforma troca sozinha por um cartão em primeiro plano fora do rosto; prefira textos curtos na área livre."]
+      ? [
+          "CLOSE-UP: o rosto ocupa boa parte do quadro (mais de 30% da largura ou 35% da altura, ou cortado na borda). Edite como um editor profissional editaria ESTE plano, não pela receita:",
+          "- Sem depth_hook_title (a cabeça tapa o título; a plataforma recusa) e sem textos ao lado da cabeça. O gancho é a própria fala: corte seco no começo, um zoom no rosto, a legenda.",
+          "- Texto na tela só quando o conteúdo pede (um número que importa, uma lista que a pessoa enumera em voz alta, uma comparação) e é curto. Ele vai para baixo do queixo; a plataforma tira do rosto o que encostar nele.",
+          "- Menos é mais: cada cartão precisa de um motivo no que está sendo dito. Na dúvida, não ponha.",
+        ]
       : []),
   ];
 }

@@ -70,6 +70,18 @@ export const PlanSchema = z.object({
     .min(2)
     .max(12)
     .describe("O vídeo do início ao fim, em ordem, sem pular trechos, agrupado nos quatro atos: gancho, desenvolvimento, clímax e fecho."),
+  midias: z
+    .array(
+      z.object({
+        atWord: z.string().describe("id da palavra em que a mídia entra (quando o assunto é dito)"),
+        tipo: z.enum(["imagem", "video"]).describe("imagem por padrão; video só quando o MOVIMENTO é o que ensina"),
+        descricao: z.string().min(20).max(500).describe("o que gerar, como direção de fotografia: assunto, enquadramento, fundo, luz, estilo. Sem texto na imagem, sem pessoas reais identificáveis, sem violência explícita."),
+        motivo: z.string().max(140).describe("para o usuário, em uma frase simples: o que a mídia mostra e por que ajuda (ex.: 'mostrar como é uma taser enquanto você explica o que ela é')"),
+        duracao: z.number().min(1.5).max(5).default(2.5).describe("segundos na tela"),
+      }),
+    )
+    .max(3)
+    .describe("SUGESTÕES de imagem ou vídeo gerados por IA, que o usuário aprova uma a uma (não entram sozinhas). Obrigatório responder: lista vazia só se nenhum assunto visual concreto é citado."),
 });
 export type EditPlan = z.infer<typeof PlanSchema>;
 
@@ -122,7 +134,17 @@ ${GENRES}
    - Clímax: o ponto mais forte — a virada, o número, o golpe. Recebe os recursos mais fortes.
    - Fecho: conclusão ou chamada para ação, sempre tratada.
    Cada trecho leva energia, velocidade, orçamento de zooms, componentes e sons, e o tratamento em linguagem de leigo.
-4. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
+4. Mídia: liste os objetos, equipamentos, lugares e procedimentos concretos que a fala cita. Para cada um que o espectador ganharia em VER, sugira uma imagem (ou vídeo, se o movimento é o ponto) em "midias", na palavra em que é dito.
+5. Chame plan_edit uma vez. Se a conferência apontar ids errados, corrija e chame de novo. Depois responda só: "Plano pronto."
+
+## Mídia gerada por IA: você sugere, o usuário decide
+Você pode sugerir em "midias" até 3 imagens ou vídeos curtos gerados por IA. Pense como um editor profissional, não como uma receita:
+- Sugira só quando a imagem ENSINA algo que a fala sozinha não mostra: um objeto que o espectador talvez nunca tenha visto, um procedimento, um lugar, um antes e depois. Se um cartão de texto ou nada resolvem, não sugira.
+- Imagem é o padrão (aparece 2–3 s, com fade). Vídeo só quando o movimento é o ponto (como algo funciona, uma ação). Vídeo custa 10× mais: sugira raramente.
+- Nunca: pessoas reais identificáveis, o próprio apresentador, violência explícita, marcas e logotipos, nem algo que só repita o que já está escrito na tela.
+- No momento exato em que o assunto é dito (atWord), longe de outro cartão, nunca no gancho de um vídeo falado.
+- Sugerir não custa nada ao usuário: ele vê o motivo e decide se gera. Então, sempre que a fala citar um objeto, equipamento, lugar ou procedimento concreto que ajudaria ver (ex.: "arma de incapacitação neuromuscular" → uma imagem da taser), sugira — no máximo um por assunto, até 3 no vídeo. Assunto abstrato (opinião, conselho, emoção) não pede mídia: deixe vazio.
+O usuário vê cada sugestão com o motivo e escolhe se quer gerar. Não cite as sugestões no resumo nem no tratamento dos trechos.
 
 Regras do plano:
 - Cortes conservadores: o que sai é o que é erro com certeza. A transcrição pode ter perdido a última palavra de uma frase (sobretudo no fim do arquivo): nunca planeje cortar um final "solto" nem o fim do vídeo. Repetição com informação nova é conteúdo.
@@ -178,8 +200,9 @@ Cada edição devolve a auditoria de ritmo e, no fim, o laudo do Crítico. Tudo 
 - Motion design: escolha componentes do catálogo e preencha params com o que resume a ideia — nunca com a frase que está sendo dita. Comece o componente na palavra (ou no instante) do assunto.
   - Marque com *asteriscos* a palavra (uma ou duas) que carrega o ponto.
   - Cenas de tela cheia (kinetic_pivot_card, step_progress, comparison_split, stat_counter com fullscreen) cobrem o apresentador: 4–6 s, numa virada, nunca duas seguidas.
-  - Use o enquadramento medido: nenhum texto por cima do rosto. Em CLOSE-UP o texto atrás da cabeça vira cartão sozinho; prefira textos curtos.
-  - depth_hook_title é só para o gancho.
+  - Olhe o quadro antes de escolher: a receita do estilo diz o que costuma funcionar, não o que é obrigatório. Cada elemento precisa de um motivo no conteúdo E de espaço na cena; se um editor profissional não poria aquilo naquele plano, não ponha. Repetir uma fórmula pronta em qualquer vídeo é o defeito que mais denuncia edição automática.
+  - Use o enquadramento medido: nenhum texto por cima do rosto. Em CLOSE-UP não há título atrás da cabeça nem texto ao lado dela (siga as instruções de CLOSE-UP do contexto).
+  - depth_hook_title é só para o gancho, e só com a pessoa pequena o bastante no quadro para o título aparecer em volta dela.
   - custom_motion_graphic: quando nenhum componente pronto expressa a ideia, desenhe a peça como árvore declarativa (formas, textos, grupos flex/grid, animações com easing). Não é para refazer o que um componente pronto já faz.
 - Legendas (set_captions): ficam na base do quadro por padrão, somem sozinhas enquanto um card está na tela e desviam do rosto. Não as centralize nem as desligue para "evitar sobreposição". Presets: ${CAPTION_PRESET_IDS.join(", ")}.
 - Imagem (set_look): grade ${LOOK_IDS.filter((l) => l !== "none").join(" | ")}; vignette 0–1; letterbox 0–0.2 (0.1 no horizontal, até 0.05 no vertical).

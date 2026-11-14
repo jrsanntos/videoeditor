@@ -692,3 +692,26 @@ describe("segmentação: recorte limpo de estúdio", () => {
     expect(alpha[10 * W + 10]!).toBeGreaterThan(0.95);
   });
 });
+
+describe("nada na frente do rosto", () => {
+  // Gravação de celular reenquadrada: rosto grande, no terço de cima, ocupando ~45% da largura.
+  const closeUp = { x: 0.02, y: 0.02, w: 0.96, h: 0.98, faceX: 0.5, faceY: 0.38, faceW: 0.46, faceH: 0.34 };
+  const face = (s: typeof closeUp) => ({ x: s.faceX - s.faceW / 2, y: s.faceY - s.faceH * 0.55, w: s.faceW, h: s.faceH });
+
+  it("a lista lateral, que sempre caía na altura da boca, desce para baixo do queixo", () => {
+    const p = applyOperations(talking(closeUp), [{ op: "add_component", component: "acronym_list", start: 2, duration: 6, params: { title: "Quando não usar", items: [{ text: "Aglomerações" }, { text: "Risco letal" }], side: "right" } }]).project;
+    const f = face(closeUp);
+    const regions = probeFrame(p, 7).regions.map((r) => ({ x: r.x / p.width, y: r.y / p.height, w: r.w / p.width, h: r.h / p.height }));
+    expect(regions.length).toBeGreaterThan(0);
+    for (const r of regions) expect(inside(r, f)).toBe(false);
+    // E continua dentro da área segura.
+    for (const r of regions) expect(r.y + r.h).toBeLessThanOrEqual(1);
+  });
+
+  it("com a pessoa pequena no quadro, nada se mexe", () => {
+    const p = applyOperations(talking(), [{ op: "add_component", component: "acronym_list", start: 2, duration: 6, params: { items: [{ text: "Um" }, { text: "Dois" }], side: "right" } }]).project;
+    const before = probeFrame(p, 7).regions.map((r) => Math.round(r.y));
+    const plain = applyOperations(talking({ x: 0.45, y: 0.05, w: 0.1, h: 0.2, faceX: 0.5, faceY: 0.1, faceW: 0.08, faceH: 0.06 }), [{ op: "add_component", component: "acronym_list", start: 2, duration: 6, params: { items: [{ text: "Um" }, { text: "Dois" }], side: "right" } }]).project;
+    expect(probeFrame(plain, 7).regions.map((r) => Math.round(r.y))).toEqual(before);
+  });
+});

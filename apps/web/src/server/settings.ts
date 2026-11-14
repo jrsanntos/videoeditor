@@ -15,6 +15,8 @@ export const SETTINGS = {
   GROQ_API_KEY: { label: "Groq (transcrição)", secret: true, env: ["GROQ_API_KEY"] },
   GEMINI_API_KEY: { label: "Google Gemini (modelo reserva quando a Anthropic falhar)", secret: true, env: ["GEMINI_API_KEY"] },
   GEMINI_MODEL: { label: "Modelo reserva do Google", secret: false, env: ["GEMINI_MODEL"] },
+  GEMINI_IMAGE_MODEL: { label: "Modelo de imagem gerada por IA (padrão: gemini-nano-banana-2.1)", secret: false, env: ["GEMINI_IMAGE_MODEL"] },
+  GEMINI_VIDEO_MODEL: { label: "Modelo de vídeo gerado por IA (padrão: gemini-omni-1.2-flash)", secret: false, env: ["GEMINI_VIDEO_MODEL"] },
   GEMINI_PRICE_INPUT: { label: "Preço do modelo reserva: US$ por milhão de tokens de entrada", secret: false, env: [] as string[] },
   GEMINI_PRICE_OUTPUT: { label: "Preço do modelo reserva: US$ por milhão de tokens de saída", secret: false, env: [] as string[] },
   AGENT_MODEL: { label: "Modelo do agente (edição completa)", secret: false, env: ["AGENT_MODEL"] },

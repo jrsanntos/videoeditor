@@ -47,6 +47,15 @@ import {
   jumpsBefore,
   DEFAULT_PACING,
   type Project,
+  ensureLowerThird,
+  findFillers,
+  falseStart,
+  isHesitationToken,
+  speechRate,
+  splitFalseStart,
+  splitHesitations,
+  stretchedWords,
+  syllables,
 } from "./index";
 
 function fixture(): Project {
@@ -230,8 +239,8 @@ describe("agente e créditos", () => {
   it("precificação: transcrição por minuto, edição completa por duração, ajuste a 1 crédito", () => {
     expect(creditCost({ type: "ingest", durationSec: 600 })).toBe(5);
     expect(creditCost({ type: "ingest", durationSec: 61 })).toBe(1);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(24);
-    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(78);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 37 })).toBe(13);
+    expect(creditCost({ type: "agent", tier: "full", durationSec: 600 })).toBe(40);
     expect(creditCost({ type: "agent", tier: "adjust", durationSec: 600 })).toBe(1);
     expect(creditCost({ type: "cloud_export", durationSec: 120 })).toBe(10);
     expect(creditCost({ type: "manual" })).toBe(0);
@@ -251,13 +260,13 @@ describe("agente e créditos", () => {
 
   it("planos: Free ganha créditos só no cadastro; estimativas de vídeos batem com a tabela", () => {
     expect(PLANS.free.monthlyCredits).toBe(0);
-    expect(SIGNUP_CREDITS).toBe(32);
-    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 10, max: 12 });
-    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 30, max: 35 });
+    expect(SIGNUP_CREDITS).toBe(20);
+    expect(videosEstimate(PLANS.creator.monthlyCredits)).toEqual({ min: 15, max: 20 });
+    expect(videosEstimate(PLANS.pro.monthlyCredits)).toEqual({ min: 45, max: 60 });
     expect(videosEstimate(SIGNUP_CREDITS)).toEqual({ min: 1, max: 1 });
     expect([PLANS.free.brandKits, PLANS.creator.brandKits, PLANS.pro.brandKits]).toEqual([1, 1, 10]);
     // Toda ação paga deixa margem mesmo no crédito mais barato (Pro): a edição completa de 1 min
-    // custa até US$ 0,40 em IA (R$ 2,48 no câmbio de segurança) e precisa render mais que 3× isso.
+    // custa ~US$ 0,12 em IA (R$ 0,74 no câmbio de segurança) e precisa render mais que 3× isso.
     const cheapestCredit = PLANS.pro.priceBRL / PLANS.pro.monthlyCredits;
     expect(creditCost({ type: "agent", tier: "full", durationSec: 60 }) * cheapestCredit).toBeGreaterThan(MEASURED_AI_COST_USD.fullEditShort * ECONOMICS.usdBrl * 3);
   });
@@ -643,6 +652,10 @@ import {
   faceBox,
   hasSpeed,
   isCloseUp,
+  avoidFaces,
+  faceFromDetection,
+  keepLocalMeasurements,
+  framingObjections,
   localTimeAt,
   mainGaps,
   MotionGraphicSchema,
@@ -697,6 +710,39 @@ describe("1. entrada: timeline vazia, tarja desligada, referência de estilo", (
     expect(ctx).toContain("Tarja de nome/cargo: DESLIGADA");
     const on = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Dra. Ana" } }]).project;
     expect(buildAgentContext(on)).toContain("Tarja de nome/cargo: disponível");
+  });
+
+  it("ajustes parciais só mudam o que foi pedido (o nome da tarja não some ao trocar a cor)", () => {
+    const named = applyOperations(fixture(), [
+      { op: "set_brand", brand: { displayName: "Sgt. Lima", credential: "Instrutor", showLowerThird: true, vocabulary: ["taser"] } },
+      { op: "set_look", look: { grade: "warm_cinematic", vignette: 0.3 } },
+      { op: "set_music", music: { mood: "ambient", volume: 0.2 } },
+    ]).project;
+    const after = applyOperations(named, [
+      { op: "set_brand", brand: { primaryColor: "#D9A441" } },
+      { op: "set_look", look: { intensity: 0.5 } },
+      { op: "set_music", music: { duck: true } },
+    ]).project;
+    expect(after.brand).toMatchObject({ displayName: "Sgt. Lima", credential: "Instrutor", showLowerThird: true, vocabulary: ["taser"], primaryColor: "#D9A441" });
+    expect(after.look).toMatchObject({ grade: "warm_cinematic", vignette: 0.3, intensity: 0.5 });
+    expect(after.music).toMatchObject({ mood: "ambient", volume: 0.2, duck: true });
+  });
+
+  it("o nome informado sempre vira tarja, mesmo se a IA esquecer; sem nome ou desligada, nada muda", () => {
+    const named = applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true, displayName: "Sgt. Lima", credential: "Instrutor" } }]).project;
+    const tarjas = (p: Project) => p.tracks.flatMap((t) => t.clips).filter((c) => c.type === "component" && c.component === "executive_lower_third");
+    // Um cartão no começo: a tarja vai para a primeira janela livre depois dele.
+    const busy = applyOperations(named, [{ op: "add_component", component: "kinetic_pivot_card", start: 1, duration: 2.5, params: {} }]).project;
+    const out = ensureLowerThird(busy);
+    expect(tarjas(out.project)).toHaveLength(1);
+    expect(tarjas(out.project)[0]!.start).toBe(3.5);
+    expect(out.log[0]).toContain("Sgt. Lima");
+    // Já tem tarja: nada muda.
+    expect(ensureLowerThird(out.project).log).toEqual([]);
+    expect(tarjas(ensureLowerThird(out.project).project)).toHaveLength(1);
+    // Sem nome, ou com a tarja desligada: nunca cria.
+    expect(ensureLowerThird(applyOperations(fixture(), [{ op: "set_brand", brand: { showLowerThird: true } }]).project).log).toEqual([]);
+    expect(ensureLowerThird(applyOperations(fixture(), [{ op: "set_brand", brand: { displayName: "Sgt. Lima" } }]).project).log).toEqual([]);
   });
 
   it("o StyleReferenceProfile do YouTube entra no contexto do Diretor", () => {
@@ -1135,11 +1181,70 @@ describe("5. legendas e texto atrás da cabeça: guardrails espaciais", () => {
     expect(moved + base.half <= busy[0]!.y || moved - base.half >= busy[0]!.y + busy[0]!.h).toBe(true);
   });
 
+  it("o rosto do detector vira a caixa do rosto, com folga para cabelo e queixo", () => {
+    const d = { x: 0.3, y: 0.25, w: 0.4, h: 0.3 };
+    const s = { x: 0, y: 0, w: 1, h: 1, ...faceFromDetection(d) };
+    const f = faceBox(s);
+    expect(f.x).toBeLessThan(d.x);
+    expect(f.x + f.w).toBeGreaterThan(d.x + d.w);
+    expect(f.y).toBeLessThan(d.y);
+    expect(f.y + f.h).toBeGreaterThanOrEqual(d.y + d.h - 1e-3);
+    expect(isCloseUp(s)).toBe(true);
+  });
+
+  it("a resposta da IA não apaga a análise do vídeo que chegou durante o pedido", () => {
+    const sent = fixture();
+    const id = Object.keys(sent.assets)[0]!;
+    // Enquanto a IA editava, o navegador mediu o vídeo e reenquadrou as faixas pretas.
+    const current = structuredClone(sent);
+    current.assets[id]!.subject = [{ t: 0, x: 0.3, y: 0.1, w: 0.4, h: 0.9, faceX: 0.5, faceY: 0.3 }];
+    current.framing = { x: 0.42, y: 0.5 };
+    // A IA devolve o projeto de quando o pedido saiu, com a edição dela.
+    const incoming = applyOperations(sent, [{ op: "add_marker", time: 1 }]).project;
+    const merged = keepLocalMeasurements(incoming, current, sent);
+    expect(merged.assets[id]!.subject).toEqual(current.assets[id]!.subject);
+    expect(merged.framing).toEqual({ x: 0.42, y: 0.5 });
+    expect(merged.markers).toEqual(incoming.markers);
+    // Se a IA mudou o enquadramento, vale o dela.
+    const moved = applyOperations(sent, [{ op: "set_format", framing: { x: 0.2 } }]).project;
+    expect(keepLocalMeasurements(moved, current, sent).framing.x).toBe(0.2);
+  });
+
+  it("bloco de texto sai do rosto pelo menor caminho e fica dentro da área segura", () => {
+    const bounds = { x: 0.05, y: 0.08, w: 0.9, h: 0.8 };
+    const f = { x: 0.27, y: 0.14, w: 0.46, h: 0.33 };
+    const list = { x: 0.55, y: 0.45, w: 0.38, h: 0.12 };
+    const n = avoidFaces(list, [f], bounds, 0.01);
+    const moved = { x: list.x + n.dx, y: list.y + n.dy, w: list.w, h: list.h };
+    expect(moved.y).toBeGreaterThanOrEqual(f.y + f.h);
+    expect(moved.y + moved.h).toBeLessThanOrEqual(bounds.y + bounds.h + 1e-9);
+    // Sem colisão: não mexe.
+    expect(avoidFaces({ ...list, y: 0.7 }, [f], bounds, 0.01)).toEqual({ dx: 0, dy: 0, scale: 1 });
+  });
+
+  it("o título gigante atrás da cabeça é recusado em close-up, com o porquê; em plano aberto passa", () => {
+    const withSubject = (s: typeof medium) => {
+      const p = fixture();
+      const asset = Object.values(p.assets)[0]!;
+      asset.width = 1080;
+      asset.height = 1920;
+      asset.subject = [{ t: 0, ...s }, { t: 10, ...s }];
+      return applyOperations(p, [{ op: "set_format", aspectRatio: "9:16" }, { op: "add_component", component: "depth_hook_title", start: 0, duration: 2.5, params: { title: "Taser" } }]).project;
+    };
+    const tight = framingObjections(withSubject({ ...medium, faceW: 0.46, faceH: 0.3 }));
+    expect(tight).toHaveLength(1);
+    expect(tight[0]!.message).toContain("close-up");
+    expect(framingObjections(withSubject(medium))).toEqual([]);
+    expect(critiqueEdit(withSubject({ ...medium, faceW: 0.46, faceH: 0.3 })).some((i) => i.code === "sem_espaco_no_quadro")).toBe(true);
+  });
+
   it("texto atrás da cabeça: em close-up (> 35% da altura) ou rosto cortado, vira cartão na área livre", () => {
     expect(isCloseUp(medium)).toBe(false);
     expect(isCloseUp(closeUp)).toBe(true);
     // Rosto cortado na borda de cima também conta.
     expect(isCloseUp({ ...medium, y: 0, faceY: 0.06 })).toBe(true);
+    // Rosto largo (gravação de celular reenquadrada) também é close-up, mesmo sem passar de 35% da altura.
+    expect(isCloseUp({ ...medium, faceW: 0.45, faceH: 0.3 })).toBe(true);
     expect(depthPlacement(medium, true, safe)).toEqual({ mode: "behind" });
     const placed = depthPlacement(closeUp, true, safe);
     expect(placed.mode).toBe("card");
@@ -1379,6 +1484,89 @@ describe("repetição natural não é erro de gravação (vídeo real, fala flue
   });
 });
 
+describe("muletas: o numeral fica", () => {
+  it("'um' é palavra (número um, um produto); só 'uum'/'hum' é hesitação", () => {
+    const words = ["três", "momentos", "são", "número", "um,", "utilização", "uum", "de", "um", "produto", "hum"].map((text, i) => ({ id: `w${i}`, text, start: i * 0.5, end: i * 0.5 + 0.4 }));
+    const p = addAssetToProject(createProject({ name: "f" }), { id: "a1", kind: "video", name: "v.mp4", duration: 10, hasAudio: true, transcript: { words } });
+    const cut = findFillers(timelineWords(p)).map((f) => f.text);
+    expect(cut).toContain("uum");
+    expect(cut).toContain("hum");
+    expect(cut).not.toContain("um,");
+    expect(cut).not.toContain("um");
+  });
+});
+
+describe("hesitações escondidas pela transcrição (equilíbrio: na dúvida, não corta)", () => {
+  // Ritmo de ~0,17 s por sílaba, como no vídeo de teste.
+  const normal = ["As", "armas", "de", "choque", "são", "utilizadas", "em", "momentos", "muito", "específicos", "durante", "o", "patrulhamento", "ostensivo"].map((text, i) => ({ id: `n${i}`, text, start: i, end: i + syllables(text) * 0.17 }));
+  const rate = speechRate(normal);
+  // Envelope (dB, quadros de 20 ms): voz = -20, silêncio = -60.
+  const env = (parts: [number, number][]) => parts.flatMap(([db, sec]) => Array(Math.round(sec / 0.02)).fill(db) as number[]);
+
+  it("mede o ritmo da pessoa e só olha palavras muito mais longas que ele", () => {
+    expect(rate).toBeGreaterThan(0.14);
+    expect(rate).toBeLessThan(0.2);
+    expect(stretchedWords(normal, rate)).toEqual([]);
+    const long = { id: "x", text: "incapacitação", start: 8.4, end: 10.64 };
+    expect(stretchedWords([long], rate)).toHaveLength(1);
+  });
+
+  it("engasgo de verdade (tentativa de 0,7 s, pausa, palavra inteira): corta só a tentativa", () => {
+    const w = { id: "x", text: "incapacitação", start: 8.4, end: 10.64 };
+    const cut = falseStart(w, env([[-20, 0.7], [-60, 0.24], [-20, 1.3]]), rate)!;
+    expect(cut.start).toBe(8.4);
+    expect(cut.end).toBeGreaterThan(9.2);
+    expect(cut.end).toBeLessThan(9.4);
+    const [mark, kept] = splitFalseStart(w, cut);
+    expect(mark!.disfluency).toBe("false_start");
+    expect(kept!.text).toBe("incapacitação");
+  });
+
+  it("NÃO corta: fim da palavra anterior + respiro, palavra curta + pausa, palavra lenta sem pausa", () => {
+    // "causando | distúrbios": 0,16 s do "-do" mal alinhado, respiro, a palavra.
+    expect(falseStart({ id: "a", text: "distúrbios", start: 27.24, end: 28.6 }, env([[-20, 0.16], [-60, 0.22], [-20, 0.98]]), rate)).toBeNull();
+    // "em [pausa] confronto": palavra curta, a pausa é o respiro antes da próxima.
+    expect(falseStart({ id: "b", text: "em", start: 37.92, end: 38.9 }, env([[-20, 0.2], [-60, 0.6], [-20, 0.18]]), rate)).toBeNull();
+    // Palavra dita devagar, de uma vez (sem silêncio no meio).
+    expect(falseStart({ id: "c", text: "patrulhamento", start: 0, end: 2.6 }, env([[-20, 2.6]]), rate)).toBeNull();
+    // Palavra no ritmo normal nunca é analisada.
+    expect(falseStart({ id: "d", text: "incapacitação", start: 0, end: 1.1 }, env([[-20, 0.4], [-60, 0.2], [-20, 0.5]]), rate)).toBeNull();
+  });
+
+  it("segunda escuta: o 'hum' e o 'é' alongado viram hesitação; o 'e' conjunção e palavras inventadas ficam", () => {
+    const estao = { id: "w1", text: "estão", start: 29.14, end: 31.84 };
+    const split = splitHesitations(estao, [{ text: "E,", start: 0, end: 0.24 }, { text: "hum,", start: 0.24, end: 2.48 }, { text: "estão", start: 2.48, end: 3.02 }], 28.91);
+    expect(split.map((w) => w.disfluency ?? w.text)).toEqual(["hesitation", "estão"]);
+    expect(split[1]!.start).toBeCloseTo(31.39, 2);
+    const guarnicao = { id: "w2", text: "guarnição,", start: 33.82, end: 35.86 };
+    const g = splitHesitations(guarnicao, [{ text: "guarnição,", start: 0.14, end: 1.02 }, { text: "é,", start: 1.02, end: 1.94 }], 33.57);
+    expect(g.map((w) => w.disfluency ?? w.text)).toEqual(["guarnição,", "hesitation"]);
+    // "E não deve": o "e" reouvido é a própria palavra.
+    const e = { id: "w3", text: "e", start: 47.64, end: 48.42 };
+    expect(splitHesitations(e, [{ text: "E", start: 0, end: 0.6 }, { text: "não", start: 0.6, end: 1.2 }], 47.39)).toEqual([e]);
+    // Um "é" curto é o verbo, não hesitação; frases inventadas pelo transcritor não contam.
+    expect(isHesitationToken("é", 0.15)).toBe(false);
+    expect(isHesitationToken("é", 0.6)).toBe(true);
+    expect(splitHesitations(estao, [{ text: "vou", start: 0.3, end: 1.5 }, { text: "fazer", start: 1.5, end: 2.4 }], 28.91)).toEqual([estao]);
+  });
+
+  it("'É,' alongado e solto entre frases sai; o verbo 'é' dentro da frase fica", () => {
+    const mk = (list: [string, number, number][]) => addAssetToProject(createProject({ name: "e" }), { id: "a1", kind: "video", name: "v.mp4", duration: 10, hasAudio: true, transcript: { words: list.map(([text, start, end], i) => ({ id: `w${i}`, text, start, end })) } });
+    const solto = findFillers(timelineWords(mk([["guarnição.", 0, 0.5], ["É,", 1.2, 1.7], ["evitando", 2, 2.5]])));
+    expect(solto.map((f) => f.text)).toEqual(["É,"]);
+    const verbo = findFillers(timelineWords(mk([["Esse", 0, 0.3], ["é,", 0.3, 0.8], ["sem", 0.9, 1.1], ["dúvida", 1.1, 1.5]])));
+    expect(verbo).toEqual([]);
+    const curto = findFillers(timelineWords(mk([["Pronto.", 0, 0.5], ["É,", 1, 1.15], ["assim", 1.2, 1.5]])));
+    expect(curto.filter((f) => f.text === "É,")).toEqual([]);
+  });
+
+  it("a limpeza corta o que foi marcado, como hesitação de confiança alta", () => {
+    const words = [{ id: "a", text: "e", start: 0, end: 0.2 }, { id: "b", text: "…", start: 0.2, end: 2, disfluency: "hesitation" as const }, { id: "c", text: "estão", start: 2, end: 2.4 }];
+    const p = addAssetToProject(createProject({ name: "d" }), { id: "a1", kind: "video", name: "v.mp4", duration: 3, hasAudio: true, transcript: { words } });
+    expect(findFillers(timelineWords(p)).map((f) => [f.from, f.confidence])).toEqual([["b", "alta"]]);
+  });
+});
+
 describe("economia: lucro real depois de taxas, impostos e despesas", () => {
   it("a margem líquida no pior caso fica acima de 35%", () => {
     expect(MIN_NET_MARGIN).toBeGreaterThanOrEqual(0.35);
@@ -1395,6 +1583,13 @@ describe("economia: lucro real depois de taxas, impostos e despesas", () => {
     expect(at("full")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.fullEditShort);
     expect(at("sweep")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.sweepShort);
     expect(at("adjust")).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.adjust);
+    // Mídia gerada por IA: o preço em créditos cobre o custo do Gemini com a mesma margem.
+    expect(aiBudgetUSD(creditCost({ type: "generative_image", images: 1 }))).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.image);
+    expect(aiBudgetUSD(creditCost({ type: "generative", clips: 1 }))).toBeGreaterThanOrEqual(MEASURED_AI_COST_USD.videoClip5s);
+  });
+
+  it("o Diretor cabe na metade do teto da edição completa (o maior gasto medido dele foi US$ 0,087)", () => {
+    expect(aiBudgetUSD(creditCost({ type: "agent", tier: "full", durationSec: 60 })) * 0.5).toBeGreaterThanOrEqual(0.1);
   });
 
   it("os créditos grátis cobrem uma edição completa de um vídeo do tamanho máximo do Free", () => {

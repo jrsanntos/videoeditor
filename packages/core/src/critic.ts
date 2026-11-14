@@ -1,5 +1,5 @@
 import { cutPoints, timelinePeaks } from "./analysis";
-import { faceBox, type Box } from "./layout";
+import { faceBox, isCloseUp, type Box } from "./layout";
 import { MotionGraphicSchema } from "./motion-graphic";
 import type { ComponentClip, Project, ZoomClip } from "./schema";
 import { checkArtDirection, type Skill } from "./skills";
@@ -14,10 +14,36 @@ export const MAX_CRITIC_CYCLES = 3;
 
 export type CritiqueIssue = {
   severity: "erro" | "aviso";
-  code: "texto_repete_fala" | "zoom_sem_motivo" | "zoom_fora_do_sujeito" | "texto_no_rosto" | "som_incompleto" | "direcao_de_arte" | "acao_sem_tratamento";
+  code: "texto_repete_fala" | "zoom_sem_motivo" | "zoom_fora_do_sujeito" | "texto_no_rosto" | "som_incompleto" | "direcao_de_arte" | "acao_sem_tratamento" | "sem_espaco_no_quadro";
   message: string;
   clipIds?: string[];
 };
+
+const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+/**
+ * O que não cabe NESTE quadro, independentemente da receita do estilo. Um
+ * editor profissional olha a cena antes de pôr um efeito: título gigante atrás
+ * da cabeça só funciona com a pessoa pequena no quadro; em close-up a cabeça
+ * tapa o título e os textos laterais caem em cima do rosto.
+ * Devolve uma explicação por clip que não cabe.
+ */
+export function framingObjections(project: Project, clips?: ComponentClip[]): { clipId: string; message: string }[] {
+  const aspect = project.width / project.height;
+  const list = clips ?? project.tracks.flatMap((t) => t.clips).filter((c): c is ComponentClip => c.type === "component");
+  const out: { clipId: string; message: string }[] = [];
+  for (const c of list) {
+    if (c.component !== "depth_hook_title") continue;
+    const s = subjectAt(project, c.start + Math.min(0.5, c.duration / 2));
+    if (!s || !isCloseUp(s, aspect)) continue;
+    const f = faceBox(s, aspect);
+    out.push({
+      clipId: c.id,
+      message: `depth_hook_title não cabe neste trecho: é um close-up (o rosto ocupa ${pct(f.w)} da largura e ${pct(f.h)} da altura do quadro). A cabeça tapa o título gigante e os textos laterais caem no rosto. Não force a receita: aqui o gancho é a própria fala — corte seco no começo, um zoom no rosto e a legenda. Use texto na tela só se o conteúdo pedir (um número, uma lista dita em voz alta) e ele vai para baixo do queixo.`,
+    });
+  }
+  return out;
+}
 
 /** Texto de um componente desenhado na tela em `t`, em frações do quadro (vem da sonda do renderer). */
 export type ScreenText = { clipId: string; t: number; box: Box };
@@ -107,8 +133,8 @@ export function critiqueEdit(project: Project, opts: { skill?: Skill; screen?: S
     const f = faceBox(s, aspect);
     const ix = Math.min(r.box.x + r.box.w, f.x + f.w) - Math.max(r.box.x, f.x);
     const iy = Math.min(r.box.y + r.box.h, f.y + f.h) - Math.max(r.box.y, f.y);
-    // Mais de um quarto do rosto coberto.
-    if (ix > 0 && iy > 0 && (ix * iy) / (f.w * f.h) > 0.25 && !onFace.has(r.clipId)) onFace.set(r.clipId, r.t);
+    // Qualquer pedaço do rosto coberto (mais que uma beirada) já é defeito.
+    if (ix > 0 && iy > 0 && (ix * iy) / (f.w * f.h) > 0.04 && !onFace.has(r.clipId)) onFace.set(r.clipId, r.t);
   }
   for (const [clipId, t] of onFace) {
     const c = components.find((k) => k.id === clipId);
@@ -116,6 +142,8 @@ export function critiqueEdit(project: Project, opts: { skill?: Skill; screen?: S
     if (!c || c.component === "depth_hook_title") continue;
     issues.push({ severity: "erro", code: "texto_no_rosto", clipIds: [clipId], message: `${c.component} (${clipId}) cobre o rosto em ${r3(t)}s. Mova para a área livre (outro lado, parte de baixo) ou encurte o texto.` });
   }
+
+  for (const o of framingObjections(project, components)) issues.push({ severity: "erro", code: "sem_espaco_no_quadro", clipIds: [o.clipId], message: `${o.message} Remova o clip ${o.clipId}.` });
 
   // 4. Acabamento sonoro completo.
   const wantsMusic = opts.skill ? opts.skill.recipe.music !== "none" : projectGenre(project) === "action_cinematic";

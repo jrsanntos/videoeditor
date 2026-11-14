@@ -2,6 +2,8 @@
 
 import {
   actionRanges,
+  isCloseUp,
+  keepLocalMeasurements,
   addAssetToProject,
   addContextAsset,
   agentTier,
@@ -42,6 +44,7 @@ import {
 } from "@videoeditor/core";
 import { analyzeVideo, contentBox, framingForContent, wordEnergy, type VideoAnalysis } from "./analysis";
 import { clearBroll } from "./broll";
+import { refineDisfluencies } from "./disfluency";
 import { cacheGet, cachePut, fileHash } from "./cache";
 import { peaksFor } from "./waveform";
 import { clearPending, readPending } from "./pending";
@@ -427,7 +430,10 @@ async function transcribeOnce(opts: { captions?: boolean } = {}): Promise<boolea
     const current = useEditor.getState().project;
     if (!current?.assets[assetId]) return false;
     const next = structuredClone(current);
-    const transcript = { ...data.transcript, words: wordEnergy(samples, SPEECH_RATE, data.transcript.words) };
+    // Hesitações que o transcritor esconde dentro de palavras esticadas ("hum", tentativa e repetição).
+    setBusy("Conferindo hesitações…");
+    const refined = await refineDisfluencies(data.transcript, samples, SPEECH_RATE);
+    const transcript = { ...refined, words: wordEnergy(samples, SPEECH_RATE, refined.words) };
     next.assets[assetId]!.transcript = transcript;
     const spoken = transcript.words.length > 0;
     if (opts.captions !== false && spoken) next.captions.enabled = true;
@@ -569,8 +575,10 @@ export async function askAgent(message: string, label?: string, opts: { skill?: 
   const full = tier === "full";
   s.setBusy(full ? "Analisando o vídeo…" : "O agente está lendo o vídeo…");
   // Edição completa: o agente recebe quadros do vídeo, o enquadramento e a análise de movimento e som.
+  // Sem o enquadramento a IA não sabe se é close-up nem onde está o rosto: vale esperar mais por ele
+  // (a edição completa leva minutos; a análise, segundos a mais).
   const assetId = primaryAssetId(project);
-  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 25_000) : null;
+  const analysis = full && assetId ? await withTimeout(analyzeAsset(assetId), 60_000) : null;
   const frames = analysis?.frames ?? [];
   if (full && opts.confirm !== false) {
     // Fase 1 — Diretor: só o plano. Nada é editado nem cobrado até o usuário confirmar.
@@ -617,19 +625,82 @@ export function discardPlan(messageId: string) {
 
 export const pendingPlanOf = (m: ChatMessage): PendingPlan | undefined => m.pending;
 
+/** Planos cujas sugestões de mídia já viraram perguntas (não repete ao revisar). */
+const offered = new WeakSet<EditPlan>();
+
+/** Uma pergunta no chat para cada imagem ou vídeo que o Diretor sugeriu no último plano. */
+function offerMediaSuggestions() {
+  const s = useEditor.getState();
+  const plan = [...s.chat].reverse().find((m) => m.plan)?.plan;
+  if (!plan?.midias?.length || offered.has(plan) || !s.project) return;
+  offered.add(plan);
+  const words = new Set(timelineWords(s.project).map((w) => w.id));
+  for (const m of plan.midias) {
+    // A palavra pode ter saído nos cortes: a sugestão perdeu o lugar.
+    if (!words.has(m.atWord)) continue;
+    const what = m.tipo === "video" ? "um vídeo curto" : "uma imagem";
+    s.pushChat({ role: "assistant", text: `Sugestão: ${what} aqui — ${m.motivo}`, media: { ...m, status: "idle" } });
+  }
+}
+
+/** Gera a mídia sugerida (imagem ou vídeo) e a insere no ponto da fala, com fade. */
+export async function acceptMediaSuggestion(messageId: string) {
+  const s = useEditor.getState();
+  const msg = s.chat.find((m) => m.id === messageId);
+  const media = msg?.media;
+  if (!media || media.status === "busy" || !s.project) return;
+  const word = timelineWords(s.project).find((w) => w.id === media.atWord);
+  if (!word) return s.patchChat(messageId, { media: { ...media, status: "dismissed", note: "Esse trecho saiu da edição." } });
+  s.patchChat(messageId, { media: { ...media, status: "busy", note: media.tipo === "video" ? "Gerando o vídeo (leva até 1 minuto)…" : "Gerando a imagem…" } });
+  const project = s.project;
+  const vertical = project.height > project.width;
+  const subject = subjectAt(project, word.start);
+  // Em close-up um cartão cobriria o rosto: entra como corte rápido de tela cheia (o recurso clássico
+  // do editor). Com a pessoa menor no quadro, como cartão, com ela visível.
+  const layout: "full" | "card" = subject && isCloseUp(subject, project.width / project.height) ? "full" : "card";
+  const aspect = layout === "full" ? (vertical ? "9:16" : "16:9") : vertical ? "4:3" : "16:9";
+  const prompt = `${media.descricao}\nSem texto, sem legendas, sem marcas d'água, sem logotipos. Imagem limpa, profissional, para inserir num vídeo explicativo.`;
+  try {
+    const res = await fetch("/api/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: media.tipo === "video" ? "video" : "image", prompt, aspect, seconds: Math.max(3, Math.ceil(media.duracao)) }) });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? "Não foi possível gerar a mídia. Nada foi cobrado.");
+    }
+    const balance = Number(res.headers.get("x-balance"));
+    if (Number.isFinite(balance) && res.headers.has("x-balance")) useEditor.getState().setCredits(balance);
+    const blob = await res.blob();
+    const assetId = await addContextMedia(blob, media.tipo === "video" ? "vídeo gerado por IA" : "imagem gerada por IA", { description: media.descricao.slice(0, 200) });
+    if (!assetId) throw new Error("Não foi possível guardar a mídia gerada.");
+    const error = useEditor.getState().apply([{ op: "add_broll", assetId, atWord: media.atWord, duration: media.duracao, layout }]);
+    if (error) throw new Error(error);
+    useEditor.getState().seek(Math.max(0, word.start - 0.5));
+    useEditor.getState().patchChat(messageId, { media: { ...media, status: "done", note: "Inserida. Ctrl+Z desfaz." } });
+  } catch (e) {
+    useEditor.getState().patchChat(messageId, { media: { ...media, status: "idle", note: (e as Error).message } });
+  }
+}
+
+export function dismissMediaSuggestion(messageId: string) {
+  const s = useEditor.getState();
+  const media = s.chat.find((m) => m.id === messageId)?.media;
+  if (media) s.patchChat(messageId, { media: { ...media, status: "dismissed", note: undefined } });
+}
+
 async function executeAgent(req: { message: string; history: { role: string; text: string }[]; skill?: SkillId; frames: { t: number; data: string }[]; selection: { start: number; end: number } | null; phase: "auto" | "execute"; planToken?: string; tierToken?: string }) {
   const s = useEditor.getState();
   let applied = false;
   const log: string[] = [];
   let reviewToken: string | undefined;
   s.setBusy("O Editor está montando a edição…");
+  const sent = useEditor.getState().project;
   try {
-    await streamAgent({ project: useEditor.getState().project, ...req }, (e) => {
+    await streamAgent({ project: sent, ...req }, (e) => {
       if (e.type === "status") s.setBusy(e.text);
       else if (e.type === "plan") s.pushChat({ role: "assistant", text: e.plan.resumo, plan: e.plan });
       else if (e.type === "ops") {
         // A primeira etapa cria o ponto de desfazer; as seguintes só atualizam: um Ctrl+Z desfaz o pedido inteiro.
-        s.setProject(e.project, { history: applied ? "keep" : true });
+        // A análise do vídeo pode ter chegado depois do pedido sair: a resposta não a apaga.
+        s.setProject(keepLocalMeasurements(e.project, useEditor.getState().project, sent), { history: applied ? "keep" : true });
         applied = true;
         log.push(...e.log);
         s.setBusy(`${e.log[e.log.length - 1] ?? "Edição aplicada"}. Continuando…`);
@@ -643,6 +714,8 @@ async function executeAgent(req: { message: string; history: { role: string; tex
       }
     });
     if (reviewToken && applied) await visualReview(reviewToken);
+    // O Diretor como consultor: as mídias que ele sugeriu viram perguntas no chat, depois da edição.
+    if (applied) offerMediaSuggestions();
   } catch (e) {
     s.pushChat({ role: "assistant", text: (e as Error).message, error: true });
   } finally {
@@ -836,9 +909,10 @@ async function visualReview(firstToken: string) {
     const current: string = token;
     token = undefined;
     try {
-      await streamAgent({ project: useEditor.getState().project, message: "Autoavaliação visual da edição.", review: { token: current, shots, ...(strip ? { strip } : {}) } }, (e) => {
+      const sent = useEditor.getState().project;
+      await streamAgent({ project: sent, message: "Autoavaliação visual da edição.", review: { token: current, shots, ...(strip ? { strip } : {}) } }, (e) => {
         if (e.type === "status") s.setBusy(e.text);
-        else if (e.type === "ops") s.setProject(e.project, { history: "keep" });
+        else if (e.type === "ops") s.setProject(keepLocalMeasurements(e.project, useEditor.getState().project, sent), { history: "keep" });
         else if (e.type === "done") {
           token = e.reviewToken;
           if (e.log.length) {

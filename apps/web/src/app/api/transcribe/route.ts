@@ -1,5 +1,5 @@
 import { creditCost, PLANS } from "@videoeditor/core";
-import { transcribeAudio } from "@/server/ai";
+import { transcribeAudio, WHISPER_VERBATIM } from "@/server/ai";
 import { assertCredits, charge, groqCostUSD, recordUsage } from "@/server/billing";
 import { errorResponse, HttpError, requireUser } from "@/server/users";
 
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       userId: user.id,
       kind: "transcribe",
       provider: "groq",
-      model: "whisper-large-v3-turbo",
+      model: WHISPER_VERBATIM,
       audioSeconds: seconds,
       costUSD: groqCostUSD(seconds),
       credits,

@@ -24,8 +24,8 @@ type GeminiPart = {
   thought?: boolean;
   thoughtSignature?: string;
   inlineData?: { mimeType: string; data: string };
-  functionCall?: { name: string; args?: Record<string, unknown> };
-  functionResponse?: { name: string; response: Record<string, unknown> };
+  functionCall?: { id?: string; name: string; args?: Record<string, unknown> };
+  functionResponse?: { id?: string; name: string; response: Record<string, unknown> };
 };
 type GeminiContent = { role: "user" | "model"; parts: GeminiPart[] };
 type GeminiResponse = {
@@ -39,22 +39,27 @@ export const geminiConfigured = async () => Boolean(await getSetting("GEMINI_API
 
 /**
  * Preço do modelo reserva em US$ por milhão de tokens, editável no painel.
- * Sem valor configurado vale um padrão conservador (acima dos modelos Pro do
- * Google): o teto de custo por pedido nunca subestima o gasto.
+ * Padrão: tabela pública do gemini-4-hydrogen (lançado em 12/11/2026): US$ 1,50
+ * de entrada e 7,50 de saída, fixo em toda a janela de 1 milhão de tokens; o
+ * raciocínio é cobrado como saída. A leitura de cache fica em 25% da entrada,
+ * acima da tabela do Google, para o teto de custo nunca subestimar o gasto.
  */
 export async function geminiPrices(): Promise<{ input: number; output: number; cacheRead: number }> {
   const num = async (key: "GEMINI_PRICE_INPUT" | "GEMINI_PRICE_OUTPUT", fallback: number) => {
     const v = Number(await getSetting(key));
     return Number.isFinite(v) && v > 0 ? v : fallback;
   };
-  const input = await num("GEMINI_PRICE_INPUT", 3);
-  const output = await num("GEMINI_PRICE_OUTPUT", 18);
+  const input = await num("GEMINI_PRICE_INPUT", 1.5);
+  const output = await num("GEMINI_PRICE_OUTPUT", 7.5);
   return { input, output, cacheRead: input * 0.25 };
 }
 
 // Conteúdo original de cada resposta do Gemini, para devolvê-lo intacto nas voltas seguintes
 // (ele carrega as assinaturas de raciocínio que o Gemini exige junto das chamadas de função).
 const originals = new WeakMap<object, GeminiContent>();
+
+/** Prefixo dos ids de tool_use que carregam o id da chamada do próprio Gemini. */
+const GEMINI_ID = "gm_";
 
 /** Assinatura neutra para chamadas de função que vieram de outro modelo (a Claude, antes da troca). */
 const FOREIGN_SIGNATURE = "skip_thought_signature_validator";
@@ -102,7 +107,9 @@ export function toGeminiContents(messages: Msg[]): GeminiContent[] {
         if (b.type === "image" && b.source.type === "base64") return [{ inlineData: { mimeType: b.source.media_type, data: b.source.data } }];
         if (b.type === "tool_result") {
           const name = names.get(b.tool_use_id) ?? "edit_timeline";
-          return [{ functionResponse: { name, response: { [b.is_error ? "error" : "result"]: resultText(b.content) } } }];
+          // O id liga a resposta à chamada (vale quando o mesmo nome é chamado mais de uma vez na volta).
+          const id = b.tool_use_id.startsWith(GEMINI_ID) ? b.tool_use_id.slice(GEMINI_ID.length) : undefined;
+          return [{ functionResponse: { ...(id ? { id } : {}), name, response: { [b.is_error ? "error" : "result"]: resultText(b.content) } } }];
         }
         return [];
       }),
@@ -137,6 +144,8 @@ function declarations(tools: Tool[], compat: boolean) {
   ];
 }
 
+/** Espera máxima (s) antes de repetir uma volta recusada por limite de requisições. */
+const MAX_RETRY_WAIT_S = 30;
 const REFUSAL = new Set(["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"]);
 let seq = 0;
 
@@ -144,7 +153,7 @@ let seq = 0;
  * Uma volta do agente no Gemini. Devolve a mensagem no formato da Anthropic
  * (só o que o agente usa: content, stop_reason e usage) e o modelo usado.
  */
-export async function geminiTurn(req: { system: string; tools: Tool[]; messages: Msg[]; maxTokens: number; signal?: AbortSignal }): Promise<{ message: Anthropic.Beta.BetaMessage; model: string }> {
+export async function geminiTurn(req: { system: string; tools: Tool[]; messages: Msg[]; maxTokens: number; effort?: "low" | "medium" | "high" | null; signal?: AbortSignal }): Promise<{ message: Anthropic.Beta.BetaMessage; model: string }> {
   const key = await getSetting("GEMINI_API_KEY");
   if (!key) throw new HttpError(503, "O modelo reserva (Gemini) não está configurado: cadastre GEMINI_API_KEY no painel.");
   const model = await geminiModel();
@@ -158,7 +167,8 @@ export async function geminiTurn(req: { system: string; tools: Tool[]; messages:
         systemInstruction: { parts: [{ text: req.system }] },
         contents,
         ...(req.tools.length ? { tools: declarations(req.tools, compat), toolConfig: { functionCallingConfig: { mode: "AUTO" } } } : {}),
-        generationConfig: { maxOutputTokens: req.maxTokens },
+        // Mesmo nível de raciocínio pedido à Claude (o Diretor pensa mais; quem executa, menos).
+        generationConfig: { maxOutputTokens: req.maxTokens, ...(req.effort ? { thinkingConfig: { thinkingLevel: req.effort } } : {}) },
       }),
     }).catch((e: unknown) => {
       if ((e as Error).name === "AbortError") throw e;
@@ -175,6 +185,19 @@ export async function geminiTurn(req: { system: string; tools: Tool[]; messages:
       throw new HttpError(502, "O modelo reserva recusou o pedido.");
     }
   }
+  // Limite por minuto: o Google diz quanto esperar. Se for pouco, espera e tenta uma vez mais.
+  if (res && res.status === 429) {
+    const body = await res.text().catch(() => "");
+    const wait = Number(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(body)?.[1] ?? NaN);
+    if (Number.isFinite(wait) && wait <= MAX_RETRY_WAIT_S && !req.signal?.aborted) {
+      console.warn(`gemini 429: nova tentativa em ${wait}s`);
+      await new Promise((r) => setTimeout(r, (wait + 0.5) * 1000));
+      res = await call(false);
+    } else {
+      console.error("gemini error 429", body.slice(0, 500));
+      throw new HttpError(429, "Os serviços de IA estão sobrecarregados. Tente de novo em alguns segundos.");
+    }
+  }
   if (!res) throw new HttpError(502, "Não foi possível conectar ao modelo reserva.");
   if (!res.ok) {
     console.error("gemini error", res.status, (await res.text().catch(() => "")).slice(0, 500));
@@ -186,7 +209,7 @@ export async function geminiTurn(req: { system: string; tools: Tool[]; messages:
   const content: Anthropic.Beta.BetaContentBlock[] = [];
   for (const p of parts) {
     if (p.thought) continue;
-    if (p.functionCall) content.push({ type: "tool_use", id: `gm_${Date.now().toString(36)}_${seq++}`, name: p.functionCall.name, input: p.functionCall.args ?? {} } as Anthropic.Beta.BetaContentBlock);
+    if (p.functionCall) content.push({ type: "tool_use", id: p.functionCall.id ? `${GEMINI_ID}${p.functionCall.id}` : `gx_${Date.now().toString(36)}_${seq++}`, name: p.functionCall.name, input: p.functionCall.args ?? {} } as Anthropic.Beta.BetaContentBlock);
     else if (p.text?.trim()) content.push({ type: "text", text: p.text, citations: null } as Anthropic.Beta.BetaContentBlock);
   }
   if (candidate?.content) originals.set(content, { role: "model", parts: candidate.content.parts });

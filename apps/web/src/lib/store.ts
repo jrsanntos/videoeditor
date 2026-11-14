@@ -24,7 +24,11 @@ export type EditPlan = {
   cortes: string;
   estilo: { look: string; musica: string; legenda: string | null };
   capitulos: { ato: "gancho" | "desenvolvimento" | "climax" | "fecho"; titulo: string; energia: string; velocidade: string; tratamento: string; zooms: number; componentes: number; sons: number }[];
+  midias?: MediaSuggestion[];
 };
+
+/** Imagem ou vídeo que o Diretor sugere gerar por IA num ponto da fala. O usuário decide. */
+export type MediaSuggestion = { atWord: string; tipo: "imagem" | "video"; descricao: string; motivo: string; duracao: number };
 
 /** Um pedido de edição completa esperando a confirmação do plano no chat. */
 export type PendingPlan = { token: string; message: string; skill?: string; frames: { t: number; data: string }[] };
@@ -45,6 +49,8 @@ export type ChatMessage = {
   log?: string[];
   credits?: number;
   error?: boolean;
+  /** Sugestão de mídia gerada por IA, com o estado da decisão do usuário. */
+  media?: MediaSuggestion & { status: "idle" | "busy" | "done" | "dismissed"; note?: string };
 };
 
 type State = {
@@ -106,6 +112,7 @@ type State = {
   setPxPerSec: (n: number) => void;
   setCredits: (n: number) => void;
   pushChat: (m: Omit<ChatMessage, "id">) => void;
+  patchChat: (id: string, patch: Partial<ChatMessage>) => void;
   /** Tira o pedido pendente de uma mensagem de plano (confirmado ou descartado). */
   resolvePlan: (id: string) => void;
   setBusy: (b: string | null) => void;
@@ -236,6 +243,7 @@ export const useEditor = create<State>((set, get) => ({
   setPxPerSec: (pxPerSec) => set({ pxPerSec }),
   setCredits: (credits) => set({ credits }),
   pushChat: (m) => set((s) => ({ chat: [...s.chat, { ...m, id: crypto.randomUUID() }] })),
+  patchChat: (id, patch) => set((s) => ({ chat: s.chat.map((m) => (m.id === id ? { ...m, ...patch } : m)) })),
   resolvePlan: (id) => set((s) => ({ chat: s.chat.map((m) => (m.id === id ? { ...m, pending: undefined } : m)) })),
   setBusy: (busy) => set({ busy }),
   setNotice: (notice) => set({ notice }),
