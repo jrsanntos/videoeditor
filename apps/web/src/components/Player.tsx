@@ -160,9 +160,16 @@ export function Player() {
                 // Micro-fade de 30 ms nas duas bordas de cada corte, também no preview.
                 audio.gain.gain.value = (p.finish.voice ? voiceGainNow(clip.assetId) : 1) * cutFadeGain(local, clip.duration);
               }
-              if (video.paused) void video.play().catch(() => useEditor.getState().setPlaying(false));
-              // O relógio da timeline segue o relógio do vídeo (áudio sempre em sincronia).
-              t = Math.min(clip.start + localTimeAt(clip, video.currentTime), clip.start + clip.duration);
+              if (video.ended || (video.paused && video.currentTime >= sourceEnd(clip) - 0.05)) {
+                // O arquivo acabou antes da timeline (no mobile a duração do arquivo difere por
+                // milissegundos): o clip terminou. Chamar play() num vídeo encerrado o faria
+                // recomeçar do zero — o preview entraria num loop mudo.
+                t = clip.start + clip.duration;
+              } else {
+                if (video.paused) void video.play().catch(() => useEditor.getState().setPlaying(false));
+                // O relógio da timeline segue o relógio do vídeo (áudio sempre em sincronia).
+                t = Math.min(clip.start + localTimeAt(clip, video.currentTime), clip.start + clip.duration);
+              }
             }
             // Deixa o outro vídeo parado no começo do próximo clip, pronto para a emenda.
             const next = nextClip(p, clip);
@@ -187,18 +194,23 @@ export function Player() {
           if (s.playing) t += (now - lastWall) / 1000;
         }
 
-        if (s.playing && t >= duration) {
-          t = duration;
-          video.pause();
-          useEditor.setState({ playing: false });
-        }
+        const finished = s.playing && duration > 0 && t >= duration - 0.001;
+        if (finished) t = duration;
         // Efeitos sonoros: dispara os que caem entre o quadro anterior e este.
         if (s.playing && engineTime >= 0) sfx.advance(p, engineTime, t);
-        music.sync(p, t, s.playing);
+        if (finished) {
+          // Fim do vídeo: para e volta ao início, sem repetir.
+          video.pause();
+          standby.pause();
+          activeClipId = null;
+          t = 0;
+          useEditor.setState({ playing: false });
+        }
+        music.sync(p, t, s.playing && !finished);
         if (t !== s.time) useEditor.setState({ time: t });
         engineTime = t;
 
-        syncBroll(p, t, s.playing);
+        syncBroll(p, t, s.playing && !finished);
         const ctx = canvas.getContext("2d");
         if (ctx) {
           hit.regions = [];
