@@ -48,6 +48,7 @@ import {
   DEFAULT_PACING,
   type Project,
   ensureLowerThird,
+  findFillers,
 } from "./index";
 
 function fixture(): Project {
@@ -1473,6 +1474,18 @@ describe("repetição natural não é erro de gravação (vídeo real, fala flue
     "jamais poderá ser utilizada em manifestações públicas e não deve ser utilizada quando há risco à vida",
   ])("%s", (text) => {
     expect(take(text).filter((r) => r.confidence === "alta")).toEqual([]);
+  });
+});
+
+describe("muletas: o numeral fica", () => {
+  it("'um' é palavra (número um, um produto); só 'uum'/'hum' é hesitação", () => {
+    const words = ["três", "momentos", "são", "número", "um,", "utilização", "uum", "de", "um", "produto", "hum"].map((text, i) => ({ id: `w${i}`, text, start: i * 0.5, end: i * 0.5 + 0.4 }));
+    const p = addAssetToProject(createProject({ name: "f" }), { id: "a1", kind: "video", name: "v.mp4", duration: 10, hasAudio: true, transcript: { words } });
+    const cut = findFillers(timelineWords(p)).map((f) => f.text);
+    expect(cut).toContain("uum");
+    expect(cut).toContain("hum");
+    expect(cut).not.toContain("um,");
+    expect(cut).not.toContain("um");
   });
 });
 

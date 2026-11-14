@@ -24,8 +24,11 @@ export type FillerLevel = "hesitations" | "all";
 // Minúsculas, com acentos (o "é" verbo e o "e" conjunção não podem virar a mesma coisa), sem pontuação.
 const bare = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
-/** Sons sem conteúdo, inclusive alongados ("hummm", "ééé", "ããã"). */
-const HESITATION = /^(h+u+m+|h+m+|u+m+|u+h+m*|a+h+n+|ã+h*|h+ã+|é+h+|e+h+|é{2,}|e{3,}|a{3,}|ã{2,})$/;
+/**
+ * Sons sem conteúdo, inclusive alongados ("hummm", "ééé", "ããã"). "um" sozinho
+ * é artigo ou numeral ("número um", "um produto"): só alongado ("uum", "ummm") é hesitação.
+ */
+const HESITATION = /^(h+u+m+|h+m+|u{2,}m+|u+m{2,}|u+h+m*|a+h+n+|ã+h*|h+ã+|é+h+|e+h+|é{2,}|e{3,}|a{3,}|ã{2,})$/;
 /** Palavras de apoio que só são muleta quando soltas. */
 const MARKERS = new Set(["tipo", "né", "sabe", "tá", "assim", "entendeu", "entende"]);
 /** Interjeições que às vezes têm sentido ("Ah, entendi"): decisão do agente. */
